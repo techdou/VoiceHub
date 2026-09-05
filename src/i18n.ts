@@ -269,6 +269,9 @@ const dict = {
 
 export type I18nKey = keyof typeof dict.zh;
 
+/** 测试用：暴露字典本体。 */
+export { dict };
+
 const state = reactive({ locale: "zh" as Locale });
 
 export function setLocale(locale: Locale) {

@@ -14,6 +14,10 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  test: {
+    environment: "jsdom",
+    include: ["src/**/*.{test,spec}.ts"],
+  },
   clearScreen: false,
   server: {
     port: 5173,

@@ -1,0 +1,2 @@
+31a1fd771fed7c856e45e0545e8846b594ea8679b38c5f66cef5332a91999b67 *SoundBridge_0.1.0_x64-setup.exe
+3848133381ffb579d8ca2270d1ae58b1a7ed0832b7be8bb8f3a065ce1972da55 *SoundBridge-portable.exe
