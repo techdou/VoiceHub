@@ -1,0 +1,10 @@
+target/
+node_modules/
+dist/
+.DS_Store
+*.log
+src-tauri/gen/schemas/
+.vscode/
+.idea/
+*.tmp
+*.bak

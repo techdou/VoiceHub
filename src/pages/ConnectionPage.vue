@@ -1,0 +1,241 @@
+<script setup lang="ts">
+import { onMounted, ref } from "vue";
+import { openUrl, openPath } from "@tauri-apps/plugin-opener";
+import { api } from "../api";
+import { useI18n } from "../i18n";
+import type { AppSettings, AudioEndpoint, BleSnapshot, PairedRemote } from "../types";
+
+const props = defineProps<{
+  settings: AppSettings | null;
+  bleSnapshot: BleSnapshot | null;
+  saveTick: number;
+}>();
+
+const emit = defineEmits<{ "update-settings": [settings: AppSettings] }>();
+const { t } = useI18n();
+
+const remotes = ref<PairedRemote[]>([]);
+const endpoints = ref<AudioEndpoint[]>([]);
+const selectedRemoteId = ref("");
+const busy = ref(false);
+
+async function refreshRemotes() {
+  remotes.value = await api.listPairedRemotes();
+}
+
+async function refreshEndpoints() {
+  endpoints.value = await api.listAudioEndpoints();
+}
+
+async function connect(id: string, name: string) {
+  selectedRemoteId.value = id;
+  busy.value = true;
+  try {
+    await api.connectRemote(id, name);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function pickEndpoint(id: string, name: string) {
+  if (!props.settings) return;
+  await api.selectAudioEndpoint(id, name);
+  emit("update-settings", { ...props.settings, audioEndpointName: name });
+}
+
+function pickProvider(kind: AppSettings["provider"]["kind"]) {
+  if (!props.settings) return;
+  emit("update-settings", {
+    ...props.settings,
+    provider: { ...props.settings.provider, kind },
+  });
+}
+
+function setGain(value: number) {
+  if (!props.settings) return;
+  emit("update-settings", { ...props.settings, gainDb: value });
+}
+
+function setCustomMode(mode: "toggle" | "hold") {
+  if (!props.settings) return;
+  emit("update-settings", {
+    ...props.settings,
+    provider: { ...props.settings.provider, customMode: mode },
+  });
+}
+
+function phaseLabel(phase: string | undefined): string {
+  if (!phase) return "—";
+  return t(`connection.phase.${phase}` as never);
+}
+
+onMounted(async () => {
+  await Promise.all([refreshRemotes(), refreshEndpoints()]);
+  selectedRemoteId.value = props.settings?.pairedDeviceId ?? "";
+});
+
+const providerOptions = [
+  { id: "we_type", hint: true },
+  { id: "doubao" },
+  { id: "win_h" },
+  { id: "custom" },
+  { id: "none" },
+] as const;
+</script>
+
+<template>
+  <div class="page" v-if="settings">
+    <h1>{{ t("connection.title") }}</h1>
+    <p class="page-sub">{{ t("app.tagline") }}</p>
+
+    <section class="card">
+      <h3>{{ t("connection.status") }}</h3>
+      <div class="row between">
+        <div class="row">
+          <span
+            class="status-dot"
+            :class="
+              bleSnapshot?.phase === 'ready'
+                ? 'ok'
+                : bleSnapshot?.phase === 'failed'
+                  ? 'fail'
+                  : bleSnapshot?.phase === 'stopped'
+                    ? 'info'
+                    : 'warn'
+            "
+          ></span>
+          <strong>{{ phaseLabel(bleSnapshot?.phase) }}</strong>
+          <span v-if="bleSnapshot?.remoteName" class="badge">{{ bleSnapshot.remoteName }}</span>
+          <span v-if="bleSnapshot?.remoteModel" class="badge">{{ bleSnapshot.remoteModel }}</span>
+          <span v-if="bleSnapshot?.batteryPercent != null" class="badge">
+            {{ t("connection.battery") }} {{ bleSnapshot.batteryPercent }}%
+          </span>
+        </div>
+        <div class="row">
+          <button class="btn" v-if="bleSnapshot?.phase === 'ready'" @click="api.disconnectRemote()">
+            {{ t("common.disconnect") }}
+          </button>
+          <button class="btn" v-else-if="settings.pairedDeviceId" @click="api.reconnectRemote()">
+            {{ t("common.retry") }}
+          </button>
+        </div>
+      </div>
+      <p v-if="bleSnapshot?.lastError" class="hint" style="margin-top: 8px; color: var(--fail)">
+        {{ bleSnapshot.lastError }}
+      </p>
+    </section>
+
+    <section class="card">
+      <h3>{{ t("connection.remote.select") }}</h3>
+      <p class="hint">{{ t("connection.remote.none") }}</p>
+      <div class="row" style="margin-bottom: 10px">
+        <button class="btn" @click="refreshRemotes">{{ t("common.refresh") }}</button>
+        <button class="btn" @click="openPath('ms-settings:bluetooth')">
+          {{ t("onboarding.open_settings") }}
+        </button>
+      </div>
+      <div style="display: grid; gap: 6px">
+        <button
+          v-for="remote in remotes"
+          :key="remote.id"
+          class="picker-item"
+          :class="{ current: settings.pairedDeviceId === remote.id }"
+          :disabled="busy"
+          @click="connect(remote.id, remote.name)"
+        >
+          <span>{{ remote.name }}</span>
+          <span v-if="settings.pairedDeviceId === remote.id">✓</span>
+        </button>
+        <div v-if="!remotes.length" class="empty">{{ t("common.empty") }}</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>{{ t("connection.audio.title") }}</h3>
+      <p class="hint">{{ t("connection.audio.hint") }}</p>
+      <div class="row" style="margin-bottom: 10px">
+        <select
+          v-if="endpoints.length"
+          :value="settings.audioEndpointName"
+          @change="
+            const target = endpoints.find((e) => e.name === ($event.target as HTMLSelectElement).value);
+            if (target) pickEndpoint(target.id, target.name);
+          "
+        >
+          <option v-for="endpoint in endpoints" :key="endpoint.id" :value="endpoint.name">
+            {{ endpoint.name }}{{ endpoint.isVirtualCableCandidate ? "  · CABLE" : "" }}
+          </option>
+        </select>
+        <button class="btn" @click="refreshEndpoints">{{ t("common.refresh") }}</button>
+        <span class="spacer"></span>
+        <button class="btn subtle" @click="openUrl('https://vb-audio.com/Cable/')">
+          {{ t("connection.audio.install_vbcable") }}
+        </button>
+      </div>
+      <div class="row">
+        <button class="btn" @click="api.simulateVoice(2000)">{{ t("connection.voice_test") }}</button>
+        <span class="hint" style="margin: 0">{{ t("sim.voice_hint") }}</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>{{ t("connection.provider.title") }}</h3>
+      <div style="display: grid; gap: 6px; margin-bottom: 12px">
+        <button
+          v-for="option in providerOptions"
+          :key="option.id"
+          class="picker-item"
+          :class="{ current: settings.provider.kind === option.id }"
+          @click="pickProvider(option.id)"
+        >
+          <span>{{ t(`connection.provider.${option.id}` as never) }}</span>
+        </button>
+      </div>
+      <p v-if="settings.provider.kind === 'we_type'" class="hint">
+        {{ t("connection.provider.we_type_hint") }}
+      </p>
+      <div v-if="settings.provider.kind === 'custom'" class="setting-row">
+        <div>
+          <div class="label">{{ t("connection.provider.mode.toggle") }} / {{ t("connection.provider.mode.hold") }}</div>
+        </div>
+        <div class="row">
+          <button
+            class="btn"
+            :class="{ primary: settings.provider.customMode === 'toggle' }"
+            @click="setCustomMode('toggle')"
+          >
+            {{ t("connection.provider.mode.toggle") }}
+          </button>
+          <button
+            class="btn"
+            :class="{ primary: settings.provider.customMode === 'hold' }"
+            @click="setCustomMode('hold')"
+          >
+            {{ t("connection.provider.mode.hold") }}
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>{{ t("connection.gain.title") }}</h3>
+      <p class="hint">{{ t("connection.gain.hint") }}</p>
+      <div class="row">
+        <span>−24</span>
+        <input
+          type="range"
+          min="-24"
+          max="24"
+          step="1"
+          :value="settings.gainDb"
+          @input="setGain(Number(($event.target as HTMLInputElement).value))"
+        />
+        <span>+24</span>
+        <strong style="min-width: 48px; text-align: right">{{ settings.gainDb.toFixed(0) }} dB</strong>
+      </div>
+    </section>
+  </div>
+  <div v-else class="page">
+    <p class="empty">{{ t("common.loading") }}</p>
+  </div>
+</template>

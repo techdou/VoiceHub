@@ -1,0 +1,195 @@
+//! F5 吞键闸（WH_KEYBOARD_LL）。
+//!
+//! 遥控器语音键在 HID 键盘层是 F5。原始 F5 若穿透到前台应用会触发
+//! 刷新等行为，必须吞掉；但真实键盘的 F5 不能误伤。
+//! 策略（与参考实现一致的防粘键设计）：
+//! - DOWN 沿：仅当语音会话激活或武装窗口内（GATT 控制通知后 ~250ms）
+//!   才吞；非 F5 一律透传；注入事件（LLKHF_INJECTED）一律透传。
+//! - UP 沿：只按配对裁决——本次按住的所有 DOWN 全被吞才吞 UP，
+//!   任何 DOWN 泄漏则 UP 必放行（宁送孤立 UP，不留 OS 粘键）。
+
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::time::Duration;
+
+use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+    LLKHF_LOWER_IL_INJECTED, MSG, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+};
+
+const VK_F5: u32 = 0x74;
+
+/// 武装窗口：GATT 控制通知到达后的一小段时间（遥控器 HID F5 通常
+/// 晚 60–90ms 到达；应用被后台节流时工作线程可能再拖 120ms）。
+const ARM_GRACE_MS: i64 = 250;
+
+static MASTER: AtomicBool = AtomicBool::new(false);
+static SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static ARMED_UNTIL_MS: AtomicI64 = AtomicI64::new(0);
+static HOLD_PAIRING: AtomicU32 = AtomicU32::new(HOLD_NONE);
+static HOOK: AtomicI64 = AtomicI64::new(0);
+
+pub const HOLD_NONE: u32 = 0;
+pub const HOLD_SWALLOWED_ALL: u32 = 1;
+pub const HOLD_LEAKED: u32 = 2;
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 纯决策（单测覆盖）。
+pub fn decide(vk_code: u32, is_key_up: bool, session: bool, armed_now: bool, hold_pairing: u32) -> bool {
+    if vk_code != VK_F5 {
+        return false;
+    }
+    if is_key_up {
+        return hold_pairing == HOLD_SWALLOWED_ALL;
+    }
+    session || armed_now
+}
+
+/// 纯状态转移：DOWN 裁决后更新配对。
+pub fn track_down(hold_pairing: u32, down_swallowed: bool) -> u32 {
+    if hold_pairing == HOLD_LEAKED {
+        return HOLD_LEAKED;
+    }
+    if down_swallowed {
+        HOLD_SWALLOWED_ALL
+    } else {
+        HOLD_LEAKED
+    }
+}
+
+/// GATT 控制通知回调线程直接调用（不要排队到工作线程——节流会迟到）。
+pub fn arm_grace() {
+    ARMED_UNTIL_MS.store(now_ms() + ARM_GRACE_MS, Ordering::Relaxed);
+}
+
+pub fn set_session_active(active: bool) {
+    SESSION_ACTIVE.store(active, Ordering::Relaxed);
+    if !active {
+        // 会话结束：清配对，允许武装窗口继续兜尾沿。
+        HOLD_PAIRING.store(HOLD_NONE, Ordering::Relaxed);
+    }
+}
+
+fn armed() -> bool {
+    let until = ARMED_UNTIL_MS.load(Ordering::Relaxed);
+    until != 0 && now_ms() < until
+}
+
+/// 安装全局钩子（启动专用线程跑消息泵；LL 钩子要求有线程消息循环）。
+pub fn install() -> bool {
+    if HOOK.load(Ordering::Relaxed) != 0 {
+        return true;
+    }
+    MASTER.store(true, Ordering::Relaxed);
+    std::thread::Builder::new()
+        .name("sb-key-gate".into())
+        .spawn(|| unsafe {
+            match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
+                Ok(hook) => {
+                    HOOK.store(hook.0 as i64, Ordering::Relaxed);
+                }
+                Err(error) => {
+                    log::error!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {error}");
+                    return;
+                }
+            }
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                DispatchMessageW(&msg);
+            }
+        })
+        .is_ok()
+}
+
+/// 钩子是否已安装（诊断用）。
+pub fn is_installed() -> bool {
+    HOOK.load(Ordering::Relaxed) != 0
+}
+
+/// 卸载并放行（应用退出 / 遥控器断开时）。
+pub fn shutdown() {
+    MASTER.store(false, Ordering::Relaxed);
+    let handle = HOOK.swap(0, Ordering::Relaxed);
+    if handle != 0 {
+        unsafe {
+            let hook = HHOOK(handle as *mut core::ffi::c_void);
+            let _ = UnhookWindowsHookEx(hook);
+        }
+    }
+}
+
+unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, WM_KEYDOWN, WM_SYSKEYDOWN};
+    if code >= 0 && MASTER.load(Ordering::Relaxed) {
+        let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+        let is_injected =
+            (kb.flags & LLKHF_INJECTED).0 != 0 || (kb.flags & LLKHF_LOWER_IL_INJECTED).0 != 0;
+        if !is_injected {
+            let is_up = !(wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN);
+            let pairing = HOLD_PAIRING.load(Ordering::Relaxed);
+            let swallow = decide(
+                kb.vkCode as u32,
+                is_up,
+                SESSION_ACTIVE.load(Ordering::Relaxed),
+                armed(),
+                pairing,
+            );
+            if swallow {
+                if !is_up {
+                    HOLD_PAIRING.store(track_down(pairing, true), Ordering::Relaxed);
+                } else {
+                    HOLD_PAIRING.store(HOLD_NONE, Ordering::Relaxed);
+                }
+                return LRESULT(1);
+            }
+            if !is_up && kb.vkCode as u32 == VK_F5 {
+                HOLD_PAIRING.store(track_down(pairing, false), Ordering::Relaxed);
+            }
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// 防粘键兜底：长时间无活动后重置配对（钩子中途装上等场景）。
+pub fn reset_pairing_after_idle(idle: Duration) {
+    let _ = idle; // 当前实现由 set_session_active(false) 清配对；保留接口对齐宿主。
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_f5_down_swallowed_when_armed_or_session() {
+        assert!(!decide(0x41, false, false, false, HOLD_NONE));
+        assert!(!decide(0x74, false, false, false, HOLD_NONE));
+        assert!(decide(0x74, false, true, false, HOLD_NONE));
+        assert!(decide(0x74, false, false, true, HOLD_NONE));
+    }
+
+    #[test]
+    fn up_edge_follows_down_pairing() {
+        // 全吞的按住 → 吞 UP。
+        assert!(decide(0x74, true, false, false, HOLD_SWALLOWED_ALL));
+        // 任一 DOWN 泄漏 / 配对未知 → 放行 UP，即使会话仍激活。
+        assert!(!decide(0x74, true, true, true, HOLD_LEAKED));
+        assert!(!decide(0x74, true, true, true, HOLD_NONE));
+        // 非 F5 的 UP 永不吞。
+        assert!(!decide(0x41, true, true, true, HOLD_SWALLOWED_ALL));
+    }
+
+    #[test]
+    fn leaked_hold_stays_leaked() {
+        assert_eq!(track_down(HOLD_SWALLOWED_ALL, true), HOLD_SWALLOWED_ALL);
+        assert_eq!(track_down(HOLD_SWALLOWED_ALL, false), HOLD_LEAKED);
+        assert_eq!(track_down(HOLD_LEAKED, true), HOLD_LEAKED);
+        assert_eq!(track_down(HOLD_NONE, false), HOLD_LEAKED);
+    }
+}

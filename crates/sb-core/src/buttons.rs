@@ -1,0 +1,192 @@
+//! 遥控器按键模型与 HID 报文解析。
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+static USAGE_MAP_CELL: OnceLock<HashMap<u16, RemoteButton>> = OnceLock::new();
+
+fn usage_map() -> &'static HashMap<u16, RemoteButton> {
+    USAGE_MAP_CELL.get_or_init(|| {
+        RemoteButton::ALL
+            .iter()
+            .map(|&b| (b.hid_usage(), b))
+            .collect()
+    })
+}
+
+/// 12 个可映射按键 + 语音键。`hid_usage` 为遥控器 HID 报文里的 usage 值
+/// （usage 数组报文，2 字节小端；语音键走键盘页 F5 单独处理）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteButton {
+    Power,
+    Up,
+    Left,
+    Ok,
+    Right,
+    Down,
+    Back,
+    VolumeUp,
+    Home,
+    VolumeDown,
+    Menu,
+    Tv,
+}
+
+impl RemoteButton {
+    pub const ALL: [RemoteButton; 12] = [
+        RemoteButton::Power,
+        RemoteButton::Up,
+        RemoteButton::Left,
+        RemoteButton::Ok,
+        RemoteButton::Right,
+        RemoteButton::Down,
+        RemoteButton::Back,
+        RemoteButton::VolumeUp,
+        RemoteButton::Home,
+        RemoteButton::VolumeDown,
+        RemoteButton::Menu,
+        RemoteButton::Tv,
+    ];
+
+    pub fn hid_usage(self) -> u16 {
+        match self {
+            RemoteButton::Power => 0x66,
+            RemoteButton::Up => 0x52,
+            RemoteButton::Left => 0x50,
+            RemoteButton::Ok => 0x28,
+            RemoteButton::Right => 0x4F,
+            RemoteButton::Down => 0x51,
+            RemoteButton::Back => 0xF1,
+            RemoteButton::VolumeUp => 0x80,
+            RemoteButton::Home => 0x4A,
+            RemoteButton::VolumeDown => 0x81,
+            RemoteButton::Menu => 0x65,
+            RemoteButton::Tv => 0x35,
+        }
+    }
+
+    pub fn from_hid_usage(usage: u16) -> Option<Self> {
+        usage_map().get(&usage).copied()
+    }
+
+    /// 支持双击 / 长按二级动作的按键（其余只有单击）。
+    pub fn supports_secondary(self) -> bool {
+        matches!(
+            self,
+            RemoteButton::Home | RemoteButton::Menu | RemoteButton::Ok | RemoteButton::Tv
+        )
+    }
+}
+
+/// 解析遥控器 usage 数组报文（report ID 1）。
+///
+/// 报文为 2 字节小端 usage 数组（部分固件首字节带 report ID，自动剥离）；
+/// 返回当前按下的 usage 集合，空集 = 全部释放。
+pub fn parse_usage_report(data: &[u8]) -> Option<Vec<u16>> {
+    let mut bytes = data;
+    if bytes.len() == 7 && bytes[0] == 1 {
+        bytes = &bytes[1..];
+    }
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut usages = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks(2) {
+        let usage = u16::from_le_bytes([pair[0], pair[1]]);
+        if usage != 0 {
+            usages.push(usage);
+        }
+    }
+    Some(usages)
+}
+
+/// 把两次报文的 usage 集合转成按键沿事件（按下 / 释放）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonEdge {
+    pub button: RemoteButton,
+    pub pressed: bool,
+}
+
+pub fn diff_usage_sets(
+    previous: &[u16],
+    current: &[u16],
+) -> Vec<ButtonEdge> {
+    let mut edges = Vec::new();
+    for &usage in current {
+        if !previous.contains(&usage) {
+            if let Some(button) = RemoteButton::from_hid_usage(usage) {
+                edges.push(ButtonEdge { button, pressed: true });
+            }
+        }
+    }
+    for &usage in previous {
+        if !current.contains(&usage) {
+            if let Some(button) = RemoteButton::from_hid_usage(usage) {
+                edges.push(ButtonEdge { button, pressed: false });
+            }
+        }
+    }
+    edges
+}
+
+/// 语音键：键盘页 usage 0x3E（F5）。Xiaomi VID 0x2717 / PID 0x32B8。
+pub struct VoiceKeyHid;
+
+impl VoiceKeyHid {
+    pub const KEYBOARD_USAGE: u16 = 0x3E;
+    pub const VENDOR_ID: u16 = 0x2717;
+    pub const PRODUCT_ID: u16 = 0x32B8;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_roundtrip_for_all_buttons() {
+        for button in RemoteButton::ALL {
+            assert_eq!(RemoteButton::from_hid_usage(button.hid_usage()), Some(button));
+        }
+    }
+
+    #[test]
+    fn parses_array_report_with_leading_report_id() {
+        let report = [0x01, 0x52, 0x00, 0x28, 0x00, 0x00, 0x00];
+        assert_eq!(parse_usage_report(&report), Some(vec![0x52, 0x28]));
+    }
+
+    #[test]
+    fn parses_bare_array_report() {
+        let report = [0xF1, 0x00];
+        assert_eq!(parse_usage_report(&report), Some(vec![0xF1]));
+    }
+
+    #[test]
+    fn rejects_odd_length() {
+        assert_eq!(parse_usage_report(&[0x52, 0x00, 0x28]), None);
+    }
+
+    #[test]
+    fn empty_report_means_all_released() {
+        assert_eq!(parse_usage_report(&[0x00, 0x00]), Some(vec![]));
+    }
+
+    #[test]
+    fn diff_detects_press_and_release() {
+        let prev = vec![0x52u16, 0x28];
+        let curr = vec![0x28u16, 0x51];
+        let edges = diff_usage_sets(&prev, &curr);
+        assert!(edges.contains(&ButtonEdge { button: RemoteButton::Up, pressed: false }));
+        assert!(edges.contains(&ButtonEdge { button: RemoteButton::Down, pressed: true }));
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn secondary_buttons_subset() {
+        assert!(RemoteButton::Home.supports_secondary());
+        assert!(RemoteButton::Ok.supports_secondary());
+        assert!(!RemoteButton::Up.supports_secondary());
+    }
+}
