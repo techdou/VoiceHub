@@ -127,7 +127,10 @@ onMounted(async () => {
       v-if="showOnboarding && settings"
       :settings="settings"
       @update-settings="persistSettings"
-      @finish="showOnboarding = false"
+      @finish="
+        showOnboarding = false;
+        page = 'simulator';
+      "
     />
   </div>
 </template>

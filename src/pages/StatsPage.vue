@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { formatDuration, useI18n } from "../i18n";
-import type { DailyUsage, UsageStatistics } from "../types";
+import type { DailyUsage, UiEvent, UsageStatistics } from "../types";
 
 const { t } = useI18n();
 const stats = ref<UsageStatistics | null>(null);
@@ -10,6 +11,11 @@ const range = ref<"today" | "week" | "recent7" | "all">("today");
 
 onMounted(async () => {
   stats.value = await api.getStatistics();
+  await listen<UiEvent>("bridge://event", (event) => {
+    if (event.payload.type === "VoiceState" && !event.payload.recording) {
+      api.getStatistics().then((next) => (stats.value = next));
+    }
+  });
 });
 
 const todayKey = computed(() => {
@@ -45,22 +51,19 @@ function aggregate(rangeKey: string): DailyUsage {
   const keys = new Set<string>();
   if (rangeKey === "today") {
     keys.add(todayKey.value);
-  } else {
-    const span = rangeKey === "week" ? 6 : 6;
-    for (let i = 0; i <= span; i++) {
-      const day = new Date(now);
-      day.setDate(now.getDate() - i);
-      keys.add(`${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`);
-    }
-  }
-  // 本周按周一起算。
-  if (rangeKey === "week") {
-    keys.clear();
+  } else if (rangeKey === "week") {
+    // 本周按周一起算。
     const monday = new Date(now);
     const offset = (monday.getDay() + 6) % 7;
     for (let i = 0; i <= offset; i++) {
       const day = new Date(monday);
       day.setDate(monday.getDate() - i);
+      keys.add(`${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`);
+    }
+  } else {
+    for (let i = 0; i <= 6; i++) {
+      const day = new Date(now);
+      day.setDate(now.getDate() - i);
       keys.add(`${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`);
     }
   }

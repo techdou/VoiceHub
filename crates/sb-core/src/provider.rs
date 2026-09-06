@@ -38,7 +38,7 @@ pub enum TriggerMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ProviderConfig {
     pub kind: ProviderKind,
     /// 自定义快捷键（kind == Custom 时生效）。

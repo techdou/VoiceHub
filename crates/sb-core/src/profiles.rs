@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::actions::ButtonAction;
 use crate::mapping::ButtonMapping;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ButtonProfile {
     pub id: String,
     pub name: String,

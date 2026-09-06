@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref, watchEffect } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { useI18n } from "../i18n";
-import type { AppSettings, AudioEndpoint, BleSnapshot, PairedRemote } from "../types";
+import type { AppSettings, AudioEndpoint, BleSnapshot, PairedRemote, UiEvent } from "../types";
 
 const props = defineProps<{
   settings: AppSettings | null;
@@ -95,6 +96,18 @@ onMounted(async () => {
   selectedRemoteId.value = props.settings?.pairedDeviceId ?? "";
 });
 
+const recording = ref(false);
+const voiceLevel = ref(0);
+
+onMounted(async () => {
+  await listen<UiEvent>("bridge://event", (event) => {
+    if (event.payload.type === "VoiceState") {
+      recording.value = event.payload.recording;
+      voiceLevel.value = event.payload.level;
+    }
+  });
+});
+
 const providerOptions = [
   { id: "we_type", hint: true },
   { id: "doubao" },
@@ -139,6 +152,13 @@ const providerOptions = [
           <button class="btn" v-else-if="settings.pairedDeviceId" @click="api.reconnectRemote()">
             {{ t("common.retry") }}
           </button>
+        </div>
+      </div>
+      <div v-if="recording" class="row" style="margin-top: 10px">
+        <span class="pulse-dot recording"></span>
+        <span style="font-size: 12px; color: var(--text-secondary)">语音中</span>
+        <div class="level-bar">
+          <div class="fill" :style="{ width: `${Math.min(100, voiceLevel * 140)}%` }"></div>
         </div>
       </div>
       <p v-if="bleSnapshot?.lastError" class="hint" style="margin-top: 8px; color: var(--fail)">
