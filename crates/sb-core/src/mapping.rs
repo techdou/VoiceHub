@@ -196,4 +196,20 @@ mod tests {
         m.set(RemoteButton::Menu, ButtonBinding::default());
         assert!(!m.bindings.contains_key(&ButtonMapping::key(RemoteButton::Menu)));
     }
+
+    /// 回归：`key()` 必须与 serde 序列化名一致（统计按键分布、回执、
+    /// 前端 buttonNames 表共用这套键；漂移会导致统计页显示不出按键名）。
+    #[test]
+    fn keys_match_serde_names() {
+        for button in RemoteButton::ALL {
+            let key = ButtonMapping::key(button);
+            assert_eq!(
+                key,
+                serde_json::to_value(button).unwrap().as_str().unwrap(),
+                "key() 与 serde 名漂移：{key}"
+            );
+            assert!(key.contains('_') == matches!(button, RemoteButton::VolumeUp | RemoteButton::VolumeDown),
+                "非音量键应是无下划线单词：{key}");
+        }
+    }
 }

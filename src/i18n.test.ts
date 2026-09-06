@@ -15,10 +15,9 @@ describe("i18n dictionary integrity", () => {
     }
   });
 
-  it("falls back to zh for missing keys", () => {
+  it("falls back to the key itself for unknown keys", () => {
     const { t } = useI18n();
     setLocale("en");
-    // @ts-expect-error 故意传未知键验证兜底
     expect(t("__nonexistent__" as I18nKey)).toBe("__nonexistent__");
   });
 });

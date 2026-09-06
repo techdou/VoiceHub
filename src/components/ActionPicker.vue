@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "../i18n";
+import { actionLabel } from "../actionLabel";
 import type { ButtonAction } from "../types";
 
 const props = defineProps<{
@@ -176,7 +177,7 @@ const isCurrent = computed(
           :key="preset.id"
           @click="emit('pick', preset.action)"
         >
-          <span>{{ preset.action.kind === "shortcut" ? preset.action.label : "" }}</span>
+          <span>{{ actionLabel(preset.action, t) }}</span>
           <span v-if="isCurrent(preset.action)">✓</span>
         </button>
       </div>
@@ -189,7 +190,7 @@ const isCurrent = computed(
           :key="preset.id"
           @click="emit('pick', preset.action)"
         >
-          <span>{{ preset.action.kind === "shortcut" ? preset.action.label : "" }}</span>
+          <span>{{ actionLabel(preset.action, t) }}</span>
           <span v-if="isCurrent(preset.action)">✓</span>
         </button>
       </div>

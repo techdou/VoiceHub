@@ -181,6 +181,8 @@ struct WorkerContext {
     inbox: Receiver<InboxMessage>,
     inbox_sender: Sender<InboxMessage>,
     generation: u64,
+    /// 当前增益（新会话建立时应用，防重连后丢失）。
+    gain_db: f64,
 }
 
 enum InboxMessage {
@@ -195,6 +197,8 @@ struct Session {
     device: BluetoothLEDevice,
     service: GattDeviceService,
     transmit: GattCharacteristic,
+    audio: GattCharacteristic,
+    control: GattCharacteristic,
     capabilities: AtvvCapabilities,
     decoder: ImaAdpcmCodec,
     accumulator: FrameAccumulator,
@@ -202,7 +206,9 @@ struct Session {
     streaming: bool,
     microphone_opened: bool,
     session_id: u8,
-    tokens: Vec<i64>,
+    audio_token: i64,
+    control_token: i64,
+    connection_token: i64,
     gain_db: f64,
 }
 
@@ -229,9 +235,12 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        for &token in &self.tokens {
-            let _ = self.transmit.RemoveValueChanged(token);
-        }
+        // 各自注销：audio/control 是 ValueChanged，connection 是
+        // ConnectionStatusChanged；CCCD 关闭在物理断连后注定失败，
+        // 尽力而为（RemoveXxx 本地句柄必清）。
+        let _ = self.audio.RemoveValueChanged(self.audio_token);
+        let _ = self.control.RemoveValueChanged(self.control_token);
+        let _ = self.device.RemoveConnectionStatusChanged(self.connection_token);
         let _ = self.service.Close();
         let _ = self.device.Close();
     }
@@ -275,6 +284,7 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
         inbox,
         inbox_sender,
         generation: 0,
+        gain_db: 0.0,
     };
 
     while ctx.should_run {
@@ -317,8 +327,10 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
                     }
                 }
                 Command::SetGain { gain_db } => {
+                    let clamped = gain_db.clamp(-24.0, 24.0);
+                    ctx.gain_db = clamped;
                     if let Some(session) = ctx.session.as_mut() {
-                        session.gain_db = gain_db.clamp(-24.0, 24.0);
+                        session.gain_db = clamped;
                     }
                 }
                 Command::ListPaired { reply } => {
@@ -386,6 +398,9 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
                 }
             }
         }
+
+        // 节拍：命令/通知均非阻塞收取，必须让出 CPU。
+        std::thread::sleep(Duration::from_millis(10));
     }
     close_session(&mut ctx);
 }
@@ -424,7 +439,7 @@ fn attempt_connect(ctx: &mut WorkerContext, device_id: &str) {
         s.last_error = None;
     });
 
-    match connect_session(device_id, ctx.inbox_sender.clone(), generation) {
+    match connect_session(device_id, ctx.inbox_sender.clone(), generation, ctx.gain_db) {
         Ok(session) => {
             let name = session.name.clone();
             let model = session.model;
@@ -467,6 +482,7 @@ fn connect_session(
     device_id: &str,
     inbox: Sender<InboxMessage>,
     generation: u64,
+    gain_db: f64,
 ) -> windows::core::Result<Session> {
     let device = block_on(BluetoothLEDevice::FromIdAsync(&HSTRING::from(device_id))?.into_future())?;
     let name = device.Name()?.to_string();
@@ -482,10 +498,9 @@ fn connect_session(
     let audio = find_characteristic(&service, &AtvvUuids::AUDIO)?;
     let control = find_characteristic(&service, &AtvvUuids::CONTROL)?;
 
-    let mut tokens = Vec::new();
-    // 订阅 audio + control。
-    tokens.push(subscribe(&audio, inbox.clone(), generation, false)?);
-    tokens.push(subscribe(&control, inbox.clone(), generation, true)?);
+    // 订阅 audio + control（token 分别保存，Drop 时各自注销）。
+    let audio_token = subscribe(&audio, inbox.clone(), generation, false)?;
+    let control_token = subscribe(&control, inbox.clone(), generation, true)?;
 
     // 连接状态监视。
     let status_sender = inbox.clone();
@@ -502,7 +517,7 @@ fn connect_session(
         }
         Ok(())
     });
-    tokens.push(device.ConnectionStatusChanged(&handler)?);
+    let connection_token = device.ConnectionStatusChanged(&handler)?;
 
     // 默认能力（v1 / 16k / 120 帧长）：真正的能力在控制通知里刷新。
     let mut session = Session {
@@ -511,6 +526,8 @@ fn connect_session(
         device,
         service,
         transmit,
+        audio,
+        control,
         capabilities: default_capabilities(),
         decoder: ImaAdpcmCodec::new(),
         accumulator: FrameAccumulator::new(),
@@ -518,12 +535,15 @@ fn connect_session(
         streaming: false,
         microphone_opened: false,
         session_id: 0,
-        tokens,
+        audio_token,
+        control_token,
+        connection_token,
         gain_db: 0.0,
     };
     if session.model.adpcm_low_nibble_first() {
         session.decoder.set_low_nibble_first(true);
     }
+    session.gain_db = gain_db.clamp(-24.0, 24.0);
     session.write(&AtvvCommand::GetCapabilitiesV10.encode().expect("always encodable"))?;
     Ok(session)
 }

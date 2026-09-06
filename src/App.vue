@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef } from "vue";
+import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
@@ -44,6 +44,29 @@ async function persistSettings(next: AppSettings) {
   saveTick.value++;
   await api.saveSettings(next);
 }
+
+// 主题即时生效：system → 移除标记；light/dark → 硬控。
+watch(
+  () => settings.value?.theme,
+  (theme) => {
+    if (!theme) return;
+    if (theme === "system") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+  },
+  { immediate: true },
+);
+
+// 语言即时生效。
+watch(
+  () => settings.value?.language,
+  (language) => {
+    if (language) setLocale(resolveLocale(language, navigator.language || "en-US"));
+  },
+  { immediate: true },
+);
 
 async function refreshBle() {
   bleSnapshot.value = await api.getBleSnapshot();

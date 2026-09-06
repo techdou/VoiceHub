@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watchEffect } from "vue";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { useI18n } from "../i18n";
@@ -51,9 +51,30 @@ function pickProvider(kind: AppSettings["provider"]["kind"]) {
   });
 }
 
-function setGain(value: number) {
+// 拖动只改草稿值（不写盘），松手 @change 才保存。
+const gainDraft = ref(0);
+watchEffect(() => {
+  gainDraft.value = props.settings?.gainDb ?? 0;
+});
+
+function commitGain() {
   if (!props.settings) return;
-  emit("update-settings", { ...props.settings, gainDb: value });
+  emit("update-settings", { ...props.settings, gainDb: gainDraft.value });
+}
+
+function setLanguage(language: AppSettings["language"]) {
+  if (!props.settings) return;
+  emit("update-settings", { ...props.settings, language });
+}
+
+function setTheme(theme: AppSettings["theme"]) {
+  if (!props.settings) return;
+  emit("update-settings", { ...props.settings, theme });
+}
+
+function setAutostart(enabled: boolean) {
+  if (!props.settings) return;
+  emit("update-settings", { ...props.settings, launchAtLogin: enabled });
 }
 
 function setCustomMode(mode: "toggle" | "hold") {
@@ -227,11 +248,42 @@ const providerOptions = [
           min="-24"
           max="24"
           step="1"
-          :value="settings.gainDb"
-          @input="setGain(Number(($event.target as HTMLInputElement).value))"
+          v-model.number="gainDraft"
+          @change="commitGain"
         />
         <span>+24</span>
-        <strong style="min-width: 48px; text-align: right">{{ settings.gainDb.toFixed(0) }} dB</strong>
+        <strong style="min-width: 48px; text-align: right">{{ gainDraft.toFixed(0) }} dB</strong>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>{{ t("settings.general") }}</h3>
+      <div class="setting-row">
+        <div class="label">{{ t("settings.language") }}</div>
+        <select :value="settings.language" @change="setLanguage(($event.target as HTMLSelectElement).value as AppSettings['language'])">
+          <option value="system">{{ t("lang.system") }}</option>
+          <option value="zh_cn">{{ t("lang.zh") }}</option>
+          <option value="english">{{ t("lang.en") }}</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div class="label">{{ t("settings.theme") }}</div>
+        <select :value="settings.theme" @change="setTheme(($event.target as HTMLSelectElement).value as AppSettings['theme'])">
+          <option value="system">{{ t("theme.system") }}</option>
+          <option value="light">{{ t("theme.light") }}</option>
+          <option value="dark">{{ t("theme.dark") }}</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="label">{{ t("settings.autostart") }}</div>
+          <div class="desc">{{ t("settings.autostart.hint") }}</div>
+        </div>
+        <button
+          class="switch"
+          :class="{ on: settings.launchAtLogin }"
+          @click="setAutostart(!settings.launchAtLogin)"
+        ></button>
       </div>
     </section>
   </div>

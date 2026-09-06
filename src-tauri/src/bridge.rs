@@ -176,7 +176,25 @@ impl Bridge {
                 inner.settings.onboarding_complete,
             )
         };
-        if !endpoint.is_empty() {
+        if endpoint.is_empty() {
+            // 未配置过端点：自动挑虚拟声卡候选并写回设置（省一次手动下拉）。
+            if let Some(candidate) = bridge
+                .audio
+                .list_endpoints()
+                .unwrap_or_default()
+                .iter()
+                .find(|e| e.is_virtual_cable_candidate)
+            {
+                let name = candidate.name.clone();
+                let _ = bridge.audio.select_endpoint(candidate.id.clone());
+                let mut inner = lock(&bridge.inner);
+                inner.settings.audio_endpoint_name = name.clone();
+                let settings = inner.settings.clone();
+                drop(inner);
+                let _ = bridge.store.save_settings(&settings);
+                bridge.emit_ui(UiEvent::AudioEndpointChanged { name });
+            }
+        } else {
             bridge.restore_endpoint_by_name(&endpoint);
         }
         if let Some(device_id) = device_id {
@@ -184,6 +202,9 @@ impl Bridge {
                 bridge.ble.connect(device_id);
             }
         }
+        // 启动时按设置同步一次开机自启。
+        let autostart_enabled = lock(&bridge.inner).settings.launch_at_login;
+        bridge.sync_autostart(autostart_enabled);
         bridge
     }
 
@@ -239,7 +260,7 @@ impl Bridge {
                         if edge.pressed {
                             inner.statistics.apply(
                                 UsageEvent::ButtonPress {
-                                    button_id: format!("{:?}", edge.button).to_lowercase(),
+                                    button_id: sb_core::mapping::ButtonMapping::key(edge.button),
                                 },
                                 chrono::Local::now(),
                             );
@@ -281,7 +302,7 @@ impl Bridge {
             Gesture::Repeat => "连发",
         };
         self.emit_ui(UiEvent::ActionReceipt {
-            button: format!("{button:?}"),
+            button: sb_core::mapping::ButtonMapping::key(button),
             gesture: gesture_label.to_string(),
             action: action_label(&action),
             ok,
@@ -431,14 +452,33 @@ impl Bridge {
 
     pub fn apply_settings(self: &Arc<Self>, settings: AppSettings) {
         let audio_changed;
+        let autostart_changed;
         {
             let mut inner = lock(&self.inner);
             audio_changed = settings.audio_endpoint_name != inner.settings.audio_endpoint_name;
+            autostart_changed = settings.launch_at_login != inner.settings.launch_at_login;
             inner.settings = settings.clone();
         }
         let _ = self.store.save_settings(&settings);
         if audio_changed {
             self.restore_endpoint_by_name(&settings.audio_endpoint_name);
+        }
+        if autostart_changed {
+            self.sync_autostart(settings.launch_at_login);
+        }
+    }
+
+    /// 开机自启与插件状态同步（失败只记日志，不阻塞设置保存）。
+    fn sync_autostart(self: &Arc<Self>, enable: bool) {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = self.app.autolaunch();
+        let result = if enable {
+            autolaunch.enable()
+        } else {
+            autolaunch.disable()
+        };
+        if let Err(error) = result {
+            log::warn!("autostart sync failed (enable={enable}): {error}");
         }
     }
 

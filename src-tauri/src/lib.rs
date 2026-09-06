@@ -35,7 +35,7 @@ fn init_logging(app: &tauri::AppHandle) -> Option<()> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        // single-instance 必须第一个注册才能拦截二次启动。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动：唤起已有主窗口。
             if let Some(window) = app.get_webview_window("main") {
@@ -43,6 +43,7 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -124,6 +125,7 @@ pub fn run() {
             commands::bind_process_to_profile,
             commands::unbind_process,
             commands::get_foreground_process,
+            commands::reset_profile_to_default,
             commands::simulate_button,
             commands::simulate_voice,
             commands::run_diagnostics,

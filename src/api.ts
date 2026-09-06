@@ -28,6 +28,8 @@ export const api = {
     invoke<void>("bind_process_to_profile", { process, profileId }),
   unbindProcess: (process: string) => invoke<void>("unbind_process", { process }),
   getForegroundProcess: () => invoke<string | null>("get_foreground_process"),
+  resetProfileToDefault: (profileId: string) =>
+    invoke<void>("reset_profile_to_default", { profileId }),
   simulateButton: (button: string, gesture: string) =>
     invoke<void>("simulate_button", { button, gesture }),
   simulateVoice: (durationMs?: number) => invoke<void>("simulate_voice", { durationMs }),

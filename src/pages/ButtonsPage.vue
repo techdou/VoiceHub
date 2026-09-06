@@ -2,9 +2,10 @@
 import { computed, ref } from "vue";
 import { api } from "../api";
 import { useI18n } from "../i18n";
-import type { AppSettings, ButtonAction, RemoteButtonId } from "../types";
+import type { AppSettings, ButtonAction, ButtonMapping, RemoteButtonId } from "../types";
 import RemoteCanvas from "../components/RemoteCanvas.vue";
 import ActionPicker from "../components/ActionPicker.vue";
+import { actionLabel as sharedActionLabel } from "../actionLabel";
 
 const props = defineProps<{
   settings: AppSettings | null;
@@ -39,25 +40,8 @@ function bindingFor(button: RemoteButtonId) {
 }
 
 function actionLabel(action: ButtonAction): string {
-  switch (action.kind) {
-    case "disabled": return t("buttons.action.disabled");
-    case "shortcut": return action.label;
-    case "media_key": return { play_pause: "播放/暂停", stop: "停止", next: "下一曲", previous: "上一曲", mute: "静音" }[action.code];
-    case "volume_up": return "音量+";
-    case "volume_down": return "音量−";
-    case "volume_mute": return "静音";
-    case "open_app": return `打开 ${action.label}`;
-    case "open_url": return `打开 ${action.url}`;
-    case "screenshot": return action.region ? "区域截图" : "全屏截图";
-    case "show_desktop": return "显示桌面";
-    case "task_view": return "任务视图";
-    case "app_switcher": return "切换应用";
-    case "click_confirm": return "点击确认";
-    case "open_settings": return "打开声桥";
-    case "custom": return action.shortcut.label;
-  }
+  return sharedActionLabel(action, t);
 }
-
 function mutateProfiles(mutator: (profiles: AppSettings["profiles"]) => void) {
   if (!props.settings) return;
   const profiles = JSON.parse(JSON.stringify(props.settings.profiles)) as AppSettings["profiles"];
@@ -159,6 +143,63 @@ async function probeForeground() {
 const smartBindings = computed(() =>
   Object.entries(props.settings?.profiles.rules.processBindings ?? {}),
 );
+
+// 恢复默认映射（Rust 侧出厂映射）。
+async function resetProfile() {
+  if (!activeProfileId.value) return;
+  await api.resetProfileToDefault(activeProfileId.value);
+  emit("update-settings", await api.getSettings());
+}
+
+// 导入导出（剪贴板 JSON）。
+const importOpen = ref(false);
+const importText = ref("");
+const importError = ref("");
+
+async function exportProfile() {
+  if (!activeProfile.value) return;
+  const payload = JSON.stringify(
+    { name: activeProfile.value.name, mapping: activeProfile.value.mapping },
+    null,
+    2,
+  );
+  try {
+    await navigator.clipboard.writeText(payload);
+    alert(t("buttons.profile.exported"));
+  } catch {
+    // 剪贴板不可用时退回导入框展示，用户手抄。
+    importText.value = payload;
+    importOpen.value = true;
+  }
+}
+
+function openImport() {
+  importText.value = "";
+  importError.value = "";
+  importOpen.value = true;
+}
+
+async function applyImport() {
+  if (!props.settings) return;
+  try {
+    const parsed = JSON.parse(importText.value) as {
+      name?: string;
+      mapping: ButtonMapping;
+    };
+    if (!parsed.mapping || typeof parsed.mapping !== "object") {
+      throw new Error("missing mapping");
+    }
+    mutateProfiles((profiles) => {
+      const profile = profiles.profiles.find((p) => p.id === activeProfileId.value);
+      if (!profile) return;
+      profile.mapping = parsed.mapping;
+      if (parsed.name) profile.name = parsed.name;
+    });
+    importOpen.value = false;
+  } catch {
+    importError.value = t("buttons.profile.import.invalid");
+  }
+}
 </script>
 
 <template>
@@ -197,6 +238,9 @@ const smartBindings = computed(() =>
         <input v-model="newProfileName" type="text" :placeholder="t('buttons.profile.new')" style="width: 160px" @keydown.enter="addProfile" />
         <button class="btn" @click="addProfile">{{ t("common.add") }}</button>
         <span class="spacer"></span>
+        <button class="btn" @click="resetProfile">{{ t("buttons.profile.reset") }}</button>
+        <button class="btn" @click="exportProfile">{{ t("buttons.profile.export") }}</button>
+        <button class="btn" @click="openImport">{{ t("buttons.profile.import") }}</button>
         <button
           v-if="settings.profiles.profiles.length > 1"
           class="btn danger"
@@ -271,6 +315,32 @@ const smartBindings = computed(() =>
         </template>
         <div v-else class="empty">{{ t("buttons.canvas.hint") }}</div>
       </section>
+    </div>
+
+    <div v-if="importOpen" class="action-picker-overlay" @click.self="importOpen = false">
+      <div class="action-picker">
+        <header style="padding: 16px 18px 8px">
+          <div class="row between">
+            <h3>{{ t("buttons.profile.import") }}</h3>
+            <button class="btn subtle" @click="importOpen = false">✕</button>
+          </div>
+          <p class="hint">{{ t("buttons.profile.import.hint") }}</p>
+        </header>
+        <div style="padding: 0 18px 18px">
+          <textarea
+            v-model="importText"
+            rows="10"
+            style="width: 100%; resize: vertical; font-family: Consolas, monospace; font-size: 12px"
+            placeholder='{"name":"...","mapping":{...}}'
+          ></textarea>
+          <div v-if="importError" style="color: var(--fail); font-size: 12px; margin-top: 6px">
+            {{ importError }}
+          </div>
+          <div class="row" style="margin-top: 10px; justify-content: flex-end">
+            <button class="btn primary" @click="applyImport">{{ t("common.confirm") }}</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <ActionPicker

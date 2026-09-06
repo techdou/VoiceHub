@@ -118,6 +118,23 @@ pub fn get_foreground_process() -> Option<String> {
     sb_windows::foreground::foreground_process_name()
 }
 
+/// 把某方案重置为出厂默认映射。
+#[tauri::command]
+pub fn reset_profile_to_default(bridge: State<'_, Arc<Bridge>>, profile_id: String) -> Result<(), String> {
+    let mut settings = bridge.settings();
+    let Some(profile) = settings
+        .profiles
+        .profiles
+        .iter_mut()
+        .find(|p| p.id == profile_id)
+    else {
+        return Err(format!("方案不存在：{profile_id}"));
+    };
+    profile.mapping = sb_core::mapping::default_mapping();
+    bridge.apply_settings(settings);
+    Ok(())
+}
+
 // ---------- 模拟遥控器 ----------
 
 #[tauri::command]
