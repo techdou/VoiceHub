@@ -1,17 +1,94 @@
-//! ShellExecute 打开应用/网页 + 鼠标点击注入。
+//! 打开应用/网页 + 已运行实例切换 + 鼠标点击注入。
 
-use windows::core::PCWSTR;
+use windows::core::{BOOL, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{HWND, LPARAM};
+use windows::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
     KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
+    ShowWindow, SW_RESTORE, SW_SHOWNORMAL,
+};
 
 use crate::Result;
 
-/// 打开可执行 / URI / 文档（系统默认处理器）。
+struct EnumState {
+    target_lower: String,
+    found: Option<HWND>,
+}
+
+unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let state = &mut *(lparam.0 as *mut EnumState);
+    if !IsWindowVisible(hwnd).as_bool() {
+        return BOOL(1);
+    }
+    let mut pid = 0u32;
+    let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return BOOL(1);
+    }
+    if let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+        let mut buffer = [0u16; 1024];
+        let mut len = buffer.len() as u32;
+        if QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok()
+        {
+            let path = String::from_utf16_lossy(&buffer[..len as usize]).to_lowercase();
+            if path.ends_with(&state.target_lower) {
+                state.found = Some(hwnd);
+                return BOOL(0); // 停止枚举
+            }
+        }
+    }
+    BOOL(1)
+}
+
+/// 目标已在运行 → 前置其主窗口；返回是否切换成功。
+fn focus_running_instance(target: &str) -> bool {
+    // target 取可执行短名（小写）匹配路径尾部。
+    let exe_name = target.rsplit(['\\', '/']).next().unwrap_or(target).to_lowercase();
+    if exe_name.is_empty() {
+        return false;
+    }
+    let mut state = EnumState {
+        target_lower: exe_name,
+        found: None,
+    };
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_proc),
+            LPARAM(&mut state as *mut EnumState as isize),
+        );
+    }
+    if let Some(hwnd) = state.found {
+        unsafe {
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            SetForegroundWindow(hwnd).as_bool()
+        }
+    } else {
+        false
+    }
+}
+
+/// 打开可执行 / URI / 文档；exe 目标优先切换已运行实例。
 pub fn open_target(target: &str) -> Result<()> {
+    let looks_like_exe = target.to_lowercase().ends_with(".exe");
+    if looks_like_exe && focus_running_instance(target) {
+        return Ok(());
+    }
     let wide: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
     let verb: Vec<u16> = "open\0".encode_utf16().collect();
     let result = unsafe {

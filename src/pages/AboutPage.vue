@@ -25,7 +25,7 @@ const references = [
           {{ t("about.version") }} {{ version }} · GPL-3.0
         </div>
       </div>
-      <span class="logo-dot" style="width: 40px; height: 40px; border-radius: 12px; font-size: 18px; display: grid; place-items: center; background: linear-gradient(145deg, #2a3240, #1a2029); color: var(--accent); font-weight: 800">声</span>
+      <img src="/app-icon.png" width="44" height="44" alt="SoundBridge" style="border-radius: 11px" />
     </section>
 
     <section class="card">
