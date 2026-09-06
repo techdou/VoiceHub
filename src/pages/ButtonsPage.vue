@@ -3,7 +3,6 @@ import { computed, ref } from "vue";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import type { AppSettings, ButtonAction, ButtonMapping, RemoteButtonId } from "../types";
-import RemoteCanvas from "../components/RemoteCanvas.vue";
 import ActionPicker from "../components/ActionPicker.vue";
 import MappingCanvas from "../components/MappingCanvas.vue";
 import { actionLabel as sharedActionLabel } from "../actionLabel";
@@ -25,12 +24,6 @@ const newProfileName = ref("");
 const foregroundProcess = ref<string | null>(null);
 
 const SECONDARY_BUTTONS = new Set(["home", "menu", "ok", "tv"]);
-
-const buttonNames: Record<RemoteButtonId, string> = {
-  power: "电源", up: "上", left: "左", ok: "OK", right: "右", down: "下",
-  back: "返回", volume_up: "音量+", home: "主页", volume_down: "音量−",
-  menu: "菜单", tv: "TV",
-};
 
 const activeProfileId = computed(() => props.settings?.profiles.selectedProfileId ?? "");
 
@@ -206,26 +199,24 @@ async function applyImport() {
 
 <template>
   <div class="page" v-if="settings">
-    <h1>{{ t("buttons.title") }}</h1>
-    <p class="page-sub">{{ t("buttons.canvas.hint") }}</p>
-
-    <section class="card">
-      <div class="setting-row" style="padding-top: 0">
-        <div>
-          <div class="label">{{ t("buttons.mapping.toggle") }}</div>
-          <div class="desc">{{ t("buttons.mapping.hint") }}</div>
-        </div>
+    <header class="page-head">
+      <div>
+        <h1>{{ t("buttons.title") }}</h1>
+        <p class="page-sub">{{ t("buttons.canvas.hint") }}</p>
+      </div>
+      <div class="head-switch">
+        <span class="head-switch-label">{{ t("buttons.mapping.toggle") }}</span>
         <button
           class="switch"
           :class="{ on: settings.buttonMappingEnabled }"
+          :aria-label="t('buttons.mapping.toggle')"
           @click="toggleMapping(!settings.buttonMappingEnabled)"
         ></button>
       </div>
-    </section>
+    </header>
 
-    <section class="card">
-      <h3>{{ t("buttons.profile") }}</h3>
-      <div class="row" style="margin-bottom: 10px">
+    <div class="toolbar card">
+      <div class="row">
         <button
           v-for="profile in settings.profiles.profiles"
           :key="profile.id"
@@ -235,56 +226,32 @@ async function applyImport() {
         >
           {{ profile.name }}
         </button>
-      </div>
-      <div class="row">
-        <input v-model="newProfileName" type="text" :placeholder="t('buttons.profile.new')" style="width: 160px" @keydown.enter="addProfile" />
+        <input v-model="newProfileName" type="text" :placeholder="t('buttons.profile.new')" style="width: 120px" @keydown.enter="addProfile" />
         <button class="btn" @click="addProfile">{{ t("common.add") }}</button>
-        <span class="spacer"></span>
-        <button class="btn" @click="resetProfile">{{ t("buttons.profile.reset") }}</button>
-        <button class="btn" @click="exportProfile">{{ t("buttons.profile.export") }}</button>
-        <button class="btn" @click="openImport">{{ t("buttons.profile.import") }}</button>
-        <button
-          v-if="settings.profiles.profiles.length > 1"
-          class="btn danger"
-          @click="removeProfile(activeProfileId)"
-        >
-          {{ t("common.delete") }}
-        </button>
+        <span class="toolbar-actions">
+          <button class="btn subtle" @click="resetProfile">{{ t("buttons.profile.reset") }}</button>
+          <button class="btn subtle" @click="exportProfile">{{ t("buttons.profile.export") }}</button>
+          <button class="btn subtle" @click="openImport">{{ t("buttons.profile.import") }}</button>
+          <button
+            v-if="settings.profiles.profiles.length > 1"
+            class="btn subtle danger"
+            @click="removeProfile(activeProfileId)"
+          >
+            {{ t("common.delete") }}
+          </button>
+        </span>
       </div>
-    </section>
-
-    <section class="card">
-      <div class="setting-row" style="padding-top: 0">
-        <div>
-          <div class="label">{{ t("buttons.smart") }}</div>
-          <div class="desc">{{ t("buttons.smart.hint") }}</div>
-        </div>
+      <div class="toolbar-smart">
+        <span class="toolbar-smart-label">{{ t("buttons.smart") }}</span>
         <button
           class="switch"
           :class="{ on: settings.profiles.smartEnabled }"
+          :aria-label="t('buttons.smart')"
           @click="toggleSmart(!settings.profiles.smartEnabled)"
         ></button>
+        <span class="toolbar-smart-hint">{{ t("buttons.smart.hint") }}</span>
       </div>
-      <template v-if="settings.profiles.smartEnabled">
-        <div class="row" style="margin: 8px 0">
-          <button class="btn" @click="probeForeground">
-            {{ t("buttons.smart.bind_current") }}
-          </button>
-          <span v-if="foregroundProcess" class="badge">{{ foregroundProcess }} → {{ activeProfile?.name }}</span>
-        </div>
-        <div v-if="smartBindings.length" class="history-list">
-          <div v-for="[process, profileId] in smartBindings" :key="process" class="history-item">
-            <div>
-              <strong>{{ process }}</strong>
-              <span style="color: var(--text-secondary)">
-                → {{ settings.profiles.profiles.find((p) => p.id === profileId)?.name ?? "?" }}
-              </span>
-            </div>
-            <button class="btn subtle" @click="unbindApp(process)">✕</button>
-          </div>
-        </div>
-      </template>
-    </section>
+    </div>
 
     <section v-if="activeProfile" class="card">
       <MappingCanvas
@@ -298,6 +265,27 @@ async function applyImport() {
       />
     </section>
 
+    <section v-if="settings.profiles.smartEnabled" class="card">
+      <h3>{{ t("buttons.smart.bindings") }}</h3>
+      <div class="row" style="margin: 8px 0 10px">
+        <button class="btn" @click="probeForeground">
+          {{ t("buttons.smart.bind_current") }}
+        </button>
+        <span v-if="foregroundProcess" class="badge">{{ foregroundProcess }} → {{ activeProfile?.name }}</span>
+      </div>
+      <div v-if="smartBindings.length" class="history-list">
+        <div v-for="[process, profileId] in smartBindings" :key="process" class="history-item">
+          <div>
+            <strong>{{ process }}</strong>
+            <span style="color: var(--text-secondary)">
+              → {{ settings.profiles.profiles.find((p) => p.id === profileId)?.name ?? "?" }}
+            </span>
+          </div>
+          <button class="btn subtle" @click="unbindApp(process)">✕</button>
+        </div>
+      </div>
+    </section>
+
     <ActionPicker
       v-if="showPicker && selectedButton"
       :button-id="selectedButton"
@@ -306,8 +294,119 @@ async function applyImport() {
       @pick="applyAction"
       @close="showPicker = false"
     />
+
+    <div v-if="importOpen" class="action-picker-overlay" @click.self="importOpen = false">
+      <div class="action-picker import-dialog">
+        <header>
+          <h3>{{ t("buttons.profile.import") }}</h3>
+        </header>
+        <div class="import-body">
+          <p class="dialog-hint">{{ t("buttons.profile.import.hint") }}</p>
+          <textarea
+            v-model="importText"
+            class="import-box"
+            rows="8"
+            spellcheck="false"
+          ></textarea>
+          <p v-if="importError" class="import-error">{{ importError }}</p>
+          <div class="row" style="justify-content: flex-end; margin-top: 10px">
+            <button class="btn" @click="importOpen = false">{{ t("common.cancel") }}</button>
+            <button class="btn primary" @click="applyImport">{{ t("buttons.profile.import") }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   <div v-else class="page">
     <p class="empty">{{ t("common.loading") }}</p>
   </div>
 </template>
+
+<style scoped>
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-head .page-sub {
+  margin-bottom: 14px;
+}
+
+.head-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 3px;
+  flex-shrink: 0;
+}
+
+.head-switch-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.toolbar {
+  padding: 12px 14px;
+}
+
+.toolbar-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
+
+.toolbar-smart {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.toolbar-smart-label {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.toolbar-smart-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.import-dialog {
+  width: min(480px, 92vw);
+}
+
+.import-body {
+  padding: 0 18px 16px;
+}
+
+.dialog-hint {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+}
+
+.import-box {
+  width: 100%;
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--control);
+  color: var(--text);
+  resize: vertical;
+  user-select: text;
+}
+
+.import-error {
+  color: var(--fail);
+  font-size: 12.5px;
+  margin: 6px 0 0;
+}
+</style>

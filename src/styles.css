@@ -315,6 +315,7 @@ input[type="range"] {
 }
 
 .status-dot.ok { background: var(--ok); }
+.status-dot.off { background: rgba(128, 128, 128, 0.4); }
 .status-dot.warn { background: var(--warn); }
 .status-dot.fail { background: var(--fail); }
 .status-dot.info { background: var(--info); }
@@ -351,80 +352,6 @@ input[type="range"] {
   background: var(--accent);
   border-radius: 3px;
   transition: width 0.06s linear;
-}
-
-/* ---------- 遥控器画布 ---------- */
-.remote-canvas {
-  display: grid;
-  place-items: center;
-  padding: 10px 0 4px;
-}
-
-.remote-body {
-  width: 190px;
-  border-radius: 26px;
-  background: linear-gradient(170deg, #2e3542, #20242d);
-  padding: 14px 12px 18px;
-  display: grid;
-  gap: 10px;
-  box-shadow: var(--shadow);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.remote-grid-3 {
-  display: grid;
-  grid-template-columns: 44px 52px 44px;
-  grid-template-rows: repeat(3, 38px);
-  gap: 8px;
-  justify-content: center;
-}
-
-.remote-grid-2 {
-  display: grid;
-  grid-template-columns: 44px 52px 44px;
-  gap: 8px;
-  justify-content: center;
-}
-
-.remote-key {
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  background: rgba(255, 255, 255, 0.06);
-  color: #d7dbe2;
-  font-size: 11px;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: background 0.12s, transform 0.06s;
-  line-height: 1.15;
-  text-align: center;
-  padding: 0;
-}
-
-.remote-key:hover { background: rgba(255, 255, 255, 0.14); }
-.remote-key:active { transform: scale(0.94); }
-
-.remote-key.selected {
-  background: var(--accent);
-  border-color: transparent;
-  color: #fff;
-  font-weight: 700;
-}
-
-.remote-key.pill { border-radius: 999px; height: 30px; }
-.remote-key.wide { border-radius: 999px; height: 30px; }
-
-.remote-key.voice {
-  background: rgba(232, 163, 61, 0.18);
-  border-color: rgba(232, 163, 61, 0.5);
-  color: var(--accent);
-  cursor: default;
-}
-
-.remote-key.voice.active {
-  background: var(--accent);
-  color: #fff;
-  animation: pulse 1s infinite;
 }
 
 /* ---------- 动作选择器 ---------- */

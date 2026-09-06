@@ -1,6 +1,7 @@
-/// 连线画布几何：设计尺寸 740×650，遥控器 202×410 居中，
-/// 锚点坐标取自参考实现按 RC003 真机照片逐键标定的 UnitPoint
-/// （左电源/右语音、中部圆盘、左列 返回/主页/菜单、右列 音量±/TV）。
+/// 连线画布几何：设计尺寸 780×700，遥控器 152×620 居中（1:4.065 与
+/// RC003 实物照片一致）。锚点坐标按 RC003 实物照片逐键重新标定
+/// （黑色键面连通域分析：顶部 左电源/右语音、中部圆盘、左列 返回/主页/菜单、
+/// 右列 音量±/TV），与 src/assets/rc003-remote.webp 像素级对齐。
 
 export type Side = "left" | "right";
 export type CanvasButtonId =
@@ -18,9 +19,9 @@ export type CanvasButtonId =
   | "tv";
 
 export const CANVAS = {
-  width: 740,
-  height: 650,
-  remote: { width: 202, height: 410 },
+  width: 780,
+  height: 700,
+  remote: { width: 152, height: 620 },
   card: { width: 250, height: 76 },
   /** 左列卡片左缘 x；右列 = width - cardWidth - margin。 */
   cardMargin: 8,
@@ -31,29 +32,29 @@ export const CANVAS = {
 interface Placement {
   button: CanvasButtonId;
   side: Side;
-  /** 遥控器上的锚点（0–1 相对坐标，真机标定）。 */
+  /** 遥控器上的锚点（0–1 相对坐标，按实物照片标定）。 */
   anchor: { x: number; y: number };
   /** 卡片中心 y（0–1 相对画布高）。 */
   targetY: number;
 }
 
 export const PLACEMENTS: Placement[] = [
-  { button: "power", side: "left", anchor: { x: 0.386, y: 0.099 }, targetY: 0.08 },
-  { button: "up", side: "left", anchor: { x: 0.502, y: 0.179 }, targetY: 0.23 },
-  { button: "left", side: "left", anchor: { x: 0.362, y: 0.246 }, targetY: 0.38 },
-  { button: "back", side: "left", anchor: { x: 0.406, y: 0.389 }, targetY: 0.53 },
-  { button: "home", side: "left", anchor: { x: 0.406, y: 0.479 }, targetY: 0.68 },
-  { button: "menu", side: "left", anchor: { x: 0.406, y: 0.569 }, targetY: 0.83 },
-  { button: "right", side: "right", anchor: { x: 0.638, y: 0.246 }, targetY: 0.215 },
-  { button: "ok", side: "right", anchor: { x: 0.502, y: 0.246 }, targetY: 0.36 },
-  { button: "down", side: "right", anchor: { x: 0.502, y: 0.317 }, targetY: 0.505 },
-  { button: "volume_up", side: "right", anchor: { x: 0.604, y: 0.39 }, targetY: 0.65 },
-  { button: "volume_down", side: "right", anchor: { x: 0.604, y: 0.48 }, targetY: 0.795 },
-  { button: "tv", side: "right", anchor: { x: 0.604, y: 0.569 }, targetY: 0.94 },
+  { button: "power", side: "left", anchor: { x: 0.242, y: 0.064 }, targetY: 0.1 },
+  { button: "up", side: "left", anchor: { x: 0.502, y: 0.136 }, targetY: 0.22 },
+  { button: "left", side: "left", anchor: { x: 0.198, y: 0.211 }, targetY: 0.34 },
+  { button: "back", side: "left", anchor: { x: 0.294, y: 0.36 }, targetY: 0.46 },
+  { button: "home", side: "left", anchor: { x: 0.294, y: 0.453 }, targetY: 0.58 },
+  { button: "menu", side: "left", anchor: { x: 0.295, y: 0.546 }, targetY: 0.7 },
+  { button: "right", side: "right", anchor: { x: 0.806, y: 0.211 }, targetY: 0.22 },
+  { button: "ok", side: "right", anchor: { x: 0.502, y: 0.211 }, targetY: 0.34 },
+  { button: "down", side: "right", anchor: { x: 0.502, y: 0.286 }, targetY: 0.46 },
+  { button: "volume_up", side: "right", anchor: { x: 0.703, y: 0.363 }, targetY: 0.58 },
+  { button: "volume_down", side: "right", anchor: { x: 0.703, y: 0.45 }, targetY: 0.7 },
+  { button: "tv", side: "right", anchor: { x: 0.703, y: 0.547 }, targetY: 0.82 },
 ];
 
-export const VOICE_ANCHOR = { x: 0.63, y: 0.099 };
-export const VOICE_TARGET_Y = 0.07;
+export const VOICE_ANCHOR = { x: 0.759, y: 0.064 };
+export const VOICE_TARGET_Y = 0.08;
 
 export interface Point {
   x: number;

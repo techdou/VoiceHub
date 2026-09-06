@@ -173,6 +173,10 @@ function phaseLabel(phase: string | undefined): string {
   return t(`connection.phase.${phase}` as never);
 }
 
+function isConnectedRemote(id: string): boolean {
+  return props.settings?.pairedDeviceId === id && props.bleSnapshot?.phase === "ready";
+}
+
 onMounted(async () => {
   await Promise.all([refreshRemotes(), refreshEndpoints()]);
   selectedRemoteId.value = props.settings?.pairedDeviceId ?? "";
@@ -262,17 +266,23 @@ const providerOptions = [
           {{ t("onboarding.open_settings") }}
         </button>
       </div>
-      <div style="display: grid; gap: 6px">
+      <div class="device-list">
         <button
           v-for="remote in remotes"
           :key="remote.id"
-          class="picker-item"
-          :class="{ current: settings.pairedDeviceId === remote.id }"
+          class="device-item"
+          :class="{ connected: isConnectedRemote(remote.id) }"
           :disabled="busy"
           @click="connect(remote.id, remote.name)"
         >
-          <span>{{ remote.name }}</span>
-          <span v-if="settings.pairedDeviceId === remote.id">✓</span>
+          <span class="status-dot" :class="isConnectedRemote(remote.id) ? 'ok' : 'off'"></span>
+          <span class="device-name">{{ remote.name }}</span>
+          <template v-if="isConnectedRemote(remote.id)">
+            <span v-if="bleSnapshot?.batteryPercent != null" class="badge">
+              {{ t("connection.battery") }} {{ bleSnapshot.batteryPercent }}%
+            </span>
+            <span class="device-connected">{{ t("connection.connected") }}</span>
+          </template>
         </button>
         <div v-if="!remotes.length" class="empty">{{ t("common.empty") }}</div>
       </div>
@@ -462,3 +472,53 @@ const providerOptions = [
     <p class="empty">{{ t("common.loading") }}</p>
   </div>
 </template>
+
+<style scoped>
+.device-list {
+  display: grid;
+  gap: 8px;
+}
+
+.device-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.device-item:hover {
+  border-color: var(--border-strong);
+}
+
+.device-item.connected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.device-item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.device-name {
+  font-weight: 600;
+  font-size: 13.5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.device-connected {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+</style>

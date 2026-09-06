@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { useI18n } from "../i18n";
+import { CANVAS, VOICE_ANCHOR } from "../canvasLayout";
+import remotePhoto from "../assets/rc003-remote.webp";
 
-/// RC003 真机布局遥控器图：顶部双键（左电源/右语音）、中部圆盘导航、
-/// 左列 返回/主页/菜单、右列 音量±/TV。键位百分比与连线锚点一致
-/// （见 canvasLayout.ts 的 PLACEMENTS 标定数据）。
+/// RC003 实物照片遥控器：底图为真机照片（已按 alpha 边界裁剪，比例 1:4.065），
+/// 键位热区为覆盖在照片上的透明按钮，中心点与 canvasLayout.ts 的
+/// PLACEMENTS 连线锚点共用同一套照片标定坐标，像素级对齐。
 
 const props = withDefaults(
   defineProps<{
@@ -25,28 +27,28 @@ const { t } = useI18n();
 
 interface KeySpec {
   id: string;
-  label: string;
-  /** 中心点（相对遥控器 202×410，即锚点）。 */
+  /** 中心点（相对遥控器框 0–100 百分比，按实物照片标定）。 */
   x: number;
   y: number;
+  /** 热区尺寸（px，相对 152 宽遥控器框）。 */
   w: number;
   h: number;
   round: boolean;
 }
 
 const keys: KeySpec[] = [
-  { id: "power", label: "⏻", x: 38.6, y: 9.9, w: 34, h: 34, round: true },
-  { id: "up", label: "▲", x: 50.2, y: 17.9, w: 30, h: 30, round: true },
-  { id: "left", label: "◀", x: 36.2, y: 24.6, w: 30, h: 30, round: true },
-  { id: "ok", label: "OK", x: 50.2, y: 24.6, w: 42, h: 42, round: true },
-  { id: "right", label: "▶", x: 63.8, y: 24.6, w: 30, h: 30, round: true },
-  { id: "down", label: "▼", x: 50.2, y: 31.7, w: 30, h: 30, round: true },
-  { id: "back", label: "←", x: 40.6, y: 38.9, w: 36, h: 24, round: false },
-  { id: "home", label: "⌂", x: 40.6, y: 47.9, w: 36, h: 24, round: false },
-  { id: "menu", label: "≡", x: 40.6, y: 56.9, w: 36, h: 24, round: false },
-  { id: "volume_up", label: "＋", x: 60.4, y: 39.0, w: 30, h: 26, round: false },
-  { id: "volume_down", label: "－", x: 60.4, y: 48.0, w: 30, h: 26, round: false },
-  { id: "tv", label: "TV", x: 60.4, y: 56.9, w: 30, h: 26, round: false },
+  { id: "power", x: 24.2, y: 6.4, w: 44, h: 44, round: true },
+  { id: "up", x: 50.2, y: 13.6, w: 30, h: 30, round: true },
+  { id: "left", x: 19.8, y: 21.1, w: 30, h: 30, round: true },
+  { id: "ok", x: 50.2, y: 21.1, w: 56, h: 56, round: true },
+  { id: "right", x: 80.6, y: 21.1, w: 30, h: 30, round: true },
+  { id: "down", x: 50.2, y: 28.6, w: 30, h: 30, round: true },
+  { id: "back", x: 29.4, y: 36.0, w: 44, h: 44, round: true },
+  { id: "home", x: 29.4, y: 45.3, w: 44, h: 44, round: true },
+  { id: "menu", x: 29.5, y: 54.6, w: 44, h: 44, round: true },
+  { id: "volume_up", x: 70.3, y: 36.3, w: 44, h: 50, round: false },
+  { id: "volume_down", x: 70.3, y: 45.0, w: 44, h: 50, round: false },
+  { id: "tv", x: 70.3, y: 54.7, w: 44, h: 44, round: true },
 ];
 
 function style(key: KeySpec) {
@@ -67,9 +69,11 @@ function isActive(id: string) {
 </script>
 
 <template>
-  <div class="rc-body">
-    <!-- 圆盘轮廓：中心 (50.2%, 24.8%)，直径约 96px -->
-    <div class="rc-dish"></div>
+  <div
+    class="rc-body"
+    :style="{ width: `${CANVAS.remote.width}px`, height: `${CANVAS.remote.height}px` }"
+  >
+    <img class="rc-photo" :src="remotePhoto" :alt="t('buttons.canvas.remote_alt')" draggable="false" />
     <button
       v-for="key in keys"
       :key="key.id"
@@ -80,13 +84,16 @@ function isActive(id: string) {
       }"
       :style="style(key)"
       :disabled="!clickable"
+      :aria-label="t(`buttons.key_names.${key.id}` as never)"
       @click="emit('select', key.id)"
+    ></button>
+    <div
+      class="rc-voice"
+      :class="{ active: voiceActive }"
+      :style="{ left: `${VOICE_ANCHOR.x * 100}%`, top: `${VOICE_ANCHOR.y * 100}%` }"
+      :title="t('buttons.voice_key')"
     >
-      {{ key.label }}
-    </button>
-    <div class="rc-voice" :class="{ active: voiceActive }">
       <span class="rc-mic">🎙</span>
-      <span class="rc-voice-label">{{ t("buttons.voice_key") }}</span>
     </div>
   </div>
 </template>
@@ -94,49 +101,33 @@ function isActive(id: string) {
 <style scoped>
 .rc-body {
   position: relative;
-  width: 202px;
-  height: 410px;
-  border-radius: 26px;
-  background: linear-gradient(170deg, #2e3542, #20242d);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.3),
-    0 8px 24px rgba(0, 0, 0, 0.25);
   flex-shrink: 0;
+  filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.16));
 }
 
-.rc-dish {
-  position: absolute;
-  left: 50.2%;
-  top: 24.8%;
-  width: 96px;
-  height: 96px;
-  margin: -48px 0 0 -48px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.03);
+.rc-photo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
   pointer-events: none;
 }
 
 .rc-key {
   position: absolute;
-  display: grid;
-  place-items: center;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  background: rgba(255, 255, 255, 0.06);
-  color: #d7dbe2;
-  font-size: 11px;
-  line-height: 1;
+  border: 1.5px solid transparent;
+  background: transparent;
   cursor: pointer;
   transition:
     background 0.12s,
-    transform 0.06s,
-    border-color 0.12s;
+    border-color 0.12s,
+    transform 0.06s;
 }
 
 .rc-key:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .rc-key:active {
@@ -148,44 +139,35 @@ function isActive(id: string) {
 }
 
 .rc-key.selected {
-  background: var(--accent);
-  border-color: transparent;
-  color: #fff;
-  font-weight: 700;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  border-color: var(--accent);
 }
 
 .rc-key.active {
   border-color: rgba(232, 163, 61, 0.85);
   background: rgba(232, 163, 61, 0.28);
-  color: #f4c37a;
 }
 
 .rc-voice {
   position: absolute;
-  left: 63%;
-  top: 9.9%;
   transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(232, 163, 61, 0.5);
-  background: rgba(232, 163, 61, 0.16);
-  color: var(--accent);
-  font-size: 10px;
-  white-space: nowrap;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid rgba(232, 163, 61, 0.55);
+  background: rgba(30, 30, 30, 0.55);
+  color: #f4c37a;
+  font-size: 12px;
   pointer-events: none;
 }
 
 .rc-voice.active {
   background: var(--accent);
+  border-color: transparent;
   color: #fff;
   animation: rc-pulse 1s infinite;
-}
-
-.rc-mic {
-  font-size: 11px;
 }
 
 @keyframes rc-pulse {

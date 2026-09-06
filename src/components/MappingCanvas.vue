@@ -15,7 +15,7 @@ import type { ButtonAction, ButtonBinding, RemoteButtonId } from "../types";
 
 /// 连线画布：左卡片列 | 遥控器 | 右卡片列，SVG 贝塞尔连线带箭头；
 /// 选中键连线加粗变色，物理按下时锚点橙点 + 卡片橙描边。
-/// 设计尺寸固定 740×650，容器更窄时整体等比缩放。
+/// 设计尺寸固定 780×700（遥控器 152×620 实物照片比例），容器更窄时整体等比缩放。
 
 const props = defineProps<{
   bindings: Record<string, ButtonBinding>;
@@ -36,11 +36,15 @@ const { t } = useI18n();
 const SLOTS = ["single", "double", "long"] as const;
 type Slot = (typeof SLOTS)[number];
 
-const buttonNames: Record<string, string> = {
-  power: "电源", up: "上", left: "左", ok: "OK", right: "右", down: "下",
-  back: "返回", volume_up: "音量+", home: "主页", volume_down: "音量−",
-  menu: "菜单", tv: "TV",
+/// 键名图标：与遥控器键面符号一致（OK/TV 无符号键用短文本）。
+const buttonIcons: Record<string, string> = {
+  power: "⏻", up: "▲", left: "◀", ok: "OK", right: "▶", down: "▼",
+  back: "↩", home: "⌂", menu: "☰", volume_up: "＋", volume_down: "−", tv: "TV",
 };
+
+function buttonName(button: string): string {
+  return t(`buttons.key_names.${button}` as never);
+}
 
 const cards = allCards();
 const links = allLinks();
@@ -97,7 +101,11 @@ onBeforeUnmount(() => observer?.disconnect());
   <div ref="containerEl" class="mc-outer">
     <div
       class="mc-canvas"
-      :style="{ transform: `scale(${scale})`, height: `${CANVAS.height * scale}px` }"
+      :style="{
+        transform: `scale(${scale})`,
+        height: `${CANVAS.height * scale}px`,
+        width: `${CANVAS.width}px`,
+      }"
     >
       <div class="mc-inner" :style="{ width: `${CANVAS.width}px`, height: `${CANVAS.height}px` }">
         <!-- 连线层 -->
@@ -105,7 +113,7 @@ onBeforeUnmount(() => observer?.disconnect());
           class="mc-links"
           :width="CANVAS.width"
           :height="CANVAS.height"
-          viewBox="0 0 740 650"
+          :viewBox="`0 0 ${CANVAS.width} ${CANVAS.height}`"
         >
           <template v-for="link in links" :key="link.button">
             <path
@@ -164,7 +172,10 @@ onBeforeUnmount(() => observer?.disconnect());
           @click="emit('selectButton', card.button)"
         >
           <div class="mc-card-head">
-            <strong>{{ buttonNames[card.button] ?? card.button }}</strong>
+            <span class="mc-card-title">
+              <span class="mc-key-icon">{{ buttonIcons[card.button] ?? "" }}</span>
+              <strong>{{ buttonName(card.button) }}</strong>
+            </span>
           </div>
           <div class="mc-slots">
             <button
@@ -173,7 +184,7 @@ onBeforeUnmount(() => observer?.disconnect());
               class="mc-slot"
               :class="{ disabled: !slotEnabled(card.button, slot) }"
               :disabled="!slotEnabled(card.button, slot)"
-              :title="`${buttonNames[card.button] ?? card.button} · ${t(`buttons.slot.${slot}` as never)}`"
+              :title="`${buttonName(card.button)} · ${t(`buttons.slot.${slot}` as never)}`"
               @click.stop="emit('editSlot', card.button, slot)"
             >
               <span class="mc-slot-trigger">{{ t(`buttons.slot.${slot}` as never) }}</span>
@@ -208,7 +219,6 @@ onBeforeUnmount(() => observer?.disconnect());
 .mc-canvas {
   transform-origin: top center;
   margin: 0 auto;
-  width: 740px;
 }
 
 .mc-inner {
@@ -260,16 +270,39 @@ onBeforeUnmount(() => observer?.disconnect());
   margin-bottom: 5px;
 }
 
+.mc-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mc-key-icon {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  border-radius: 5px;
+  background: rgba(128, 128, 128, 0.14);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .mc-slots {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 4px;
+  border-radius: 7px;
+  background: rgba(128, 128, 128, 0.1);
+  overflow: hidden;
 }
 
 .mc-slot {
   border: none;
-  background: rgba(128, 128, 128, 0.1);
-  border-radius: 6px;
+  background: transparent;
+  border-radius: 0;
   padding: 4px 4px 3px;
   cursor: pointer;
   display: grid;
@@ -278,6 +311,10 @@ onBeforeUnmount(() => observer?.disconnect());
   min-width: 0;
   color: var(--text);
   font: inherit;
+}
+
+.mc-slot + .mc-slot {
+  border-left: 1px solid var(--border);
 }
 
 .mc-slot:hover {
@@ -290,7 +327,7 @@ onBeforeUnmount(() => observer?.disconnect());
 }
 
 .mc-slot.disabled:hover {
-  background: rgba(128, 128, 128, 0.1);
+  background: transparent;
 }
 
 .mc-slot-trigger {
@@ -311,6 +348,8 @@ onBeforeUnmount(() => observer?.disconnect());
   border-radius: 999px;
   background: rgba(128, 128, 128, 0.15);
   color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .mc-fixed.on {
