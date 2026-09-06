@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tauri::State;
+use tauri::{Manager, State};
 
 use sb_core::buttons::RemoteButton;
 use sb_core::gesture::Gesture;
@@ -235,22 +235,31 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
         },
     });
 
-    // VB-CABLE。
-    let endpoints = bridge.audio.list_endpoints().unwrap_or_default();
-    let cable = endpoints.iter().find(|e| e.is_virtual_cable_candidate);
-    items.push(match cable {
-        Some(endpoint) => DiagnosticItem {
+    // VB-CABLE（双路：端点 + 驱动服务注册表）。
+    let cable_status = {
+        let data_dir = app.path().app_data_dir().unwrap_or_default();
+        let endpoints = bridge.audio.list_endpoints().unwrap_or_default();
+        let endpoint_present = endpoints.iter().any(|e| e.is_virtual_cable_candidate);
+        crate::cable::status(&data_dir, endpoint_present)
+    };
+    items.push(if cable_status.installed() {
+        DiagnosticItem {
             id: "virtual_cable".into(),
             title: "虚拟声卡".into(),
-            detail: format!("输出端点：{}", endpoint.name),
-            status: "ok".into(),
-        },
-        None => DiagnosticItem {
+            detail: if cable_status.endpoint_present {
+                "VB-CABLE 已就绪（CABLE Input 可见）".into()
+            } else {
+                "驱动已安装；CABLE Input 端点暂不可见（可能需要重启音频服务或系统）".into()
+            },
+            status: if cable_status.endpoint_present { "ok".into() } else { "warn".into() },
+        }
+    } else {
+        DiagnosticItem {
             id: "virtual_cable".into(),
             title: "虚拟声卡".into(),
-            detail: "未检测到 VB-CABLE。请安装 VB-Audio Virtual Cable，并在语音工具里把录音设备设为 CABLE Output".into(),
+            detail: "未检测到 VB-CABLE：连接页可一键安装，或在语音工具里把录音设备设为 CABLE Output".into(),
             status: "warn".into(),
-        },
+        }
     });
 
     // F5 吞键闸。
@@ -288,6 +297,26 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
 
     let _ = app;
     items
+}
+
+/// 虚拟声卡状态：端点 + 驱动服务 + 安装进度。
+#[tauri::command]
+pub fn check_virtual_cable(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) -> crate::cable::CableStatus {
+    use tauri::Manager;
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    let endpoint_present = bridge
+        .audio
+        .list_endpoints()
+        .map(|endpoints| endpoints.iter().any(|e| e.is_virtual_cable_candidate))
+        .unwrap_or(false);
+    crate::cable::status(&data_dir, endpoint_present)
+}
+
+/// 一键安装：后台跑官方下载+校验+安装器（进度由 check_virtual_cable 轮询）。
+#[tauri::command]
+pub fn start_cable_install(app: tauri::AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    crate::cable::start_install(&data_dir)
 }
 
 #[tauri::command]

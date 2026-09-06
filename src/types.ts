@@ -154,6 +154,19 @@ export interface DiagnosticItem {
   status: "ok" | "warn" | "fail" | "info";
 }
 
+export interface CableInstallState {
+  state: string;
+  detail: string;
+  exitCode: number;
+}
+
+export interface CableStatus {
+  endpointPresent: boolean;
+  servicePresent: boolean;
+  installState: CableInstallState | null;
+  busy: boolean;
+}
+
 export type UiEvent =
   | { type: "BleState"; snapshot: BleSnapshot }
   | { type: "VoiceState"; recording: boolean; level: number }

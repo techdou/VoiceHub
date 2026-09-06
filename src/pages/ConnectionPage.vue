@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref, watchEffect } from "vue";
+import { computed, onMounted, ref, watchEffect } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { useI18n } from "../i18n";
+import CableInstaller from "../components/CableInstaller.vue";
 import type { AppSettings, AudioEndpoint, BleSnapshot, PairedRemote, UiEvent } from "../types";
 
 const props = defineProps<{
@@ -35,6 +36,14 @@ async function connect(id: string, name: string) {
     await api.connectRemote(id, name);
   } finally {
     busy.value = false;
+  }
+}
+
+async function onCableInstalled() {
+  await refreshEndpoints();
+  const cable = endpoints.value.find((e) => e.isVirtualCableCandidate);
+  if (cable) {
+    await pickEndpoint(cable.id, cable.name);
   }
 }
 
@@ -107,6 +116,10 @@ onMounted(async () => {
     }
   });
 });
+
+const cableCandidatePresent = computed(() =>
+  endpoints.value.some((e) => e.isVirtualCableCandidate),
+);
 
 const providerOptions = [
   { id: "we_type", hint: true },
@@ -213,7 +226,11 @@ const providerOptions = [
           {{ t("connection.audio.install_vbcable") }}
         </button>
       </div>
-      <div class="row">
+      <CableInstaller
+        v-if="!cableCandidatePresent"
+        @installed="onCableInstalled"
+      />
+      <div class="row" style="margin-top: 10px">
         <button class="btn" @click="api.simulateVoice(2000)">{{ t("connection.voice_test") }}</button>
         <span class="hint" style="margin: 0">{{ t("sim.voice_hint") }}</span>
       </div>

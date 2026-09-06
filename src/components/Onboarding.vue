@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { useI18n } from "../i18n";
+import CableInstaller from "./CableInstaller.vue";
 import type { AppSettings, AudioEndpoint, PairedRemote } from "../types";
 
 const props = defineProps<{ settings: AppSettings }>();
@@ -113,6 +114,9 @@ const providerOptions = ["we_type", "doubao", "win_h", "none"] as const;
             {{ t("onboarding.download_vbcable") }}
           </button>
           <button class="btn" @click="loadEndpoints">{{ t("common.refresh") }}</button>
+        </div>
+        <div style="margin-top: 12px">
+          <CableInstaller @installed="loadEndpoints" />
         </div>
         <div v-if="endpoints.length" style="margin-top: 12px; display: grid; gap: 6px">
           <button

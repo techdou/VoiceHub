@@ -25,6 +25,8 @@ pub mod radio;
 #[cfg(windows)]
 pub mod raw_input;
 #[cfg(windows)]
+pub mod registry;
+#[cfg(windows)]
 pub mod send_input;
 #[cfg(windows)]
 pub mod shell;

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   AudioEndpoint,
+  CableStatus,
   BleSnapshot,
   DiagnosticItem,
   PairedRemote,
@@ -34,5 +35,7 @@ export const api = {
     invoke<void>("simulate_button", { button, gesture }),
   simulateVoice: (durationMs?: number) => invoke<void>("simulate_voice", { durationMs }),
   runDiagnostics: () => invoke<DiagnosticItem[]>("run_diagnostics"),
+  checkVirtualCable: () => invoke<CableStatus>("check_virtual_cable"),
+  startCableInstall: () => invoke<void>("start_cable_install"),
   openLogsFolder: () => invoke<void>("open_logs_folder"),
 };

@@ -1,6 +1,7 @@
 //! 声桥 SoundBridge 宿主：托盘、单实例、自启、窗口管理、命令注册。
 
 mod bridge;
+mod cable;
 mod commands;
 mod store;
 
@@ -62,7 +63,6 @@ fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<ta
 
 /// 语言变化后由 bridge 调用：重建托盘菜单。
 pub fn refresh_tray_menu(app: &tauri::AppHandle) {
-    use tauri::Manager;
     if let Some(tray) = app.tray_by_id("main-tray") {
         match build_tray_menu(app) {
             Ok(menu) => {
@@ -201,6 +201,8 @@ pub fn run() {
             commands::reset_profile_to_default,
             commands::simulate_button,
             commands::simulate_voice,
+            commands::check_virtual_cable,
+            commands::start_cable_install,
             commands::run_diagnostics,
             commands::open_logs_folder,
         ])
