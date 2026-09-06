@@ -269,11 +269,11 @@ const providerOptions = [
       <div v-if="settings.provider.kind === 'sayit'" class="setting-row">
         <div class="label">{{ t("connection.provider.sayit_key") }}</div>
         <select
-          :value="settings.provider.customVk === 0xa5 ? 0xa5 : 0xa3"
+          :value="settings.provider.customVk === 0xa3 ? 0xa3 : 0xa5"
           @change="setSayItKey(Number(($event.target as HTMLSelectElement).value))"
         >
-          <option :value="0xa3">{{ t("connection.provider.sayit_key.rctrl") }}</option>
           <option :value="0xa5">{{ t("connection.provider.sayit_key.ralt") }}</option>
+          <option :value="0xa3">{{ t("connection.provider.sayit_key.rctrl") }}</option>
         </select>
       </div>
       <p v-if="settings.provider.kind === 'we_type'" class="hint">

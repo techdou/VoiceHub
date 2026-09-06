@@ -90,10 +90,10 @@ impl ProviderConfig {
             ProviderKind::WeType => WETYPE_TOGGLE,
             ProviderKind::Doubao => (vk::LCONTROL, 0), // 默认占位：豆包按住式默认键可在 UI 改
             ProviderKind::WinH => WIN_H,
-            // 默认右 Ctrl（扩展键 0x1D+EXTENDED）；用户可在 UI 换右 Alt。
+            // 默认右 Alt（与作者实际 SayIt 配置对齐）；用户可在 UI 换右 Ctrl。
             // 避免右 Shift——长按 8s 触发筛选键会让录音停不下来。
             ProviderKind::SayIt => {
-                (if self.custom_vk != 0 { self.custom_vk } else { VK_RCONTROL }, 0)
+                (if self.custom_vk != 0 { self.custom_vk } else { VK_RMENU }, 0)
             }
             ProviderKind::Custom => (self.custom_vk, self.custom_modifiers),
             ProviderKind::None => (0, 0),
@@ -191,25 +191,25 @@ mod tests {
     }
 
     #[test]
-    fn sayit_defaults_to_right_control_and_accepts_override() {
+    fn sayit_defaults_to_right_alt_and_accepts_override() {
         let config = ProviderConfig { kind: ProviderKind::SayIt, ..Default::default() };
         assert_eq!(
             config.trigger_on_stream_start(),
-            ProviderTrigger::Press { vk: VK_RCONTROL, modifiers: 0 }
-        );
-        // 用户改键（如右 Alt）后生效。
-        let alt = ProviderConfig {
-            kind: ProviderKind::SayIt,
-            custom_vk: VK_RMENU,
-            ..Default::default()
-        };
-        assert_eq!(
-            alt.trigger_on_stream_start(),
             ProviderTrigger::Press { vk: VK_RMENU, modifiers: 0 }
         );
         assert_eq!(
-            alt.trigger_on_stream_stop(),
+            config.trigger_on_stream_stop(),
             ProviderTrigger::Release { vk: VK_RMENU, modifiers: 0 }
+        );
+        // 用户改键（如右 Ctrl）后生效。
+        let ctrl = ProviderConfig {
+            kind: ProviderKind::SayIt,
+            custom_vk: VK_RCONTROL,
+            ..Default::default()
+        };
+        assert_eq!(
+            ctrl.trigger_on_stream_start(),
+            ProviderTrigger::Press { vk: VK_RCONTROL, modifiers: 0 }
         );
         assert!(config.drain_ms() >= 120);
     }

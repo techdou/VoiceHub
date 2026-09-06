@@ -284,7 +284,7 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     let provider_detail = match settings.provider.kind {
         sb_core::provider::ProviderKind::WeType => "微信输入法：请在其设置中开启语音快捷键 Ctrl+Win，并把录音设备设为 CABLE Output".into(),
         sb_core::provider::ProviderKind::Doubao => "豆包输入法：按住式触发，请确认其语音快捷键与声桥配置一致".into(),
-        sb_core::provider::ProviderKind::SayIt => "SayIt：请在其设置中把「按住说话」键设为右 Ctrl、录音设备设为 CABLE Output（本地 Whisper 转写）".into(),
+        sb_core::provider::ProviderKind::SayIt => "SayIt：请在其设置中把「按住说话」键设为右 Alt（声桥默认，两边的键要一致）、录音设备设为 CABLE Output（本地 Whisper 转写）".into(),
         sb_core::provider::ProviderKind::WinH => "Windows 听写（Win+H）：系统语音输入".into(),
         sb_core::provider::ProviderKind::Custom => "自定义语音工具".into(),
         sb_core::provider::ProviderKind::None => "未配置语音工具（仅测试音频链路）".into(),
