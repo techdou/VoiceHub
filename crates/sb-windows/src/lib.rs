@@ -2,7 +2,7 @@
 //!
 //! 模块划分：
 //! - `send_input`：按键注入（快捷键 / 媒体键 / 音量）
-//! - `raw_input`：遥控器 HID 捕获（Xiaomi VID 过滤；语音键 F5 + usage 数组报文）
+//! - `raw_input`：遥控器 HID 捕获（蓝牙来源和选中设备地址过滤；F5 + usage 数组报文）
 //! - `key_gate`：低级键盘钩子，吞掉遥控器原生按键避免穿透
 //! - `audio`：WASAPI 输出到指定端点（VB-CABLE）
 //! - `foreground`：前台进程名（Smart Profiles 匹配）

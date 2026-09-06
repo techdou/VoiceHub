@@ -1,77 +1,123 @@
 # 声桥 SoundBridge
 
-把小米蓝牙遥控器（RC001 / RC003 / MI RC）变成 Windows 的**无线麦 + 语音遥控器**：
+声桥是面向 Windows 的小米蓝牙遥控器语音输入与按键映射工具。它将遥控器的语音流送入虚拟声卡，供语音输入软件识别，并在本机记录遥控器按键和语音会话统计。
 
-> 按住遥控器语音键说话 → BLE ATVV 音频解码 → VB-CABLE 虚拟声卡 →
-> 语音输入工具（SayIt / 微信输入法 / 豆包 / Win+H / 自定义）转文字 → 写入当前聚焦输入框
-
-其余 12 个按键可自定义映射（快捷键 / 媒体 / 音量 / 打开应用网页 / 截图…），
-支持双击、长按二级动作，多套键位方案（Profiles）可按前台应用自动切换。
-所有数据只存本机，不上传任何东西。
+```text
+遥控器语音键 → 蓝牙音频 → 声桥 → VB-CABLE → 语音输入软件 → 当前输入框
+遥控器按键   → 设备来源校验 → 按键统计与自定义映射
+```
 
 ## 功能
 
-- **语音输入**：按住说、松开停；增益可调（±24 dB）；会话自动排空收尾
-- **SayIt 联动**：本地 Whisper 听写开箱即用——免提（点一下开始/再点结束，默认）
-  与按住说话两种模式可切换，触发键可选（默认右 Alt）
-- **按键映射**：12 键 × 单击/双击/长按；录制自定义快捷键；连发支持
-- **Profiles**：多套键位方案；Smart Profiles 按前台应用自动切换（默认关闭）
-- **一键安装 VB-CABLE**：内置官方下载 + SHA-256 校验，缺失时引导安装
-- **统计与历史**：按键次数 / 语音时长 / 最长单次（今日 / 本周 / 近 7 天 / 全部），
-  语音会话历史（时间、时长、目标应用、方案）
-- **自检**：蓝牙无线电、遥控器配对、VB-CABLE、语音通道、F5 拦截、语音工具指引
-- **模拟遥控器页**：无硬件即可验证映射分发与音频链路（真实管线端到端）
-- **托盘常驻**：关窗驻留托盘；单实例；开机自启（可选）
-- **浅色 / 深色**跟随系统；中文 / English
+- 遥控器语音输入：音频解码、增益调节、电平显示与会话历史。
+- 按键映射：快捷键、媒体控制、音量、打开应用等动作，支持单击、双击和长按。
+- 多套键位方案，可按前台应用自动选择方案。
+- 使用统计：按键次数、语音会话数、累计时长、最长单次时长，支持今日、本周、近 7 天和全部范围。
+- 连接与音频自检、虚拟声卡安装引导、托盘常驻和可选开机自启。
+- 模拟遥控器，用于检查映射与音频链路。
 
-## 快速开始
+## 环境要求
 
-**系统要求**：Windows 10 1809+ x64，带蓝牙；一只已配对的小米蓝牙遥控器。
+| 项目 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10 1809 或更高版本，x64 |
+| 蓝牙 | 支持低功耗蓝牙（Bluetooth Low Energy，BLE）的适配器 |
+| 遥控器 | 已在 Windows 中配对的小米蓝牙语音遥控器；不同型号和固件需分别验证 |
+| 窗口运行环境 | Microsoft Edge WebView2 Runtime |
+| 音频桥接 | VB-CABLE 虚拟声卡 |
+| 文字识别 | 独立安装的 SayIt、微信输入法、豆包、Windows 语音输入或自定义工具 |
 
-1. 从 [Releases](https://github.com/techdou/soundbridge/releases) 下载安装包
-   （`SoundBridge_x64-setup.exe`，或免安装的便携版）
-2. 首次启动按引导走：一键安装 VB-CABLE（也可手动装 [官方版](https://vb-audio.com/Cable/)）
-   → Windows 蓝牙配对遥控器 → 声桥内选中遥控器与 CABLE Input 端点
-3. 选一个语音输入工具，录音设备设为 **CABLE Output**：
-   - **SayIt**（本地 Whisper，推荐）：触发键与声桥内所选键保持一致（默认右 Alt）
-   - **微信输入法**：语音快捷键设为 Ctrl+Win
-   - **豆包 / Win+H / 自定义**：在"连接"页选对应 Provider 即可
-4. 按住遥控器语音键说话，文字落进当前输入框
+声桥通过外部语音输入软件完成文字识别。使用本地识别还是云端识别，取决于该软件的配置。
 
-已知边界：遥控器固件单次语音流约 60 秒上限。"连接"页可开启**长录音（实验性）**
-尝试续租延长；固件不接受时会正常分段收尾，松开再按即可继续。
+## 安装与使用
 
-## 架构
+1. 从 [GitHub Releases](https://github.com/techdou/soundbridge/releases) 获取已发布的安装包或便携版。主分支的新修复可能尚未包含在旧安装包中，也可以按下文从源码构建。
+2. 在 Windows 蓝牙设置中配对遥控器，打开声桥，在“连接”页选择对应设备。
+3. 安装 VB-CABLE，并将声桥输出端点设置为 **CABLE Input**。
+4. 将语音输入软件的录音设备设置为 **CABLE Output**。这两个端点属于同一条虚拟音频通道。
+5. 在声桥中选择对应语音输入工具，并核对其快捷键和启动、停止模式。
+6. 聚焦目标输入框，按住遥控器语音键说话，松开后检查文字输入结果。
 
+常用配置：SayIt 的触发键需与声桥配置一致；Windows 语音输入使用 `Win+H`；其它工具以其实际快捷键为准。接收快捷键的程序若以管理员身份运行，Windows 权限隔离可能阻止普通权限的声桥向其发送按键。
+
+在“按键”页配置遥控器动作。关闭“启用按键映射”可以停止声桥执行映射，但不会关闭遥控器使用统计。
+
+关闭窗口会隐藏到托盘。需要完全停止声桥或更换版本时，请从托盘菜单选择 **“退出声桥”**，再启动新版本。
+
+## 统计范围与设备隔离
+
+- 按键统计基于已识别的遥控器按下事件；一次长按或双击的动作触发数不等于物理按下次数。
+- 输入来源必须是当前选中遥控器对应的蓝牙 HID（人机接口设备），通过设备路径和蓝牙地址校验后才进入统计与映射。
+- 普通鼠标、键盘和未选中的设备不计入遥控器按键统计。仅厂商品牌相同不构成匹配条件。
+- 语音统计记录会话数与时长，不代表识别字数、识别准确率或识别成功次数。
+- 模拟器会实际执行映射和语音链路；模拟语音会话也会进入语音统计。
+- 旧版误计的数据不会被自动回溯修正，升级保留已有统计和历史。
+
+## 数据与隐私
+
+应用配置、统计、会话历史和诊断日志保存在本机：
+
+```text
+%APPDATA%\app.soundbridge.windows\
+  settings.json
+  statistics.json
+  history.jsonl
+  logs\
 ```
-Vue 3 UI（设置窗 / 模拟器）
-   ↕ Tauri IPC
-宿主编排（src-tauri）：桥管理器 · 语音管线 · 手势分发 · Provider 触发 · 托盘
-   ↕
-sb-windows（平台层）：WinRT BLE · Raw Input · WH_KEYBOARD_LL 吞键 · SendInput ·
-                     WASAPI · 前台进程 · 电源通知 · 蓝牙无线电自愈
-   ↕
-sb-core（纯逻辑，可测）：ATVV 协议 · IMA ADPCM 编解码 · 帧累积 · PCM 后处理 ·
-                         语音会话状态机 · 手势识别 · 映射 · Profiles · 设置迁移 · 统计
+
+声桥不主动上传这些使用记录。配置和日志可能包含设备标识、前台应用名称等本地信息；提交问题报告前应先脱敏，不要直接上传整个数据目录。
+
+安装虚拟声卡需要下载第三方安装包，语音输入软件也可能联网或向其服务商发送音频与文本。请根据所选工具的设置和隐私政策判断数据去向。
+
+## 从源码构建
+
+准备 Rust stable（MSVC 工具链）、Visual Studio C++ Build Tools 与 Windows SDK、Node.js 22 或更高版本，以及 pnpm。
+
+```powershell
+git clone https://github.com/techdou/soundbridge.git
+cd soundbridge
+pnpm install --frozen-lockfile
+pnpm tauri dev
 ```
 
-## 开发
+验证与发布构建：
 
-要求：Rust stable（MSVC）、Node 22+、pnpm、WebView2。
-
-```bash
-pnpm install
-pnpm tauri dev         # 开发运行
-pnpm test              # 前端测试（vitest）
-cargo test --workspace # Rust 全量单测（sb-core / sb-windows / store）
-pnpm tauri build       # 出 NSIS 安装包
+```powershell
+pnpm test
+pnpm build
+cargo test --workspace
+pnpm tauri build
 ```
 
-发布打包用 `scripts/build-release.ps1`（产物进 `artifacts/`，经 GitHub Releases 分发）；
-`scripts/ci-preflight.ps1` 做提交前预检。
+发布构建通过 Tauri CLI 打包前端资源。可执行文件位于 `target/release/`，NSIS 安装包位于 `target/release/bundle/nsis/`。
 
-## 许可
+`scripts/build-release.ps1` 将安装包、便携版及 SHA-256 校验文件整理到 `artifacts/`；`scripts/ci-preflight.ps1` 执行工具链、前端和 Rust 预检。
 
-GPL-3.0-only。协议行为参考 techdou/vibe-flow、techdou/remote-mic-app 与
-GetSayAll/remote-mic-app-windows（详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）。
-VB-CABLE 版权归 VB-Audio 所有，按其许可从官方地址下载，不随本软件捆绑。
+## 目录结构
+
+```text
+crates/
+  sb-core/       协议、音频解码、手势、映射与统计逻辑
+  sb-windows/    蓝牙、原始输入、按键注入与 Windows 音频接口
+src/             Vue 设置界面与前端测试
+src-tauri/       桌面应用编排、命令、托盘及持久化
+public/          应用静态资源
+scripts/         构建与验证脚本
+README.md        公开使用说明
+LICENSE          项目许可证
+THIRD_PARTY_NOTICES.md  第三方声明
+```
+
+开发计划与内部文档放在本地 `docs/`，构建产物放在 `artifacts/`，均不纳入版本控制。依赖目录、编辑器与代理配置、录音、缓存、密钥和证书由 `.gitignore` 排除。忽略规则不会移除已经提交到 Git 历史中的内容。
+
+## 已知限制与排查
+
+- 不同遥控器型号、固件和 HID 报文格式存在差异，不能保证所有实体按键均可识别。设备过滤的回归测试不能替代实体遥控器逐键和语音验证。
+- 遥控器固件可能限制单次语音流时长。“长录音（实验性）”尝试续租，但不能保证突破固件限制。
+- 无音频时，先核对 `CABLE Input` / `CABLE Output` 的选择，再检查虚拟声卡是否被其它应用独占。
+- 遇到鼠标操作导致统计增加或额外确认，请先退出旧版声桥并确认运行的是修正版；不要同时运行不同版本。
+- `crates/sb-windows/examples/check_input_sources.rs` 是只读输入来源诊断工具，可列出设备并显示筛选结果。输出包含设备路径，分享前需要脱敏。
+
+## 许可证与第三方组件
+
+声桥使用 [GPL-3.0-only](LICENSE)，第三方组件与参考项目见 [第三方声明](THIRD_PARTY_NOTICES.md)。VB-CABLE 为 VB-Audio 的第三方软件，不随本仓库分发。小米遥控器为其所属公司的产品，本项目与小米无隶属关系。

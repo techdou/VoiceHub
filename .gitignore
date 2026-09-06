@@ -1,32 +1,113 @@
-# ── 构建产物 ──────────────────────────────
+# Build output, dependencies, and caches
 target/
 node_modules/
 dist/
-# 安装包走 GitHub Releases，不进版本库
+build/
+out/
 artifacts/
+coverage/
+.cache/
+.vite/
+.pnpm-store/
+*.tsbuildinfo
+vendor/sayit/native/transcribe-libs/
+src-tauri/transcribe-libs/
 
-# ── 密钥与本地环境（私密信息不泄露）────────
+# Credentials, certificates, and local environment
 .env
 .env.*
 *.local
+.npmrc
+.pypirc
+.netrc
+.aws/
+.ssh/
+secrets/
+credentials/
+credentials*.json
+secrets*.json
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+id_rsa*
+id_ed25519*
 
-# ── 开发软件配置目录（不上传）──────────────
+# Editor, agent, and virtual-environment state
 .vscode/
 .idea/
+.vs/
+.fleet/
+.codex/
+.agents/
+.claude/
+.omx/
 *.code-workspace
+*.suo
+*.user
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# ── 内部文档（不纳入版本控制）──────────────
-docs/
-PROJECT_PLAN.md
+# Internal documentation stays local. Public usage and legal notices are retained.
+/docs/
+/plans/
+/notes/
+*.md
+*.mdx
+*.rst
+*.adoc
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+!/README.md
+!/THIRD_PARTY_NOTICES.md
+!**/LICENSE.md
+!**/COPYING.md
+!vendor/**/UPSTREAM.md
 
-# ── 第三方参考克隆（仅本地阅读）────────────
-refs/
-remote-mic-app-windows/
+# Reference checkouts are not application dependencies
+/refs/
+/remote-mic-app/
+/remote-mic-app-windows/
 
-# ── Tauri 生成物 ──────────────────────────
+# Generated Tauri schemas, recordings, models, and local application data
 src-tauri/gen/schemas/
+/data/
+/logs/
+/recordings/
+/models/
+/backups/
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.wav
+*.mp3
+*.pcm
+*.gguf
+*.ggml
+*.onnx
 
-# ── 系统与临时文件 ─────────────────────────
+# Release binaries and temporary files
+*.exe
+*.msi
+*.dll
+*.pdb
+*.zip
+*.7z
+*.tar
+*.tar.gz
 .DS_Store
 Thumbs.db
 *.log

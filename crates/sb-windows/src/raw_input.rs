@@ -1,15 +1,11 @@
 //! 遥控器 HID 捕获：Raw Input（WM_INPUT）线程。
 //!
-//! 注册键盘页 + 消费者页 + 鼠标页设备，按设备路径过滤 Xiaomi VID 0x2717：
+//! 注册键盘页 + 消费者页 + 鼠标页设备，只接收选中遥控器的蓝牙 HID：
 //! - 键盘页报文：F5（usage 0x3E）沿 = 语音键
 //! - 消费者页报文：usage 数组（report ID 1/2）→ 按键集合 → 沿事件
-//! - 鼠标报文（RC003 PID 0x5070 触摸板遥控器，2026-09 真机实测）：
-//!   导航全部走鼠标集合——触摸板点击 = 左键、边缘滑 = 滚轮、滑动 = 位移，
-//!   消费者页与键盘页（除 F5）均无报文。翻译：左键 → Ok、滚轮 → Up/Down
-//!   瞬时单击；纯位移忽略（光标移动由系统透传）。
-//! 我们的 SendInput 注入不会进入本线程的回调（Raw Input 不过滤 injected，
-//! 但键盘注入带我们的 extra info 标记，按 LLKHF_INJECTED 区分由 key_gate 处理；
-//! Raw Input 侧按设备句柄过滤，物理遥控器才产生事件）。
+//! - 选中遥控器若提供鼠标集合：左键 → Ok、滚轮 → Up/Down，忽略位移。
+//! USB VID_2717/PID_5070 是本机鼠标，不能当作遥控器型号或输入来源。
+//! 输入保留设备路径，宿主按当前选择核对蓝牙地址后才计数和执行映射。
 
 
 use std::sync::mpsc::Sender;
@@ -43,17 +39,33 @@ pub enum HidEvent {
     Activity,
 }
 
+#[derive(Debug)]
+pub struct HidInput {
+    pub device_path: String,
+    pub events: Vec<HidEvent>,
+}
+
+impl HidInput {
+    pub fn into_events_for(self, selected_id: Option<&str>) -> Vec<HidEvent> {
+        if is_selected_remote(&self.device_path, selected_id) {
+            self.events
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 const WM_APP_HID: u32 = 0x8000; // 未用（占位），窗口过程按 WM_INPUT 处理
 
 /// 启动 HID 捕获线程。返回停机句柄。
-pub fn spawn_hid_monitor(sender: Sender<HidEvent>) -> std::io::Result<JoinHandle<()>> {
+pub fn spawn_hid_monitor(sender: Sender<HidInput>) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("sb-raw-input".into())
         .spawn(move || run_monitor(sender))
         .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
-fn run_monitor(sender: Sender<HidEvent>) {
+fn run_monitor(sender: Sender<HidInput>) {
     unsafe {
         let class_name_wide: Vec<u16> = "SoundBridgeHidWindow"
             .encode_utf16()
@@ -114,7 +126,7 @@ fn run_monitor(sender: Sender<HidEvent>) {
 thread_local! {
     // 窗口过程回调里直接 send 有重入风险：借 thread-local 暂存，
     // 消息循环取出后转发。队列而非单槽：一条鼠标报文可能产生多个事件。
-    static PENDING_EVENTS: std::cell::RefCell<Vec<HidEvent>> =
+    static PENDING_EVENTS: std::cell::RefCell<Vec<HidInput>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -125,8 +137,8 @@ unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_INPUT {
-        if let Some(events) = handle_raw_input(wparam, lparam) {
-            PENDING_EVENTS.with(|queue| queue.borrow_mut().extend(events));
+        if let Some(input) = handle_raw_input(wparam, lparam) {
+            PENDING_EVENTS.with(|queue| queue.borrow_mut().push(input));
             return LRESULT(0);
         }
     }
@@ -135,7 +147,7 @@ unsafe extern "system" fn wnd_proc(
 
 fn register_raw_input(hwnd: HWND) -> bool {
     // usage page 1（键盘+鼠标）+ usage page 12（消费者控制）。
-    // 鼠标页：RC003 触摸板遥控器的导航（点击/滚轮/位移）全走鼠标集合。
+    // 鼠标集合也必须通过蓝牙来源和选中设备地址校验。
     let devices = [
         RAWINPUTDEVICE {
             usUsagePage: 0x01,
@@ -162,7 +174,7 @@ fn register_raw_input(hwnd: HWND) -> bool {
 
 /// 触摸板鼠标标志 → 事件序列（纯函数，单测覆盖）。
 ///
-/// RC003 真机语义（2026-09 实测）：点击=左键、边缘滑=滚轮。
+/// 仅用于通过来源校验的遥控器鼠标集合。
 /// 左键走 usage 合成（Ok 的按住/释放交给手势识别，支持长按/双击）；
 /// 滚轮直接发 WheelClick——tick 本身就是已完成的单击，若走手势状态机，
 /// 连续滚动会被 300ms 双击窗口误判成 DoubleClick 而吞掉。
@@ -182,7 +194,7 @@ pub fn touchpad_events(button_flags: u32, wheel_delta: i16) -> Vec<HidEvent> {
     Vec::new()
 }
 
-fn handle_raw_input(wparam: WPARAM, lparam: LPARAM) -> Option<Vec<HidEvent>> {
+fn handle_raw_input(wparam: WPARAM, lparam: LPARAM) -> Option<HidInput> {
     unsafe {
         let mut size: u32 = 0;
         let header_size = std::mem::size_of::<RAWINPUTHEADER>() as u32;
@@ -213,25 +225,24 @@ fn handle_raw_input(wparam: WPARAM, lparam: LPARAM) -> Option<Vec<HidEvent>> {
         if device.is_invalid() || device.0.is_null() {
             return None;
         }
-        if !is_xiaomi_device(device) {
-            return None;
-        }
+        let device_path = device_path(device)?;
+        // Reject unrelated devices before parsing their reports.
+        bluetooth_hid_address(&device_path)?;
         let events = parse_raw_input(raw, wparam);
         if events.is_empty() {
             None
         } else {
-            Some(events)
+            Some(HidInput { device_path, events })
         }
     }
 }
 
-/// 设备句柄 → 设备路径 → 是否 Xiaomi VID。
-fn is_xiaomi_device(device: HANDLE) -> bool {
+fn device_path(device: HANDLE) -> Option<String> {
     unsafe {
         let mut size: u32 = 0;
         let _ = GetRawInputDeviceInfoW(Some(device), RIDI_DEVICENAME, None, &mut size);
         if size == 0 {
-            return false;
+            return None;
         }
         let mut name_buf = vec![0u16; size as usize];
         if GetRawInputDeviceInfoW(
@@ -241,12 +252,41 @@ fn is_xiaomi_device(device: HANDLE) -> bool {
             &mut size,
         ) == u32::MAX
         {
-            return false;
+            return None;
         }
-        let name = String::from_utf16_lossy(&name_buf);
-        let lower = name.to_lowercase();
-        lower.contains(&format!("vid_{:04x}", VoiceKeyHid::VENDOR_ID))
+        let end = name_buf.iter().position(|&c| c == 0).unwrap_or(name_buf.len());
+        Some(String::from_utf16_lossy(&name_buf[..end]))
     }
+}
+
+fn bluetooth_hid_address(device_path: &str) -> Option<u64> {
+    let lower = device_path.to_ascii_lowercase();
+    let hardware = lower.strip_prefix(r"\\?\hid#")?.split('#').next()?;
+    let fields = hardware.strip_prefix("{00001812-0000-1000-8000-00805f9b34fb}_dev_")?;
+    let mut fields = fields.split('_');
+    if fields.next()? != format!("vid&01{:04x}", VoiceKeyHid::VENDOR_ID) {
+        return None;
+    }
+    fields.next()?.strip_prefix("pid&")?;
+    fields.next()?.strip_prefix("rev&")?;
+    let address = fields.next()?;
+    if fields.next().is_some() || address.len() != 12 || !address.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u64::from_str_radix(address, 16).ok()
+}
+
+pub fn is_selected_remote(device_path: &str, selected_id: Option<&str>) -> bool {
+    let Some(address) = bluetooth_hid_address(device_path) else { return false };
+    let Some(selected) = selected_id.and_then(|id| id.strip_prefix("BluetoothLE#BluetoothLE")) else {
+        return false;
+    };
+    let Some((_, remote)) = selected.rsplit_once('-') else { return false };
+    let octets: Vec<_> = remote.split(':').collect();
+    if octets.len() != 6 || octets.iter().any(|part| part.len() != 2 || !part.bytes().all(|c| c.is_ascii_hexdigit())) {
+        return false;
+    }
+    u64::from_str_radix(&octets.concat(), 16).ok() == Some(address)
 }
 
 /// 解析 RAWINPUT：键盘页找 F5 usage；鼠标页翻译触摸板导航；
@@ -268,7 +308,7 @@ fn parse_raw_input(raw: &RAWINPUT, wparam: WPARAM) -> Vec<HidEvent> {
             return vec![HidEvent::Activity];
         }
         if raw.header.dwType == RIM_TYPEMOUSE.0 {
-            // RC003 触摸板：点击 = 左键（→Ok），边缘滑 = 滚轮（→Up/Down）。
+            // 来源已通过蓝牙 HID 校验，宿主还需核对选中设备。
             let mouse = raw.data.mouse;
             let button_flags = mouse.Anonymous.Anonymous.usButtonFlags as u32;
             let wheel_delta = mouse.Anonymous.Anonymous.usButtonData as i16;
@@ -314,6 +354,77 @@ const _: u32 = WM_APP_HID;
 mod tests {
     use super::*;
 
+    // Synthetic addresses preserve the Windows path format without exposing device IDs.
+    const SELECTED_REMOTE: &str = "BluetoothLE#BluetoothLE00:11:22:33:44:55-aa:bb:cc:dd:ee:ff";
+    const REMOTE_HID: &str = r"\\?\HID#{00001812-0000-1000-8000-00805F9B34FB}_DEV_VID&012717_PID&32B8_REV&00A4_AABBCCDDEEFF#C&00000000&0&0000#{GUID}";
+    const USB_MOUSE: &str = r"\\?\HID#VID_2717&PID_5070&MI_00&COL01#9&00000000&0&0000#{GUID}";
+
+    #[test]
+    fn selected_remote_rejects_xiaomi_usb_mouse() {
+        assert!(!is_selected_remote(USB_MOUSE, Some(SELECTED_REMOTE)));
+    }
+
+    #[test]
+    fn selected_remote_accepts_actual_bluetooth_hid_path() {
+        assert!(is_selected_remote(REMOTE_HID, Some(SELECTED_REMOTE)));
+        assert!(is_selected_remote(&REMOTE_HID.to_lowercase(), Some(SELECTED_REMOTE)));
+    }
+
+    #[test]
+    fn selected_remote_rejects_other_devices_and_missing_selection() {
+        let other = REMOTE_HID.replace("AABBCCDDEEFF", "AABBCCDDEE00");
+        assert!(!is_selected_remote(&other, Some(SELECTED_REMOTE)));
+        assert!(!is_selected_remote(REMOTE_HID, None));
+        assert!(!is_selected_remote(REMOTE_HID, Some("")));
+        assert!(!is_selected_remote(REMOTE_HID, Some("invalid")));
+        assert!(!is_selected_remote(&REMOTE_HID.replace("012717", "01046D"), Some(SELECTED_REMOTE)));
+    }
+
+    #[test]
+    fn selected_remote_drops_mouse_events_before_statistics_and_mapping() {
+        for flags in [RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_WHEEL] {
+            let input = HidInput {
+                device_path: USB_MOUSE.into(),
+                events: touchpad_events(flags, 120),
+            };
+            assert!(input.into_events_for(Some(SELECTED_REMOTE)).is_empty());
+        }
+    }
+
+    #[test]
+    fn selected_remote_preserves_button_and_voice_events() {
+        let events = vec![
+            HidEvent::UsageSet(vec![RemoteButton::Ok.hid_usage()]),
+            HidEvent::UsageSet(Vec::new()),
+            HidEvent::VoiceKey { pressed: true },
+            HidEvent::VoiceKey { pressed: false },
+        ];
+        let input = HidInput { device_path: REMOTE_HID.into(), events: events.clone() };
+        assert_eq!(input.into_events_for(Some(SELECTED_REMOTE)), events);
+    }
+
+    #[test]
+    fn selected_remote_rechecks_queued_input_after_selection_changes() {
+        let input = HidInput {
+            device_path: REMOTE_HID.into(),
+            events: vec![HidEvent::UsageSet(vec![RemoteButton::Ok.hid_usage()])],
+        };
+        let next_remote = SELECTED_REMOTE.replace("ee:ff", "ee:00");
+        assert!(input.into_events_for(Some(&next_remote)).is_empty());
+    }
+
+    #[test]
+    fn selected_remote_rejects_partial_and_malformed_addresses() {
+        for remote in ["aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:zz", "aa:bb:cc:dd:ee:fff"] {
+            let selected = format!("BluetoothLE#BluetoothLE00:11:22:33:44:55-{remote}");
+            assert!(!is_selected_remote(REMOTE_HID, Some(&selected)));
+        }
+        for address in ["AABBCCDDEEF", "AABBCCDDEEFFF", "AABBCCDDEEFZ"] {
+            let path = REMOTE_HID.replace("AABBCCDDEEFF", address);
+            assert!(!is_selected_remote(&path, Some(SELECTED_REMOTE)));
+        }
+    }
+
     #[test]
     fn touchpad_tap_maps_to_ok_press_and_release() {
         // 点击触摸板 = 左键 down/up → Ok usage 的按下/空集释放。
@@ -339,7 +450,7 @@ mod tests {
     #[test]
     fn pure_movement_and_other_buttons_produce_nothing() {
         assert!(touchpad_events(0, 0).is_empty());
-        // 右键 / 中键不属于 RC003 触摸板语义。
+        // 右键 / 中键不映射到遥控器按键。
         assert!(touchpad_events(0x0004, 0).is_empty());
         assert!(touchpad_events(0x0010, 0).is_empty());
     }

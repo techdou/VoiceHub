@@ -26,10 +26,10 @@ use crate::store::Store;
 use sb_windows::audio::AudioRuntime;
 use sb_windows::ble::{BleEvent, BleRuntime};
 use sb_windows::key_gate;
-use sb_windows::raw_input::{spawn_hid_monitor, HidEvent, UsageTracker};
+use sb_windows::raw_input::{spawn_hid_monitor, HidEvent, HidInput, UsageTracker};
 
 enum InternalEvent {
-    Hid(HidEvent),
+    Hid(HidInput),
     Ble(BleEvent),
     Power(sb_windows::power::PowerEvent),
     /// 手势 tick（驱动单击窗口/长按判定）。
@@ -114,7 +114,7 @@ impl Bridge {
 
         // HID 监视。
         {
-            let (hid_tx, hid_rx) = channel::<HidEvent>();
+            let (hid_tx, hid_rx) = channel::<HidInput>();
             let _ = spawn_hid_monitor(hid_tx);
             let forward = tx.clone();
             std::thread::Builder::new()
@@ -236,7 +236,7 @@ impl Bridge {
                     self.dispatch_gesture(gesture_event.button, gesture_event.gesture);
                 }
             }
-            InternalEvent::Hid(hid) => self.handle_hid(hid),
+            InternalEvent::Hid(input) => self.handle_hid(input),
             InternalEvent::Ble(ble_event) => self.handle_ble(ble_event),
             InternalEvent::Power(power) => match power {
                 sb_windows::power::PowerEvent::Suspend => {
@@ -250,13 +250,15 @@ impl Bridge {
         }
     }
 
-    fn handle_hid(self: &Arc<Self>, hid: HidEvent) {
-        match hid {
-            HidEvent::UsageSet(usages) => {
-                let now = now_ms();
-                let mut gestures = Vec::new();
-                {
-                    let mut inner = lock(&self.inner);
+    fn handle_hid(self: &Arc<Self>, input: HidInput) {
+        let mut inner = lock(&self.inner);
+        let events = input.into_events_for(inner.settings.paired_device_id.as_deref());
+        let mut gestures = Vec::new();
+        let mut counted = false;
+        for hid in events {
+            match hid {
+                HidEvent::UsageSet(usages) => {
+                    let now = now_ms();
                     let edges = inner.usage_tracker.update(&usages);
                     for edge in &edges {
                         // 画布实时反馈：沿事件直接推 UI（低频，无需节流）。
@@ -271,8 +273,9 @@ impl Bridge {
                         } else {
                             inner.gesture.release(edge.button, now)
                         };
-                        gestures.extend(events);
+                        gestures.extend(events.into_iter().map(|e| (e.button, e.gesture)));
                         if edge.pressed {
+                            counted = true;
                             inner.statistics.apply(
                                 UsageEvent::ButtonPress {
                                     button_id: sb_core::mapping::ButtonMapping::key(edge.button),
@@ -282,38 +285,38 @@ impl Bridge {
                         }
                     }
                 }
-                for gesture_event in gestures {
-                    self.dispatch_gesture(gesture_event.button, gesture_event.gesture);
+                HidEvent::VoiceKey { pressed } => {
+                    // F5 由 ATVV 控制通道驱动语音（key_gate 负责吞键）；仅记日志。
+                    log::debug!("voice key F5 {}", if pressed { "down" } else { "up" });
                 }
-            }
-            HidEvent::VoiceKey { pressed } => {
-                // F5 由 ATVV 控制通道驱动语音（key_gate 负责吞键）；仅记日志。
-                log::debug!("voice key F5 {}", if pressed { "down" } else { "up" });
-            }
-            HidEvent::WheelClick { button } => {
-                // 触摸板滚轮 tick：语义已是完成的单击，不经手势状态机
-                //（连续滚动会被 300ms 双击窗口误判成 DoubleClick 而吞掉）。
-                {
-                    let mut inner = lock(&self.inner);
+                HidEvent::WheelClick { button } => {
+                    // 滚轮 tick 直接派发，避免连续滚动被双击窗口合并。
+                    counted = true;
                     inner.statistics.apply(
                         UsageEvent::ButtonPress {
                             button_id: sb_core::mapping::ButtonMapping::key(button),
                         },
                         chrono::Local::now(),
                     );
+                    self.emit_ui(UiEvent::ButtonActivity {
+                        button: sb_core::mapping::ButtonMapping::key(button),
+                        pressed: true,
+                    });
+                    self.emit_ui(UiEvent::ButtonActivity {
+                        button: sb_core::mapping::ButtonMapping::key(button),
+                        pressed: false,
+                    });
+                    gestures.push((button, Gesture::SingleClick));
                 }
-                self.emit_ui(UiEvent::ButtonActivity {
-                    button: sb_core::mapping::ButtonMapping::key(button),
-                    pressed: true,
-                });
-                self.emit_ui(UiEvent::ButtonActivity {
-                    button: sb_core::mapping::ButtonMapping::key(button),
-                    pressed: false,
-                });
-                self.dispatch_gesture(button, Gesture::SingleClick);
-                self.persist_statistics();
+                HidEvent::Activity => {}
             }
-            HidEvent::Activity => {}
+        }
+        drop(inner);
+        for (button, gesture) in gestures {
+            self.dispatch_gesture(button, gesture);
+        }
+        if counted {
+            self.persist_statistics();
         }
     }
 
@@ -505,6 +508,10 @@ impl Bridge {
             autostart_changed = settings.launch_at_login != inner.settings.launch_at_login;
             language_changed = settings.language != inner.settings.language;
             extend_changed = settings.experimental_voice_extend != inner.settings.experimental_voice_extend;
+            if settings.paired_device_id != inner.settings.paired_device_id {
+                inner.gesture.reset();
+                inner.usage_tracker = UsageTracker::default();
+            }
             inner.settings = settings.clone();
         }
         if let Err(error) = self.store.save_settings(&settings) {
