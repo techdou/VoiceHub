@@ -8,3 +8,4 @@ src-tauri/gen/schemas/
 .idea/
 *.tmp
 *.bak
+refs/
