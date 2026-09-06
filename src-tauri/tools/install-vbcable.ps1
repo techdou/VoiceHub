@@ -1,4 +1,4 @@
-# VB-CABLE 一键安装：官方包下载 → SHA-256 固定校验 → 解压 → 官方安装器 /install。
+﻿# VB-CABLE 一键安装：官方包下载 → SHA-256 固定校验 → 解压 → 官方安装器 /install。
 # 改写自 vibe-flow 的 Install-VBCable.ps1（GPL-3.0，真机验证过的流程内核）：
 # 不捆绑驱动包，运行时从 VB-Audio 官方 URL 下载；校验值防投毒/劫持；
 # 非管理员时自我提升（UAC 确认）；状态写 install-state.json 供应用轮询。

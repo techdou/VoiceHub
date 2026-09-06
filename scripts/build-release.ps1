@@ -1,4 +1,4 @@
-# 构建发布产物：NSIS 安装包 + 便携 exe（含 SHA-256）。
+﻿# 构建发布产物：NSIS 安装包 + 便携 exe（含 SHA-256）。
 param(
     [switch]$SkipInstaller
 )

@@ -1,4 +1,4 @@
-# 声桥 SoundBridge 一键预检（等价参考仓库的 ci-preflight）
+﻿# 声桥 SoundBridge 一键预检（等价参考仓库的 ci-preflight）
 # 检查工具链 → 前端测试 → 前端构建 → Rust 全量测试 → Rust 构建。
 # 任一步失败即退出非零码。
 
