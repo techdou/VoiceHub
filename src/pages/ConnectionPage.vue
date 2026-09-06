@@ -100,6 +100,14 @@ function setVoiceExtend(enabled: boolean) {
   emit("update-settings", { ...props.settings, experimentalVoiceExtend: enabled });
 }
 
+function setSayItMode(mode: "toggle" | "hold") {
+  if (!props.settings) return;
+  emit("update-settings", {
+    ...props.settings,
+    provider: { ...props.settings.provider, customMode: mode },
+  });
+}
+
 function setCustomMode(mode: "toggle" | "hold") {
   if (!props.settings) return;
   emit("update-settings", {
@@ -266,6 +274,25 @@ const providerOptions = [
       <p v-if="settings.provider.kind === 'sayit'" class="hint">
         {{ t("connection.provider.sayit_hint") }}
       </p>
+      <div v-if="settings.provider.kind === 'sayit'" class="setting-row">
+        <div class="label">{{ t("connection.provider.sayit_mode") }}</div>
+        <div class="row">
+          <button
+            class="btn"
+            :class="{ primary: settings.provider.customMode === 'toggle' }"
+            @click="setSayItMode('toggle')"
+          >
+            {{ t("connection.provider.sayit_mode.toggle") }}
+          </button>
+          <button
+            class="btn"
+            :class="{ primary: settings.provider.customMode === 'hold' }"
+            @click="setSayItMode('hold')"
+          >
+            {{ t("connection.provider.sayit_mode.hold") }}
+          </button>
+        </div>
+      </div>
       <div v-if="settings.provider.kind === 'sayit'" class="setting-row">
         <div class="label">{{ t("connection.provider.sayit_key") }}</div>
         <select

@@ -105,7 +105,9 @@ impl ProviderConfig {
             ProviderKind::WeType => Some(TriggerMode::Toggle),
             ProviderKind::Doubao => Some(TriggerMode::Hold),
             ProviderKind::WinH => Some(TriggerMode::Toggle),
-            ProviderKind::SayIt => Some(TriggerMode::Hold),
+            // SayIt 双模式：Toggle = 免提（HF，点一下开始/再点结束），
+            // Hold = 按住说话（PTT）。跟随用户选择，默认 Toggle。
+            ProviderKind::SayIt => Some(self.custom_mode),
             ProviderKind::Custom => Some(self.custom_mode),
             ProviderKind::None => None,
         }
@@ -193,12 +195,27 @@ mod tests {
     #[test]
     fn sayit_defaults_to_right_alt_and_accepts_override() {
         let config = ProviderConfig { kind: ProviderKind::SayIt, ..Default::default() };
+        // 默认免提模式（HF）：开始/结束各点一下。
         assert_eq!(
             config.trigger_on_stream_start(),
-            ProviderTrigger::Press { vk: VK_RMENU, modifiers: 0 }
+            ProviderTrigger::Tap { vk: VK_RMENU, modifiers: 0 }
         );
         assert_eq!(
             config.trigger_on_stream_stop(),
+            ProviderTrigger::Tap { vk: VK_RMENU, modifiers: 0 }
+        );
+        // 按住说话（PTT）：按下并保持、结束时释放。
+        let ptt = ProviderConfig {
+            kind: ProviderKind::SayIt,
+            custom_mode: TriggerMode::Hold,
+            ..Default::default()
+        };
+        assert_eq!(
+            ptt.trigger_on_stream_start(),
+            ProviderTrigger::Press { vk: VK_RMENU, modifiers: 0 }
+        );
+        assert_eq!(
+            ptt.trigger_on_stream_stop(),
             ProviderTrigger::Release { vk: VK_RMENU, modifiers: 0 }
         );
         // 用户改键（如右 Ctrl）后生效。
@@ -209,7 +226,7 @@ mod tests {
         };
         assert_eq!(
             ctrl.trigger_on_stream_start(),
-            ProviderTrigger::Press { vk: VK_RCONTROL, modifiers: 0 }
+            ProviderTrigger::Tap { vk: VK_RCONTROL, modifiers: 0 }
         );
         assert!(config.drain_ms() >= 120);
     }
