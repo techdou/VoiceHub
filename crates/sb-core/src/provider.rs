@@ -14,6 +14,8 @@ pub const WETYPE_TOGGLE: (u16, u8) = (vk::LWIN, crate::actions::MOD_CONTROL);
 pub const WIN_H: (u16, u8) = (vk::H, crate::actions::MOD_WIN);
 /// 右 Ctrl（SayIt 按住说话默认推荐键）。
 pub const VK_RCONTROL: u16 = 0xA3;
+/// 右 Alt（SayIt 可选触发键；若 SayIt 的 HF 功能占用右 Alt 需先挪走）。
+pub const VK_RMENU: u16 = 0xA5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,9 +90,11 @@ impl ProviderConfig {
             ProviderKind::WeType => WETYPE_TOGGLE,
             ProviderKind::Doubao => (vk::LCONTROL, 0), // 默认占位：豆包按住式默认键可在 UI 改
             ProviderKind::WinH => WIN_H,
-            // 右 Ctrl：扩展键（扫描码 0x1D + EXTENDED）。避免右 Shift——
-            // 长按 8s 触发 Windows 筛选键会让录音停不下来（SayIt 官方提示）。
-            ProviderKind::SayIt => (VK_RCONTROL, 0),
+            // 默认右 Ctrl（扩展键 0x1D+EXTENDED）；用户可在 UI 换右 Alt。
+            // 避免右 Shift——长按 8s 触发筛选键会让录音停不下来。
+            ProviderKind::SayIt => {
+                (if self.custom_vk != 0 { self.custom_vk } else { VK_RCONTROL }, 0)
+            }
             ProviderKind::Custom => (self.custom_vk, self.custom_modifiers),
             ProviderKind::None => (0, 0),
         }
@@ -187,17 +191,26 @@ mod tests {
     }
 
     #[test]
-    fn sayit_holds_right_control() {
+    fn sayit_defaults_to_right_control_and_accepts_override() {
         let config = ProviderConfig { kind: ProviderKind::SayIt, ..Default::default() };
         assert_eq!(
             config.trigger_on_stream_start(),
             ProviderTrigger::Press { vk: VK_RCONTROL, modifiers: 0 }
         );
+        // 用户改键（如右 Alt）后生效。
+        let alt = ProviderConfig {
+            kind: ProviderKind::SayIt,
+            custom_vk: VK_RMENU,
+            ..Default::default()
+        };
         assert_eq!(
-            config.trigger_on_stream_stop(),
-            ProviderTrigger::Release { vk: VK_RCONTROL, modifiers: 0 }
+            alt.trigger_on_stream_start(),
+            ProviderTrigger::Press { vk: VK_RMENU, modifiers: 0 }
         );
-        // 排空等待合理（Whisper 录音收尾）。
+        assert_eq!(
+            alt.trigger_on_stream_stop(),
+            ProviderTrigger::Release { vk: VK_RMENU, modifiers: 0 }
+        );
         assert!(config.drain_ms() >= 120);
     }
 

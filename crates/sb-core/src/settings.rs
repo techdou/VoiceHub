@@ -27,6 +27,9 @@ pub struct AppSettings {
     pub profiles: ProfileStore,
     /// 按键自定义映射总开关（关闭 = 遥控器按键直通系统）。
     pub button_mapping_enabled: bool,
+    /// 实验性：语音会话每 40s 发送 ATVV 续租（MIC_EXTEND），
+    /// 尝试突破约 60s 固件会话边界。固件是否接受未真机验证。
+    pub experimental_voice_extend: bool,
     pub launch_at_login: bool,
     pub language: Language,
     pub theme: Theme,
@@ -60,6 +63,7 @@ impl Default for AppSettings {
             provider: ProviderConfig::default(),
             profiles: ProfileStore::default(),
             button_mapping_enabled: true,
+            experimental_voice_extend: false,
             launch_at_login: false,
             language: Language::System,
             theme: Theme::System,

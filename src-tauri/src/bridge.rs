@@ -204,9 +204,13 @@ impl Bridge {
                 bridge.ble.connect(device_id);
             }
         }
-        // 启动时按设置同步一次开机自启。
-        let autostart_enabled = lock(&bridge.inner).settings.launch_at_login;
+        // 启动时按设置同步一次开机自启与实验性续租。
+        let (autostart_enabled, extend_enabled) = {
+            let inner = lock(&bridge.inner);
+            (inner.settings.launch_at_login, inner.settings.experimental_voice_extend)
+        };
         bridge.sync_autostart(autostart_enabled);
+        bridge.ble.set_extend_enabled(extend_enabled);
         bridge
     }
 
@@ -463,11 +467,13 @@ impl Bridge {
         let audio_changed;
         let autostart_changed;
         let language_changed;
+        let extend_changed;
         {
             let mut inner = lock(&self.inner);
             audio_changed = settings.audio_endpoint_name != inner.settings.audio_endpoint_name;
             autostart_changed = settings.launch_at_login != inner.settings.launch_at_login;
             language_changed = settings.language != inner.settings.language;
+            extend_changed = settings.experimental_voice_extend != inner.settings.experimental_voice_extend;
             inner.settings = settings.clone();
         }
         let _ = self.store.save_settings(&settings);
@@ -479,6 +485,9 @@ impl Bridge {
         }
         if language_changed {
             crate::refresh_tray_menu(&self.app);
+        }
+        if extend_changed {
+            self.ble.set_extend_enabled(settings.experimental_voice_extend);
         }
     }
 

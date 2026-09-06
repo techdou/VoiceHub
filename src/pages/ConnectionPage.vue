@@ -87,6 +87,19 @@ function setAutostart(enabled: boolean) {
   emit("update-settings", { ...props.settings, launchAtLogin: enabled });
 }
 
+function setSayItKey(vk: number) {
+  if (!props.settings) return;
+  emit("update-settings", {
+    ...props.settings,
+    provider: { ...props.settings.provider, customVk: vk },
+  });
+}
+
+function setVoiceExtend(enabled: boolean) {
+  if (!props.settings) return;
+  emit("update-settings", { ...props.settings, experimentalVoiceExtend: enabled });
+}
+
 function setCustomMode(mode: "toggle" | "hold") {
   if (!props.settings) return;
   emit("update-settings", {
@@ -253,6 +266,16 @@ const providerOptions = [
       <p v-if="settings.provider.kind === 'sayit'" class="hint">
         {{ t("connection.provider.sayit_hint") }}
       </p>
+      <div v-if="settings.provider.kind === 'sayit'" class="setting-row">
+        <div class="label">{{ t("connection.provider.sayit_key") }}</div>
+        <select
+          :value="settings.provider.customVk === 0xa5 ? 0xa5 : 0xa3"
+          @change="setSayItKey(Number(($event.target as HTMLSelectElement).value))"
+        >
+          <option :value="0xa3">{{ t("connection.provider.sayit_key.rctrl") }}</option>
+          <option :value="0xa5">{{ t("connection.provider.sayit_key.ralt") }}</option>
+        </select>
+      </div>
       <p v-if="settings.provider.kind === 'we_type'" class="hint">
         {{ t("connection.provider.we_type_hint") }}
       </p>
@@ -276,6 +299,20 @@ const providerOptions = [
             {{ t("connection.provider.mode.hold") }}
           </button>
         </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="setting-row" style="padding-top: 0">
+        <div>
+          <div class="label">{{ t("voice.extend.title") }}</div>
+          <div class="desc">{{ t("voice.extend.hint") }}</div>
+        </div>
+        <button
+          class="switch"
+          :class="{ on: settings.experimentalVoiceExtend }"
+          @click="setVoiceExtend(!settings.experimentalVoiceExtend)"
+        ></button>
       </div>
     </section>
 

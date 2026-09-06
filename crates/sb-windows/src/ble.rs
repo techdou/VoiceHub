@@ -95,6 +95,7 @@ enum Command {
     MicClose,
     ReconnectNow,
     SetGain { gain_db: f64 },
+    SetExtendEnabled { enabled: bool },
     Shutdown { reply: Sender<()> },
 }
 
@@ -145,6 +146,10 @@ impl BleRuntime {
 
     pub fn set_gain(&self, gain_db: f64) {
         let _ = self.sender.send(Command::SetGain { gain_db });
+    }
+
+    pub fn set_extend_enabled(&self, enabled: bool) {
+        let _ = self.sender.send(Command::SetExtendEnabled { enabled });
     }
 
     pub fn list_paired(&self) -> Vec<PairedRemote> {
@@ -210,6 +215,10 @@ struct Session {
     control_token: i64,
     connection_token: i64,
     gain_db: f64,
+    /// 实验性续租：是否启用、会话起点、上次续租时刻。
+    extend_enabled: bool,
+    voice_started: Option<Instant>,
+    last_extend_at: Option<Instant>,
 }
 
 impl Session {
@@ -333,6 +342,11 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
                         session.gain_db = clamped;
                     }
                 }
+                Command::SetExtendEnabled { enabled } => {
+                    if let Some(session) = ctx.session.as_mut() {
+                        session.extend_enabled = enabled;
+                    }
+                }
                 Command::ListPaired { reply } => {
                     let _ = reply.send(list_paired_remotes());
                 }
@@ -395,6 +409,22 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
                     let device_id = ctx.target_device_id.clone().unwrap();
                     ctx.reconnect_at = None;
                     attempt_connect(&mut ctx, &device_id);
+                }
+            }
+        }
+
+        // 实验性续租：会话进行中每 40s 尝试 MIC_EXTEND（决策纯函数）。
+        if let Some(session) = ctx.session.as_mut() {
+            if let Some(bytes) = extend_command_if_due(session) {
+                match session.write(&bytes) {
+                    Ok(()) => {
+                        session.last_extend_at = Some(Instant::now());
+                        log::info!(
+                            "ATVV MIC_EXTEND sent session={} (experimental)",
+                            session.session_id
+                        );
+                    }
+                    Err(error) => log::warn!("ATVV MIC_EXTEND write failed: {error}"),
                 }
             }
         }
@@ -539,6 +569,9 @@ fn connect_session(
         control_token,
         connection_token,
         gain_db: 0.0,
+        extend_enabled: false,
+        voice_started: None,
+        last_extend_at: None,
     };
     if session.model.adpcm_low_nibble_first() {
         session.decoder.set_low_nibble_first(true);
@@ -691,6 +724,50 @@ fn subscribe(
     Ok(token)
 }
 
+/// 续租间隔：40s（在 60s 固件租期内提前续）。
+pub const EXTEND_INTERVAL: Duration = Duration::from_secs(40);
+
+/// 纯决策：此刻是否应发送 MIC_EXTEND（单测覆盖）。
+/// 条件：实验开启 && 流中 && 已持续 ≥40s && 距上次续租（若有）≥40s。
+pub fn should_extend(
+    streaming: bool,
+    extend_enabled: bool,
+    held_for: Option<Duration>,
+    since_last_extend: Option<Duration>,
+) -> bool {
+    if !streaming || !extend_enabled {
+        return false;
+    }
+    let Some(held) = held_for else { return false };
+    if held < EXTEND_INTERVAL {
+        return false;
+    }
+    match since_last_extend {
+        None => true,
+        Some(elapsed) => elapsed >= EXTEND_INTERVAL,
+    }
+}
+
+/// 生成续租命令（会话状态 → 命令字节）。
+fn extend_command_if_due(session: &Session) -> Option<Vec<u8>> {
+    let held = session
+        .voice_started
+        .map(|started| started.elapsed())
+        .filter(|held| !held.is_zero());
+    let since = session
+        .last_extend_at
+        .map(|at| at.elapsed())
+        .filter(|since| !since.is_zero());
+    if !should_extend(session.streaming, session.extend_enabled, held, since) {
+        return None;
+    }
+    AtvvCommand::MicrophoneExtend {
+        version: session.capabilities.version,
+        session_id: session.session_id,
+    }
+    .encode()
+}
+
 fn list_paired_remotes() -> Vec<PairedRemote> {
     let selector = match BluetoothLEDevice::GetDeviceSelectorFromPairingState(true) {
         Ok(selector) => selector,
@@ -764,6 +841,8 @@ fn handle_control(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8]
             if !session.streaming {
                 session.streaming = true;
                 session.session_id = session_id;
+                session.voice_started = Some(Instant::now());
+                session.last_extend_at = None;
                 key_gate::set_session_active(true);
                 let _ = events.send(BleEvent::VoiceStarted { session_id });
             }
@@ -771,6 +850,8 @@ fn handle_control(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8]
         AtvvControlEvent::StreamStopped => {
             if session.streaming {
                 session.streaming = false;
+                session.voice_started = None;
+                session.last_extend_at = None;
                 session.microphone_opened = false;
                 key_gate::set_session_active(false);
                 let session_id = session.session_id;
@@ -794,6 +875,8 @@ fn process_audio(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8])
         session.accumulator.reset();
         session.decoder.reset();
         session.streaming = true;
+        session.voice_started = Some(Instant::now());
+        session.last_extend_at = None;
         key_gate::set_session_active(true);
         let _ = events.send(BleEvent::VoiceStarted { session_id: session.session_id });
     }
@@ -819,6 +902,33 @@ mod tests {
         assert_eq!(guid.data1, 0xAB5E_0001);
         assert_eq!(guid.data2, 0x5A21);
         assert_eq!(guid.data3, 0x4F05);
+    }
+
+    #[test]
+    fn extend_policy_fires_after_40s_and_repeats_periodically() {
+        use std::time::Duration as D;
+        let forty = EXTEND_INTERVAL;
+        // 未开启 / 未流中 / 时长不足：不发。
+        assert!(!should_extend(true, false, Some(forty), None));
+        assert!(!should_extend(false, true, Some(forty), None));
+        assert!(!should_extend(true, true, Some(forty - D::from_secs(1)), None));
+        // 40s 首次触发；刚续过未满 40s 不再发；满 40s 重发。
+        assert!(should_extend(true, true, Some(forty), None));
+        assert!(!should_extend(
+            true,
+            true,
+            Some(forty + D::from_secs(5)),
+            Some(D::from_secs(5))
+        ));
+        assert!(should_extend(true, true, Some(forty * 2), Some(forty)));
+        // 无时长信息（未开流）不触发。
+        assert!(!should_extend(true, true, None, None));
+    }
+
+    #[test]
+    fn extend_encodes_for_v1_firmware() {
+        let command = AtvvCommand::MicrophoneExtend { version: 0x0100, session_id: 7 };
+        assert_eq!(command.encode(), Some(vec![0x0E, 7]));
     }
 
     #[test]

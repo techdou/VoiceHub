@@ -90,6 +90,7 @@ export interface AppSettings {
   provider: ProviderConfig;
   profiles: ProfileStore;
   buttonMappingEnabled: boolean;
+  experimentalVoiceExtend?: boolean;
   launchAtLogin: boolean;
   language: Language;
   theme: Theme;
