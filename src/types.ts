@@ -165,5 +165,6 @@ export type UiEvent =
       action: string;
       ok: boolean;
     }
+  | { type: "ButtonActivity"; button: string; pressed: boolean }
   | { type: "ShowSettings" }
   | { type: "AudioEndpointChanged"; name: string };

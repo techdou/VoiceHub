@@ -24,6 +24,7 @@ const settings = shallowRef<AppSettings | null>(null);
 const bleSnapshot = ref<BleSnapshot | null>(null);
 const recording = ref(false);
 const voiceLevel = ref(0);
+const activeButtons = ref(new Set<string>());
 const showOnboarding = ref(false);
 const saveTick = ref(0);
 
@@ -80,10 +81,25 @@ onMounted(async () => {
     switch (payload.type) {
       case "BleState":
         bleSnapshot.value = payload.snapshot;
+        // 断开时清空按住态（防止遥控器断连导致高亮卡死）。
+        if (payload.snapshot.phase !== "ready") {
+          activeButtons.value = new Set();
+        }
         break;
       case "VoiceState":
         recording.value = payload.recording;
         voiceLevel.value = payload.level;
+        break;
+      case "ButtonActivity":
+        {
+          const next = new Set(activeButtons.value);
+          if (payload.pressed) {
+            next.add(payload.button);
+          } else {
+            next.delete(payload.button);
+          }
+          activeButtons.value = next;
+        }
         break;
       case "ShowSettings":
         showOnboarding.value = false;
@@ -115,12 +131,17 @@ onMounted(async () => {
         v-else-if="page === 'buttons'"
         :settings="settings"
         :save-tick="saveTick"
+        :active-buttons="activeButtons"
+        :voice-active="recording"
         @update-settings="persistSettings"
       />
       <StatsPage v-else-if="page === 'stats'" />
       <HistoryPage v-else-if="page === 'history'" />
       <DiagnosticsPage v-else-if="page === 'diagnostics'" />
-      <SimulatorPage v-else-if="page === 'simulator'" />
+      <SimulatorPage
+        v-else-if="page === 'simulator'"
+        :physical-active-buttons="activeButtons"
+      />
       <AboutPage v-else-if="page === 'about'" :version="version" @open="openUrl" />
     </main>
     <Onboarding

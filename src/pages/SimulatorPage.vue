@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { useI18n } from "../i18n";
@@ -17,6 +17,8 @@ interface Receipt {
   at: string;
 }
 
+const props = defineProps<{ physicalActiveButtons?: Set<string> }>();
+
 const receipts = ref<Receipt[]>([]);
 const voiceBusy = ref(false);
 const voiceLevel = ref(0);
@@ -30,9 +32,30 @@ const BUTTON_IDS = [
   "volume_up", "home", "volume_down", "menu", "tv",
 ] as const;
 
+// 本地活动高亮（叠加物理按键事件）。
+const localActive = ref(new Set<string>());
+
 async function press(button: string) {
-  await api.simulateButton(button, gestureMode.value);
+  const next = new Set(localActive.value);
+  next.add(button);
+  localActive.value = next;
+  try {
+    await api.simulateButton(button, gestureMode.value);
+  } finally {
+    window.setTimeout(() => {
+      const clear = new Set(localActive.value);
+      clear.delete(button);
+      localActive.value = clear;
+    }, 280);
+  }
 }
+
+const mergedActive = computed(() => {
+  if (!props.physicalActiveButtons?.size) return localActive.value;
+  const merged = new Set(localActive.value);
+  for (const id of props.physicalActiveButtons) merged.add(id);
+  return merged;
+});
 
 async function testVoice() {
   voiceBusy.value = true;
@@ -70,7 +93,8 @@ onMounted(async () => {
       <section class="card" style="margin-bottom: 0">
         <RemoteCanvas
           :selected="selected"
-          :recording="recording"
+          :active-buttons="mergedActive"
+          :voice-active="recording"
           @select="press"
         />
         <div class="row" style="justify-content: center; margin-top: 12px">

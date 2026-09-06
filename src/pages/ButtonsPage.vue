@@ -5,11 +5,14 @@ import { useI18n } from "../i18n";
 import type { AppSettings, ButtonAction, ButtonMapping, RemoteButtonId } from "../types";
 import RemoteCanvas from "../components/RemoteCanvas.vue";
 import ActionPicker from "../components/ActionPicker.vue";
+import MappingCanvas from "../components/MappingCanvas.vue";
 import { actionLabel as sharedActionLabel } from "../actionLabel";
 
 const props = defineProps<{
   settings: AppSettings | null;
   saveTick: number;
+  activeButtons?: Set<string>;
+  voiceActive?: boolean;
 }>();
 
 const emit = defineEmits<{ "update-settings": [settings: AppSettings] }>();
@@ -51,11 +54,10 @@ function mutateProfiles(mutator: (profiles: AppSettings["profiles"]) => void) {
 
 function selectButton(button: string) {
   selectedButton.value = button as RemoteButtonId;
-  editingSlot.value = "single";
 }
 
-function changeAction(slot: "single" | "double" | "long") {
-  if (!selectedButton.value) return;
+function editSlot(button: string, slot: "single" | "double" | "long") {
+  selectedButton.value = button as RemoteButtonId;
   editingSlot.value = slot;
   showPicker.value = true;
 }
@@ -284,64 +286,17 @@ async function applyImport() {
       </template>
     </section>
 
-    <div v-if="activeProfile" style="display: grid; grid-template-columns: 260px 1fr; gap: 14px; align-items: start">
-      <section class="card" style="margin-bottom: 0">
-        <RemoteCanvas
-          :selected="selectedButton"
-          :recording="false"
-          @select="selectButton"
-        />
-      </section>
-
-      <section class="card" style="margin-bottom: 0">
-        <template v-if="selectedButton">
-          <h3>{{ buttonNames[selectedButton] }}</h3>
-          <div
-            v-for="slot in (SECONDARY_BUTTONS.has(selectedButton) ? ['single', 'double', 'long'] : ['single'])"
-            :key="slot"
-            class="setting-row"
-          >
-            <div>
-              <div class="label">{{ t(`buttons.slot.${slot}` as never) }}</div>
-              <div class="desc">{{ actionLabel(bindingFor(selectedButton)[slot as 'single' | 'double' | 'long']) }}</div>
-            </div>
-            <button class="btn" @click="changeAction(slot as 'single' | 'double' | 'long')">
-              {{ t("buttons.action.change") }}
-            </button>
-          </div>
-          <p v-if="!SECONDARY_BUTTONS.has(selectedButton)" class="hint" style="margin-top: 10px">
-            {{ t("buttons.slot.locked") }}
-          </p>
-        </template>
-        <div v-else class="empty">{{ t("buttons.canvas.hint") }}</div>
-      </section>
-    </div>
-
-    <div v-if="importOpen" class="action-picker-overlay" @click.self="importOpen = false">
-      <div class="action-picker">
-        <header style="padding: 16px 18px 8px">
-          <div class="row between">
-            <h3>{{ t("buttons.profile.import") }}</h3>
-            <button class="btn subtle" @click="importOpen = false">✕</button>
-          </div>
-          <p class="hint">{{ t("buttons.profile.import.hint") }}</p>
-        </header>
-        <div style="padding: 0 18px 18px">
-          <textarea
-            v-model="importText"
-            rows="10"
-            style="width: 100%; resize: vertical; font-family: Consolas, monospace; font-size: 12px"
-            placeholder='{"name":"...","mapping":{...}}'
-          ></textarea>
-          <div v-if="importError" style="color: var(--fail); font-size: 12px; margin-top: 6px">
-            {{ importError }}
-          </div>
-          <div class="row" style="margin-top: 10px; justify-content: flex-end">
-            <button class="btn primary" @click="applyImport">{{ t("common.confirm") }}</button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <section v-if="activeProfile" class="card">
+      <MappingCanvas
+        :bindings="activeProfile.mapping.bindings"
+        :selected="selectedButton"
+        :active-buttons="activeButtons ?? new Set()"
+        :voice-active="voiceActive ?? false"
+        :secondary-buttons="SECONDARY_BUTTONS"
+        @select-button="selectButton"
+        @edit-slot="editSlot"
+      />
+    </section>
 
     <ActionPicker
       v-if="showPicker && selectedButton"

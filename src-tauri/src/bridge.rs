@@ -43,6 +43,8 @@ pub enum UiEvent {
     VoiceState { recording: bool, level: f32 },
     Battery { percent: u8 },
     ActionReceipt { button: String, gesture: String, action: String, ok: bool },
+    /// 物理按键按下 / 释放沿（画布实时高亮）。
+    ButtonActivity { button: String, pressed: bool },
     ShowSettings,
     AudioEndpointChanged { name: String },
 }
@@ -250,6 +252,13 @@ impl Bridge {
                 {
                     let mut inner = lock(&self.inner);
                     let edges = inner.usage_tracker.update(&usages);
+                    for edge in &edges {
+                        // 画布实时反馈：沿事件直接推 UI（低频，无需节流）。
+                        self.emit_ui(UiEvent::ButtonActivity {
+                            button: sb_core::mapping::ButtonMapping::key(edge.button),
+                            pressed: edge.pressed,
+                        });
+                    }
                     for edge in edges {
                         let events = if edge.pressed {
                             inner.gesture.press(edge.button, now)
