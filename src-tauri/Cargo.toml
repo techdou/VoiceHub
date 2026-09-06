@@ -24,6 +24,7 @@ tauri-plugin-autostart = "2.5"
 tokio.workspace = true
 chrono.workspace = true
 log = "0.4"
+sys-locale = "0.3"
 
 [features]
 runtime-simulation = []

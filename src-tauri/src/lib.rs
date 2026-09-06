@@ -6,15 +6,91 @@ mod store;
 
 use std::sync::Arc;
 
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
-    Manager, WindowEvent,
-};
+use tauri::{tray::TrayIconBuilder, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 use bridge::Bridge;
+use sb_core::settings::Language;
 use store::Store;
+
+/// 托盘文案（zh / en）。键集一致性由测试锁定。
+pub struct TrayTexts {
+    pub show: &'static str,
+    pub reconnect: &'static str,
+    pub quit: &'static str,
+}
+
+const TRAY_ZH: TrayTexts = TrayTexts {
+    show: "显示设置",
+    reconnect: "重连遥控器",
+    quit: "退出声桥",
+};
+
+const TRAY_EN: TrayTexts = TrayTexts {
+    show: "Show settings",
+    reconnect: "Reconnect remote",
+    quit: "Quit SoundBridge",
+};
+
+/// 设置语言 → 托盘文案（system 跟随系统 UI 语言）。
+pub fn tray_texts(language: Language) -> &'static TrayTexts {
+    match language {
+        Language::ZhCn => &TRAY_ZH,
+        Language::English => &TRAY_EN,
+        Language::System => {
+            let zh = sys_locale::get_locale()
+                .map(|locale| locale.to_lowercase().starts_with("zh"))
+                .unwrap_or(true); // 识别失败偏中文（产品主语言）
+            if zh { &TRAY_ZH } else { &TRAY_EN }
+        }
+    }
+}
+
+/// 按语言构建托盘菜单（id 恒定，语言切换时重建并 set_menu）。
+fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let language = app
+        .try_state::<Arc<Bridge>>()
+        .map(|bridge| bridge.settings().language)
+        .unwrap_or(Language::System);
+    let texts = tray_texts(language);
+    let show = tauri::menu::MenuItem::with_id(app, "show", texts.show, true, None::<&str>)?;
+    let reconnect =
+        tauri::menu::MenuItem::with_id(app, "reconnect", texts.reconnect, true, None::<&str>)?;
+    let quit = tauri::menu::MenuItem::with_id(app, "quit", texts.quit, true, None::<&str>)?;
+    tauri::menu::Menu::with_items(app, &[&show, &reconnect, &quit])
+}
+
+/// 语言变化后由 bridge 调用：重建托盘菜单。
+pub fn refresh_tray_menu(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        match build_tray_menu(app) {
+            Ok(menu) => {
+                if let Err(error) = tray.set_menu(Some(menu)) {
+                    log::warn!("tray menu refresh failed: {error}");
+                }
+            }
+            Err(error) => log::warn!("tray menu rebuild failed: {error}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_texts_cover_both_languages() {
+        for language in [Language::System, Language::ZhCn, Language::English] {
+            let texts = tray_texts(language);
+            assert!(!texts.show.is_empty());
+            assert!(!texts.reconnect.is_empty());
+            assert!(!texts.quit.is_empty());
+        }
+        assert_ne!(TRAY_ZH.show, TRAY_EN.show);
+        assert_ne!(TRAY_ZH.quit, TRAY_EN.quit);
+    }
+}
 
 fn init_logging(app: &tauri::AppHandle) -> Option<()> {
     let dir = app
@@ -70,11 +146,8 @@ pub fn run() {
                 }
             });
 
-            // 托盘。
-            let show = MenuItem::with_id(app, "show", "显示设置", true, None::<&str>)?;
-            let reconnect = MenuItem::with_id(app, "reconnect", "重连遥控器", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出声桥", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &reconnect, &quit])?;
+            // 托盘（菜单文案跟随设置语言）。
+            let menu = build_tray_menu(&app.handle())?;
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)

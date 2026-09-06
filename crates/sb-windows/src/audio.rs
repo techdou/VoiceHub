@@ -22,6 +22,18 @@ const PREBUFFER_SAMPLES: usize = 480; // 30ms 起播
 const MAX_QUEUE_SAMPLES: usize = SOURCE_SAMPLE_RATE * 2; // 2 秒
 const MESSAGE_QUEUE_CAPACITY: usize = 64;
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// 空闲轮询：无会话且队列空时拉长等待（消息到达仍即时唤醒，
+/// 超时只是兜底 tick；250ms 让空闲 CPU 唤醒降一个数量级）。
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// 轮询间隔决策（单测覆盖）：忙 = 流式/排空中 / 队列有数据 / 流未停。
+fn poll_interval(phase: AudioPhase, queued: usize, sink_started: bool) -> Duration {
+    let busy = phase == AudioPhase::Streaming
+        || phase == AudioPhase::Draining
+        || queued > 0
+        || sink_started;
+    if busy { POLL_INTERVAL } else { IDLE_POLL_INTERVAL }
+}
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -145,8 +157,11 @@ fn worker_loop(receiver: Receiver<AudioMessage>, state: Arc<Mutex<AudioSnapshot>
     let mut session_generation: u64 = 0;
 
     loop {
-        // 非阻塞处理消息 + 音频泵交替。
-        match receiver.recv_timeout(POLL_INTERVAL) {
+        // 自适应节拍：空闲 250ms、会话中 5ms；消息到达即时唤醒。
+        let phase = state.lock().unwrap_or_else(|p| p.into_inner()).phase;
+        let sink_started = sink.as_ref().is_some_and(|s| s.started);
+        let timeout = poll_interval(phase, queue.len(), sink_started);
+        match receiver.recv_timeout(timeout) {
             Ok(AudioMessage::ListEndpoints { reply }) => {
                 let _ = reply.send(list_endpoints());
             }
@@ -395,4 +410,28 @@ fn fail(state: &Arc<Mutex<AudioSnapshot>>, message: String) {
     let mut snapshot = state.lock().unwrap_or_else(|p| p.into_inner());
     snapshot.phase = AudioPhase::Failed;
     snapshot.last_error = Some(message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_uses_long_poll_busy_uses_fast_poll() {
+        // 完全空闲：长轮询。
+        assert_eq!(poll_interval(AudioPhase::Idle, 0, false), IDLE_POLL_INTERVAL);
+        assert_eq!(poll_interval(AudioPhase::Failed, 0, false), IDLE_POLL_INTERVAL);
+        // 流式 / 排空：快轮询。
+        assert_eq!(poll_interval(AudioPhase::Streaming, 0, false), POLL_INTERVAL);
+        assert_eq!(poll_interval(AudioPhase::Draining, 0, false), POLL_INTERVAL);
+        // 队列有积压：保持快轮询直到排空。
+        assert_eq!(poll_interval(AudioPhase::Idle, 1, false), POLL_INTERVAL);
+        // 流未停（设备缓冲还有数据）：快轮询。
+        assert_eq!(poll_interval(AudioPhase::Idle, 0, true), POLL_INTERVAL);
+    }
+
+    #[test]
+    fn idle_poll_is_meaningfully_slower() {
+        assert!(IDLE_POLL_INTERVAL >= POLL_INTERVAL * 20);
+    }
 }

@@ -453,10 +453,12 @@ impl Bridge {
     pub fn apply_settings(self: &Arc<Self>, settings: AppSettings) {
         let audio_changed;
         let autostart_changed;
+        let language_changed;
         {
             let mut inner = lock(&self.inner);
             audio_changed = settings.audio_endpoint_name != inner.settings.audio_endpoint_name;
             autostart_changed = settings.launch_at_login != inner.settings.launch_at_login;
+            language_changed = settings.language != inner.settings.language;
             inner.settings = settings.clone();
         }
         let _ = self.store.save_settings(&settings);
@@ -465,6 +467,9 @@ impl Bridge {
         }
         if autostart_changed {
             self.sync_autostart(settings.launch_at_login);
+        }
+        if language_changed {
+            crate::refresh_tray_menu(&self.app);
         }
     }
 
