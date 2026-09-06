@@ -71,8 +71,11 @@ fn vk_to_scan(vk: u16) -> Option<(u16, bool)> {
         0x70..=0x7B => (0x3B + vk - 0x70, false),  // F1-F12
         0x90 => (0x46, false),          // ScrollLock
         0xA0 => (0x2A, false),          // LShift
+        0xA1 => (0x36, false),          // RShift（非扩展：左右 Shift 靠扫描码区分）
         0xA2 => (0x1D, false),          // LControl
+        0xA3 => (0x1D, EXTENDED),       // RControl（扩展）
         0xA4 => (0x38, false),          // LMenu(Alt)
+        0xA5 => (0x38, EXTENDED),       // RMenu(AltGr)（扩展）
         0xA6 => (0x6A, EXTENDED),       // BrowserBack
         0xA7 => (0x69, EXTENDED),       // BrowserForward
         0xA8 => (0x6C, EXTENDED),       // BrowserRefresh
@@ -218,10 +221,25 @@ mod tests {
         for vk in [
             0x0D, 0x1B, 0x08, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E,
             0x41, 0x43, 0x46, 0x48, 0x4C, 0x4E, 0x50, 0x53, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B,
-            0xA0, 0xA2, 0xA4, 0xA6, 0xA7, 0xB0, 0xB1, 0xB2, 0xB3, 0xAD, 0xAE, 0xAF,
+            0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xB0, 0xB1, 0xB2, 0xB3, 0xAD, 0xAE,
+            0xAF,
         ] {
             assert!(vk_to_scan(vk).is_some(), "vk 0x{vk:02X} missing scan code");
         }
+    }
+
+    #[test]
+    fn right_modifiers_use_scan_code_distinction() {
+        // 右 Shift 靠扫描码 0x36 区分（非扩展）。
+        let (scan, ext) = vk_to_scan(0xA1).unwrap();
+        assert_eq!(scan, 0x36);
+        assert!(!ext);
+        // 右 Ctrl / 右 Alt 是扩展键（扫描码与左侧相同 + EXTENDED）。
+        let (scan, ext) = vk_to_scan(0xA3).unwrap();
+        assert_eq!(scan, 0x1D);
+        assert!(ext);
+        let (_, ext) = vk_to_scan(0xA5).unwrap();
+        assert!(ext);
     }
 
     #[test]

@@ -122,6 +122,7 @@ const cableCandidatePresent = computed(() =>
 );
 
 const providerOptions = [
+  { id: "sayit", hint: true },
   { id: "we_type", hint: true },
   { id: "doubao" },
   { id: "win_h" },
@@ -249,6 +250,9 @@ const providerOptions = [
           <span>{{ t(`connection.provider.${option.id}` as never) }}</span>
         </button>
       </div>
+      <p v-if="settings.provider.kind === 'sayit'" class="hint">
+        {{ t("connection.provider.sayit_hint") }}
+      </p>
       <p v-if="settings.provider.kind === 'we_type'" class="hint">
         {{ t("connection.provider.we_type_hint") }}
       </p>

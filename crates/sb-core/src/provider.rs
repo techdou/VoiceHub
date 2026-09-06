@@ -12,6 +12,8 @@ use crate::actions::vk;
 pub const WETYPE_TOGGLE: (u16, u8) = (vk::LWIN, crate::actions::MOD_CONTROL);
 /// Win+H：Windows 内置听写。
 pub const WIN_H: (u16, u8) = (vk::H, crate::actions::MOD_WIN);
+/// 右 Ctrl（SayIt 按住说话默认推荐键）。
+pub const VK_RCONTROL: u16 = 0xA3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +24,9 @@ pub enum ProviderKind {
     Doubao,
     /// Windows 听写 Win+H。
     WinH,
+    /// SayIt（本地 Whisper 转写）：按住式注入右 Ctrl，
+    /// SayIt 录音设备设为 CABLE Output，转写文本落光标处。
+    SayIt,
     /// 自定义快捷键 + 触发模式。
     Custom,
     /// 仅输出音频，不触发任何 Provider（自证音频链路用）。
@@ -83,6 +88,9 @@ impl ProviderConfig {
             ProviderKind::WeType => WETYPE_TOGGLE,
             ProviderKind::Doubao => (vk::LCONTROL, 0), // 默认占位：豆包按住式默认键可在 UI 改
             ProviderKind::WinH => WIN_H,
+            // 右 Ctrl：扩展键（扫描码 0x1D + EXTENDED）。避免右 Shift——
+            // 长按 8s 触发 Windows 筛选键会让录音停不下来（SayIt 官方提示）。
+            ProviderKind::SayIt => (VK_RCONTROL, 0),
             ProviderKind::Custom => (self.custom_vk, self.custom_modifiers),
             ProviderKind::None => (0, 0),
         }
@@ -93,6 +101,7 @@ impl ProviderConfig {
             ProviderKind::WeType => Some(TriggerMode::Toggle),
             ProviderKind::Doubao => Some(TriggerMode::Hold),
             ProviderKind::WinH => Some(TriggerMode::Toggle),
+            ProviderKind::SayIt => Some(TriggerMode::Hold),
             ProviderKind::Custom => Some(self.custom_mode),
             ProviderKind::None => None,
         }
@@ -175,6 +184,21 @@ mod tests {
         assert_eq!(config.trigger_on_stream_start(), ProviderTrigger::None);
         assert_eq!(config.trigger_on_stream_stop(), ProviderTrigger::None);
         assert_eq!(config.drain_ms(), 0);
+    }
+
+    #[test]
+    fn sayit_holds_right_control() {
+        let config = ProviderConfig { kind: ProviderKind::SayIt, ..Default::default() };
+        assert_eq!(
+            config.trigger_on_stream_start(),
+            ProviderTrigger::Press { vk: VK_RCONTROL, modifiers: 0 }
+        );
+        assert_eq!(
+            config.trigger_on_stream_stop(),
+            ProviderTrigger::Release { vk: VK_RCONTROL, modifiers: 0 }
+        );
+        // 排空等待合理（Whisper 录音收尾）。
+        assert!(config.drain_ms() >= 120);
     }
 
     #[test]

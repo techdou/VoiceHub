@@ -2,7 +2,7 @@
 
 export type Language = "system" | "zh_cn" | "english";
 export type Theme = "system" | "light" | "dark";
-export type ProviderKind = "we_type" | "doubao" | "win_h" | "custom" | "none";
+export type ProviderKind = "we_type" | "doubao" | "sayit" | "win_h" | "custom" | "none";
 export type TriggerMode = "toggle" | "hold";
 
 export interface CustomShortcut {

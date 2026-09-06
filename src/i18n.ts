@@ -49,6 +49,8 @@ const dict = {
     "connection.provider.we_type": "微信输入法",
     "connection.provider.we_type_hint": "在其设置中把语音快捷键设为 Ctrl+Win，录音设备选 CABLE Output",
     "connection.provider.doubao": "豆包输入法（按住）",
+    "connection.provider.sayit": "SayIt（本地转写，推荐）",
+    "connection.provider.sayit_hint": "在 SayIt 设置中把「按住说话」键设为右 Ctrl、录音设备设为 CABLE Output；全程本地转写、无需云端",
     "connection.provider.win_h": "Windows 听写（Win+H）",
     "connection.provider.custom": "自定义",
     "connection.provider.none": "仅音频（不触发工具）",
@@ -223,6 +225,8 @@ const dict = {
     "connection.provider.we_type_hint":
       "Set its voice shortcut to Ctrl+Win and microphone to CABLE Output",
     "connection.provider.doubao": "Doubao Input (hold)",
+    "connection.provider.sayit": "SayIt (local transcription, recommended)",
+    "connection.provider.sayit_hint": "In SayIt settings set the push-to-talk key to Right Ctrl and the microphone to CABLE Output; fully local, no cloud",
     "connection.provider.win_h": "Windows dictation (Win+H)",
     "connection.provider.custom": "Custom",
     "connection.provider.none": "Audio only (no tool)",
