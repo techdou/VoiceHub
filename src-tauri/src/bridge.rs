@@ -290,6 +290,29 @@ impl Bridge {
                 // F5 由 ATVV 控制通道驱动语音（key_gate 负责吞键）；仅记日志。
                 log::debug!("voice key F5 {}", if pressed { "down" } else { "up" });
             }
+            HidEvent::WheelClick { button } => {
+                // 触摸板滚轮 tick：语义已是完成的单击，不经手势状态机
+                //（连续滚动会被 300ms 双击窗口误判成 DoubleClick 而吞掉）。
+                {
+                    let mut inner = lock(&self.inner);
+                    inner.statistics.apply(
+                        UsageEvent::ButtonPress {
+                            button_id: sb_core::mapping::ButtonMapping::key(button),
+                        },
+                        chrono::Local::now(),
+                    );
+                }
+                self.emit_ui(UiEvent::ButtonActivity {
+                    button: sb_core::mapping::ButtonMapping::key(button),
+                    pressed: true,
+                });
+                self.emit_ui(UiEvent::ButtonActivity {
+                    button: sb_core::mapping::ButtonMapping::key(button),
+                    pressed: false,
+                });
+                self.dispatch_gesture(button, Gesture::SingleClick);
+                self.persist_statistics();
+            }
             HidEvent::Activity => {}
         }
     }

@@ -11,7 +11,7 @@
 //! 但键盘注入带我们的 extra info 标记，按 LLKHF_INJECTED 区分由 key_gate 处理；
 //! Raw Input 侧按设备句柄过滤，物理遥控器才产生事件）。
 
-use std::cell::Cell;
+
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
@@ -36,6 +36,9 @@ pub enum HidEvent {
     VoiceKey { pressed: bool },
     /// 消费者页 usage 数组报文（当前按下集合，沿差分由宿主 UsageTracker 做）。
     UsageSet(Vec<u16>),
+    /// 触摸板滚轮 tick：语义上已是完成的单击（连续滚动不该被手势识别器
+    /// 误判成双击），宿主直接按单击派发，不经手势状态机。
+    WheelClick { button: RemoteButton },
     /// 任意遥控器活动（用于诊断/保活统计）。
     Activity,
 }
@@ -110,11 +113,9 @@ fn run_monitor(sender: Sender<HidEvent>) {
 
 thread_local! {
     // 窗口过程回调里直接 send 有重入风险：借 thread-local 暂存，
-    // 消息循环取出后转发。队列而非单槽：滚轮一次产生 down+up 两条合成报文。
+    // 消息循环取出后转发。队列而非单槽：一条鼠标报文可能产生多个事件。
     static PENDING_EVENTS: std::cell::RefCell<Vec<HidEvent>> =
         const { std::cell::RefCell::new(Vec::new()) };
-    // 触摸板左键（=Ok）当前是否按住；滚轮合成瞬时单击时保留其按下状态。
-    static OK_HELD: Cell<bool> = const { Cell::new(false) };
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -159,30 +160,23 @@ fn register_raw_input(hwnd: HWND) -> bool {
         .is_ok()
 }
 
-/// 触摸板鼠标标志 → 合成 usage 报文序列（纯函数，单测覆盖）。
+/// 触摸板鼠标标志 → 事件序列（纯函数，单测覆盖）。
 ///
 /// RC003 真机语义（2026-09 实测）：点击=左键、边缘滑=滚轮。
-/// 滚轮产生"瞬时单击"两条报文（按下→释放），并把 `ok_held` 的按下状态
-/// 带进两条报文，避免长按 Ok 期间滚轮丢失按住状态。
-pub fn touchpad_usage_reports(button_flags: u32, wheel_delta: i16, ok_held: bool) -> Vec<Vec<u16>> {
-    let ok = RemoteButton::Ok.hid_usage();
+/// 左键走 usage 合成（Ok 的按住/释放交给手势识别，支持长按/双击）；
+/// 滚轮直接发 WheelClick——tick 本身就是已完成的单击，若走手势状态机，
+/// 连续滚动会被 300ms 双击窗口误判成 DoubleClick 而吞掉。
+pub fn touchpad_events(button_flags: u32, wheel_delta: i16) -> Vec<HidEvent> {
     if button_flags & RI_MOUSE_LEFT_BUTTON_DOWN != 0 {
-        return vec![vec![ok]];
+        return vec![HidEvent::UsageSet(vec![RemoteButton::Ok.hid_usage()])];
     }
     if button_flags & RI_MOUSE_LEFT_BUTTON_UP != 0 {
-        return vec![Vec::new()];
+        return vec![HidEvent::UsageSet(Vec::new())];
     }
     if button_flags & RI_MOUSE_WHEEL != 0 {
-        let held: Vec<u16> = if ok_held { vec![ok] } else { Vec::new() };
-        // 边缘上滑 = 向上导航，下滑 = 向下（触摸板上滑 delta 为正）。
-        let nav = if wheel_delta >= 0 {
-            RemoteButton::Up.hid_usage()
-        } else {
-            RemoteButton::Down.hid_usage()
-        };
-        let mut with_nav = held.clone();
-        with_nav.push(nav);
-        return vec![with_nav, held];
+        // 边缘上滑（delta>0）= 向上导航，下滑 = 向下。
+        let button = if wheel_delta >= 0 { RemoteButton::Up } else { RemoteButton::Down };
+        return vec![HidEvent::WheelClick { button }];
     }
     // 纯位移与其他按钮：不合成。
     Vec::new()
@@ -278,21 +272,7 @@ fn parse_raw_input(raw: &RAWINPUT, wparam: WPARAM) -> Vec<HidEvent> {
             let mouse = raw.data.mouse;
             let button_flags = mouse.Anonymous.Anonymous.usButtonFlags as u32;
             let wheel_delta = mouse.Anonymous.Anonymous.usButtonData as i16;
-            let reports = touchpad_usage_reports(
-                button_flags,
-                wheel_delta,
-                OK_HELD.with(|held| held.get()),
-            );
-            if button_flags & RI_MOUSE_LEFT_BUTTON_DOWN != 0 {
-                OK_HELD.with(|held| held.set(true));
-            }
-            if button_flags & RI_MOUSE_LEFT_BUTTON_UP != 0 {
-                OK_HELD.with(|held| held.set(false));
-            }
-            return reports
-                .into_iter()
-                .map(HidEvent::UsageSet)
-                .collect();
+            return touchpad_events(button_flags, wheel_delta);
         }
         // HID 报文（消费者页）：data.hid.bRawData。
         let hid = raw.data.hid;
@@ -337,66 +317,51 @@ mod tests {
     #[test]
     fn touchpad_tap_maps_to_ok_press_and_release() {
         // 点击触摸板 = 左键 down/up → Ok usage 的按下/空集释放。
-        let down = touchpad_usage_reports(RI_MOUSE_LEFT_BUTTON_DOWN, 0, false);
-        assert_eq!(down, vec![vec![RemoteButton::Ok.hid_usage()]]);
-        let up = touchpad_usage_reports(RI_MOUSE_LEFT_BUTTON_UP, 0, true);
-        assert_eq!(up, vec![Vec::<u16>::new()]);
-    }
-
-    #[test]
-    fn touchpad_wheel_synthesizes_instant_single_click() {
-        // 上滑（delta>0）→ Up 瞬时单击；下滑 → Down。
-        let up = touchpad_usage_reports(RI_MOUSE_WHEEL, 120, false);
-        assert_eq!(
-            up,
-            vec![
-                vec![RemoteButton::Up.hid_usage()],
-                Vec::<u16>::new(),
-            ]
-        );
-        let down = touchpad_usage_reports(RI_MOUSE_WHEEL, -120, false);
+        let down = touchpad_events(RI_MOUSE_LEFT_BUTTON_DOWN, 0);
         assert_eq!(
             down,
-            vec![
-                vec![RemoteButton::Down.hid_usage()],
-                Vec::<u16>::new(),
-            ]
+            vec![HidEvent::UsageSet(vec![RemoteButton::Ok.hid_usage()])]
         );
+        let up = touchpad_events(RI_MOUSE_LEFT_BUTTON_UP, 0);
+        assert_eq!(up, vec![HidEvent::UsageSet(Vec::new())]);
     }
 
     #[test]
-    fn wheel_while_ok_held_keeps_ok_in_both_reports() {
-        // 长按 Ok 期间滚轮：两条报文都保留 Ok 按住状态，
-        // 否则 UsageTracker 会误判 Ok 已释放。
-        let events = touchpad_usage_reports(RI_MOUSE_WHEEL, 120, true);
-        let ok = RemoteButton::Ok.hid_usage();
-        assert_eq!(events, vec![vec![ok, RemoteButton::Up.hid_usage()], vec![ok]]);
+    fn touchpad_wheel_is_direct_single_click_event() {
+        // 上滑（delta>0）→ Up；下滑 → Down。WheelClick 不走手势状态机，
+        // 连续滚动不会被 300ms 双击窗口吞掉。
+        let up = touchpad_events(RI_MOUSE_WHEEL, 120);
+        assert_eq!(up, vec![HidEvent::WheelClick { button: RemoteButton::Up }]);
+        let down = touchpad_events(RI_MOUSE_WHEEL, -120);
+        assert_eq!(down, vec![HidEvent::WheelClick { button: RemoteButton::Down }]);
     }
 
     #[test]
     fn pure_movement_and_other_buttons_produce_nothing() {
-        assert!(touchpad_usage_reports(0, 0, false).is_empty());
+        assert!(touchpad_events(0, 0).is_empty());
         // 右键 / 中键不属于 RC003 触摸板语义。
-        assert!(touchpad_usage_reports(0x0004, 0, false).is_empty());
-        assert!(touchpad_usage_reports(0x0010, 0, false).is_empty());
+        assert!(touchpad_events(0x0004, 0).is_empty());
+        assert!(touchpad_events(0x0010, 0).is_empty());
     }
 
     #[test]
-    fn wheel_feeds_gesture_chain_as_single_click() {
-        // 端到端（不经 Win32）：滚轮两条报文过 UsageTracker → Up 按下+释放沿。
+    fn tap_feeds_gesture_chain_as_ok_edges() {
+        // 左键合成报文过 UsageTracker → Ok 按下+释放沿（手势识别的上游）。
         let mut tracker = UsageTracker::default();
-        let reports = touchpad_usage_reports(RI_MOUSE_WHEEL, 120, false);
+        let down = touchpad_events(RI_MOUSE_LEFT_BUTTON_DOWN, 0);
+        let up = touchpad_events(RI_MOUSE_LEFT_BUTTON_UP, 0);
         let mut edges = Vec::new();
-        for report in &reports {
-            edges.extend(tracker.update(report));
+        for event in down.iter().chain(up.iter()) {
+            if let HidEvent::UsageSet(usages) = event {
+                edges.extend(tracker.update(usages));
+            }
         }
-        assert!(edges.contains(&sb_core::buttons::ButtonEdge {
-            button: RemoteButton::Up,
-            pressed: true,
-        }));
-        assert!(edges.contains(&sb_core::buttons::ButtonEdge {
-            button: RemoteButton::Up,
-            pressed: false,
-        }));
+        assert_eq!(
+            edges,
+            vec![
+                sb_core::buttons::ButtonEdge { button: RemoteButton::Ok, pressed: true },
+                sb_core::buttons::ButtonEdge { button: RemoteButton::Ok, pressed: false },
+            ]
+        );
     }
 }
