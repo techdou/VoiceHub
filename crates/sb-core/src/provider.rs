@@ -28,6 +28,9 @@ pub enum ProviderKind {
     WinH,
     /// SayIt（本地 Whisper 转写）：按住式注入右 Ctrl，
     /// SayIt 录音设备设为 CABLE Output，转写文本落光标处。
+    /// 显式 rename："SayIt" 的 snake_case 会得到 "say_it"，与前端字面量 "sayit"
+    /// 不一致，曾导致 kind=sayit 的 save_settings 反序列化失败、设置静默不落盘。
+    #[serde(rename = "sayit")]
     SayIt,
     /// 自定义快捷键 + 触发模式。
     Custom,
@@ -158,6 +161,24 @@ impl ProviderConfig {
 mod tests {
     use super::*;
     use crate::actions::MOD_CONTROL;
+
+    #[test]
+    fn provider_kind_wire_names_match_frontend_literals() {
+        // 前端 types.ts 的字面量联合；内嵌大写缩写（SayIt）经 snake_case 会变成
+        // "say_it" 与前端 "sayit" 脱节，曾致 save_settings 反序列化静默失败。
+        let expected = [
+            (ProviderKind::WeType, "we_type"),
+            (ProviderKind::Doubao, "doubao"),
+            (ProviderKind::WinH, "win_h"),
+            (ProviderKind::SayIt, "sayit"),
+            (ProviderKind::Custom, "custom"),
+            (ProviderKind::None, "none"),
+        ];
+        for (kind, wire) in expected {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), format!("\"{wire}\""));
+            assert_eq!(serde_json::from_str::<ProviderKind>(&format!("\"{wire}\"")).unwrap(), kind);
+        }
+    }
 
     #[test]
     fn wetype_toggle_taps_on_both_edges() {

@@ -5,11 +5,13 @@ import { useI18n } from "../i18n";
 import type { AppSettings, ButtonAction, ButtonMapping, RemoteButtonId } from "../types";
 import ActionPicker from "../components/ActionPicker.vue";
 import MappingCanvas from "../components/MappingCanvas.vue";
+import SaveBadge from "../components/SaveBadge.vue";
 import { actionLabel as sharedActionLabel } from "../actionLabel";
 
 const props = defineProps<{
   settings: AppSettings | null;
-  saveTick: number;
+  saveState: "idle" | "saving" | "saved" | "error";
+  saveError: string;
   activeButtons?: Set<string>;
   voiceActive?: boolean;
 }>();
@@ -204,6 +206,7 @@ async function applyImport() {
         <h1>{{ t("buttons.title") }}</h1>
         <p class="page-sub">{{ t("buttons.canvas.hint") }}</p>
       </div>
+      <SaveBadge :state="saveState" :error="saveError" />
       <div class="head-switch">
         <span class="head-switch-label">{{ t("buttons.mapping.toggle") }}</span>
         <button

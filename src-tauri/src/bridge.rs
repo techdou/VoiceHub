@@ -494,9 +494,13 @@ impl Bridge {
     }
 
     /// 开机自启与插件状态同步（失败只记日志，不阻塞设置保存）。
+    /// disable 前先查状态：快捷方式本就不存在时 disable 会报 os error 2，属幂等场景而非故障。
     fn sync_autostart(self: &Arc<Self>, enable: bool) {
         use tauri_plugin_autostart::ManagerExt;
         let autolaunch = self.app.autolaunch();
+        if !enable && !autolaunch.is_enabled().unwrap_or(false) {
+            return;
+        }
         let result = if enable {
             autolaunch.enable()
         } else {

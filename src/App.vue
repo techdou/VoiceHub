@@ -26,7 +26,9 @@ const recording = ref(false);
 const voiceLevel = ref(0);
 const activeButtons = ref(new Set<string>());
 const showOnboarding = ref(false);
-const saveTick = ref(0);
+const saveState = ref<"idle" | "saving" | "saved" | "error">("idle");
+const saveError = ref("");
+let saveStateTimer: number | undefined;
 
 function locale() {
   return navigator.language || "en-US";
@@ -42,8 +44,21 @@ async function reloadSettings() {
 
 async function persistSettings(next: AppSettings) {
   settings.value = next;
-  saveTick.value++;
-  await api.saveSettings(next);
+  saveState.value = "saving";
+  saveError.value = "";
+  window.clearTimeout(saveStateTimer);
+  try {
+    await api.saveSettings(next);
+    saveState.value = "saved";
+    saveStateTimer = window.setTimeout(() => {
+      if (saveState.value === "saved") saveState.value = "idle";
+    }, 1500);
+  } catch (error) {
+    // 写盘失败必须可见：UI 已更新而磁盘/后端未同步，重启后设置回退（sayit 序列化坑即由此潜伏）。
+    saveState.value = "error";
+    saveError.value = String(error);
+    console.error("[soundbridge] save_settings failed:", error);
+  }
 }
 
 // 主题即时生效：system → 移除标记；light/dark → 硬控。
@@ -124,13 +139,15 @@ onMounted(async () => {
         v-if="page === 'connection'"
         :settings="settings"
         :ble-snapshot="bleSnapshot"
-        :save-tick="saveTick"
+        :save-state="saveState"
+        :save-error="saveError"
         @update-settings="persistSettings"
       />
       <ButtonsPage
         v-else-if="page === 'buttons'"
         :settings="settings"
-        :save-tick="saveTick"
+        :save-state="saveState"
+        :save-error="saveError"
         :active-buttons="activeButtons"
         :voice-active="recording"
         @update-settings="persistSettings"

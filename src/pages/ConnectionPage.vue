@@ -5,12 +5,14 @@ import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import CableInstaller from "../components/CableInstaller.vue";
+import SaveBadge from "../components/SaveBadge.vue";
 import type { AppSettings, AudioEndpoint, BleSnapshot, PairedRemote, UiEvent } from "../types";
 
 const props = defineProps<{
   settings: AppSettings | null;
   bleSnapshot: BleSnapshot | null;
-  saveTick: number;
+  saveState: "idle" | "saving" | "saved" | "error";
+  saveError: string;
 }>();
 
 const emit = defineEmits<{ "update-settings": [settings: AppSettings] }>();
@@ -49,9 +51,17 @@ async function onCableInstalled() {
 
 async function pickEndpoint(id: string, name: string) {
   if (!props.settings) return;
-  await api.selectAudioEndpoint(id, name);
-  emit("update-settings", { ...props.settings, audioEndpointName: name });
+  try {
+    await api.selectAudioEndpoint(id, name);
+    endpointError.value = "";
+    emit("update-settings", { ...props.settings, audioEndpointName: name });
+  } catch (error) {
+    // 端点打不开（如独占模式占用）：原地显示错误，UI 不弹回、不静默。
+    endpointError.value = String(error);
+  }
 }
+
+const endpointError = ref("");
 
 function pickProvider(kind: AppSettings["provider"]["kind"]) {
   if (!props.settings) return;
@@ -210,7 +220,10 @@ const providerOptions = [
 
 <template>
   <div class="page" v-if="settings">
-    <h1>{{ t("connection.title") }}</h1>
+    <div class="row between" style="align-items: baseline">
+      <h1>{{ t("connection.title") }}</h1>
+      <SaveBadge :state="saveState" :error="saveError" />
+    </div>
     <p class="page-sub">{{ t("app.tagline") }}</p>
 
     <section class="card">
@@ -259,7 +272,7 @@ const providerOptions = [
 
     <section class="card">
       <h3>{{ t("connection.remote.select") }}</h3>
-      <p class="hint">{{ t("connection.remote.none") }}</p>
+      <p v-if="!remotes.length" class="hint">{{ t("connection.remote.none") }}</p>
       <div class="row" style="margin-bottom: 10px">
         <button class="btn" @click="refreshRemotes">{{ t("common.refresh") }}</button>
         <button class="btn" @click="openPath('ms-settings:bluetooth')">
@@ -291,6 +304,7 @@ const providerOptions = [
     <section class="card">
       <h3>{{ t("connection.audio.title") }}</h3>
       <p class="hint">{{ t("connection.audio.hint") }}</p>
+      <p v-if="endpointError" class="hint" style="color: var(--fail)">{{ endpointError }}</p>
       <div class="row" style="margin-bottom: 10px">
         <select
           v-if="endpoints.length"

@@ -48,10 +48,14 @@ impl RemoteModel {
 }
 
 /// 设备名匹配（扫描广告时用）：小米遥控器的广播名。
+/// 中文命名存在多个变体（"小米遥控器"、"小米蓝牙语音遥控器"），统一以"遥控器"子串兜底。
 pub fn is_voice_remote_name(name: Option<&str>) -> bool {
     let Some(name) = name else { return false };
     let lower = name.trim().to_lowercase();
-    lower.contains("mi rc") || lower.contains("rc003") || lower.contains("rc001") || lower.contains("小米遥控器")
+    lower.contains("mi rc")
+        || lower.contains("rc003")
+        || lower.contains("rc001")
+        || lower.contains("遥控器")
 }
 
 #[cfg(test)]
@@ -77,7 +81,11 @@ mod tests {
     fn matches_advertised_names() {
         assert!(is_voice_remote_name(Some("Mi RC Pro")));
         assert!(is_voice_remote_name(Some("RC003")));
+        // 中文系统配对名实为"小米蓝牙语音遥控器"——"小米遥控器"整词匹配漏掉，按"遥控器"兜底。
+        assert!(is_voice_remote_name(Some("小米蓝牙语音遥控器")));
+        assert!(is_voice_remote_name(Some("小米遥控器")));
         assert!(!is_voice_remote_name(Some("JBL Flip 6")));
+        assert!(!is_voice_remote_name(Some("Mi Mouse3C")));
         assert!(!is_voice_remote_name(None));
     }
 }
