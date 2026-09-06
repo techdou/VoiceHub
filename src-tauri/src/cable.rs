@@ -57,7 +57,12 @@ pub fn start_install(app_data: &Path) -> Result<(), String> {
     let script = materialize_script(app_data).map_err(|e| e.to_string())?;
     // 先清掉旧终态，避免轮询读到上一次的结果。
     let _ = std::fs::remove_file(state_dir(app_data).join("install-state.json"));
-    Command::new("powershell.exe")
+    // 绝对路径调用：按名解析走 CreateProcess 搜索顺序（应用目录优先于
+    // System32），有 binary planting 面。
+    let powershell = std::env::var("SystemRoot")
+        .map(|root| format!(r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe"))
+        .unwrap_or_else(|_| "powershell.exe".into());
+    Command::new(powershell)
         .args([
             "-NoProfile",
             "-ExecutionPolicy",

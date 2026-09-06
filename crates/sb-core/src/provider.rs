@@ -52,6 +52,9 @@ pub struct ProviderConfig {
     pub custom_vk: u16,
     pub custom_modifiers: u8,
     pub custom_mode: TriggerMode,
+    /// SayIt 触发键（kind == SayIt 时生效；0 = 默认右 Alt）。
+    /// 独立字段：与 custom_vk 混用会在 SayIt/Custom 间互相污染。
+    pub sayit_vk: u16,
     /// toggle 模式收尾触发的延迟（毫秒），等待音频排空。
     pub stop_delay_ms: u32,
     /// 麦克风启动等待（毫秒）：给 Provider 留出启动时间，期间音频先缓冲。
@@ -65,6 +68,7 @@ impl Default for ProviderConfig {
             custom_vk: 0,
             custom_modifiers: 0,
             custom_mode: TriggerMode::Toggle,
+            sayit_vk: 0,
             stop_delay_ms: 180,
             startup_grace_ms: 80,
         }
@@ -93,7 +97,7 @@ impl ProviderConfig {
             // 默认右 Alt（与作者实际 SayIt 配置对齐）；用户可在 UI 换右 Ctrl。
             // 避免右 Shift——长按 8s 触发筛选键会让录音停不下来。
             ProviderKind::SayIt => {
-                (if self.custom_vk != 0 { self.custom_vk } else { VK_RMENU }, 0)
+                (if self.sayit_vk != 0 { self.sayit_vk } else { VK_RMENU }, 0)
             }
             ProviderKind::Custom => (self.custom_vk, self.custom_modifiers),
             ProviderKind::None => (0, 0),
@@ -221,7 +225,7 @@ mod tests {
         // 用户改键（如右 Ctrl）后生效。
         let ctrl = ProviderConfig {
             kind: ProviderKind::SayIt,
-            custom_vk: VK_RCONTROL,
+            sayit_vk: VK_RCONTROL,
             ..Default::default()
         };
         assert_eq!(
@@ -229,6 +233,35 @@ mod tests {
             ProviderTrigger::Tap { vk: VK_RCONTROL, modifiers: 0 }
         );
         assert!(config.drain_ms() >= 120);
+    }
+
+    #[test]
+    fn sayit_and_custom_keys_do_not_cross_contaminate() {
+        // 回归：sayit_vk 与 custom_vk 必须互不影响（M6 事故的根因是
+        // 两者共用一个字段，SayIt 里改键后 Custom 静默继承）。
+        let custom = ProviderConfig {
+            kind: ProviderKind::Custom,
+            custom_vk: 0x4B,
+            custom_modifiers: MOD_CONTROL,
+            custom_mode: TriggerMode::Toggle,
+            sayit_vk: VK_RCONTROL,
+            ..Default::default()
+        };
+        assert_eq!(
+            custom.trigger_on_stream_start(),
+            ProviderTrigger::Tap { vk: 0x4B, modifiers: MOD_CONTROL }
+        );
+        let sayit = ProviderConfig {
+            kind: ProviderKind::SayIt,
+            custom_vk: 0x4B,
+            custom_modifiers: MOD_CONTROL,
+            ..Default::default()
+        };
+        // SayIt 无视 custom_vk：sayit_vk 未设 → 默认右 Alt。
+        assert_eq!(
+            sayit.trigger_on_stream_start(),
+            ProviderTrigger::Tap { vk: VK_RMENU, modifiers: 0 }
+        );
     }
 
     #[test]

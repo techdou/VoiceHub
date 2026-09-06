@@ -188,6 +188,8 @@ struct WorkerContext {
     generation: u64,
     /// 当前增益（新会话建立时应用，防重连后丢失）。
     gain_db: f64,
+    /// 实验性续租开关（同 gain_db，跨会话保持，防重连后静默失效）。
+    extend_enabled: bool,
 }
 
 enum InboxMessage {
@@ -219,6 +221,9 @@ struct Session {
     extend_enabled: bool,
     voice_started: Option<Instant>,
     last_extend_at: Option<Instant>,
+    /// 续租写失败的退避重试（防僵死链路上 100Hz 重试风暴）。
+    extend_retry_at: Option<Instant>,
+    extend_failures: u8,
 }
 
 impl Session {
@@ -294,6 +299,7 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
         inbox_sender,
         generation: 0,
         gain_db: 0.0,
+        extend_enabled: false,
     };
 
     while ctx.should_run {
@@ -343,6 +349,7 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
                     }
                 }
                 Command::SetExtendEnabled { enabled } => {
+                    ctx.extend_enabled = enabled;
                     if let Some(session) = ctx.session.as_mut() {
                         session.extend_enabled = enabled;
                     }
@@ -384,6 +391,10 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
             }
         }
         if disconnected {
+            // 物理断连：先清掉死会话——重连调度的守卫是 session.is_none()，
+            // 不清就永远进不了重连分支；close_session 顺带补发
+            // VoiceStopped，让宿主释放 Provider 的按住式触发键。
+            close_session(&mut ctx);
             let failures = ctx.policy.consecutive_failures();
             let cycles = ctx
                 .state
@@ -419,12 +430,29 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
                 match session.write(&bytes) {
                     Ok(()) => {
                         session.last_extend_at = Some(Instant::now());
+                        session.extend_retry_at = None;
+                        session.extend_failures = 0;
                         log::info!(
                             "ATVV MIC_EXTEND sent session={} (experimental)",
                             session.session_id
                         );
                     }
-                    Err(error) => log::warn!("ATVV MIC_EXTEND write failed: {error}"),
+                    Err(error) => {
+                        log::warn!("ATVV MIC_EXTEND write failed: {error}");
+                        // 失败不能热循环（10ms 节拍 = 100Hz GATT 写风暴），
+                        // 也不能等满下个 40s 周期（会错过 60s 固件租期墙）：
+                        // 5s 退避重试，连失败 3 次放弃本轮。
+                        session.extend_failures += 1;
+                        if session.extend_failures >= 3 {
+                            session.extend_failures = 0;
+                            session.extend_retry_at = None;
+                            session.last_extend_at = Some(Instant::now());
+                            log::warn!("ATVV MIC_EXTEND 连续失败 3 次，本轮放弃");
+                        } else {
+                            session.extend_retry_at =
+                                Some(Instant::now() + Duration::from_secs(5));
+                        }
+                    }
                 }
             }
         }
@@ -436,8 +464,21 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
 }
 
 fn close_session(ctx: &mut WorkerContext) {
+    // 流中关会话必须补发 VoiceStopped：宿主要靠它释放 Provider 的
+    // 按住式触发键（右 Alt/右 Ctrl），漏发 = 修饰键系统级卡死。
+    let interrupted = ctx
+        .session
+        .as_ref()
+        .filter(|s| s.streaming)
+        .map(|s| s.session_id);
     ctx.session.take();
     key_gate::set_session_active(false);
+    if let Some(session_id) = interrupted {
+        update(&ctx.state, &ctx.events, |s| {
+            s.voice_streaming = false;
+        });
+        let _ = ctx.events.send(BleEvent::VoiceStopped { session_id });
+    }
 }
 
 fn schedule_reconnect(ctx: &mut WorkerContext) {
@@ -469,7 +510,7 @@ fn attempt_connect(ctx: &mut WorkerContext, device_id: &str) {
         s.last_error = None;
     });
 
-    match connect_session(device_id, ctx.inbox_sender.clone(), generation, ctx.gain_db) {
+    match connect_session(device_id, ctx.inbox_sender.clone(), generation, ctx.gain_db, ctx.extend_enabled) {
         Ok(session) => {
             let name = session.name.clone();
             let model = session.model;
@@ -513,6 +554,7 @@ fn connect_session(
     inbox: Sender<InboxMessage>,
     generation: u64,
     gain_db: f64,
+    extend_enabled: bool,
 ) -> windows::core::Result<Session> {
     let device = block_on(BluetoothLEDevice::FromIdAsync(&HSTRING::from(device_id))?.into_future())?;
     let name = device.Name()?.to_string();
@@ -569,9 +611,11 @@ fn connect_session(
         control_token,
         connection_token,
         gain_db: 0.0,
-        extend_enabled: false,
+        extend_enabled,
         voice_started: None,
         last_extend_at: None,
+        extend_retry_at: None,
+        extend_failures: 0,
     };
     if session.model.adpcm_low_nibble_first() {
         session.decoder.set_low_nibble_first(true);
@@ -750,16 +794,26 @@ pub fn should_extend(
 
 /// 生成续租命令（会话状态 → 命令字节）。
 fn extend_command_if_due(session: &Session) -> Option<Vec<u8>> {
-    let held = session
-        .voice_started
-        .map(|started| started.elapsed())
-        .filter(|held| !held.is_zero());
-    let since = session
-        .last_extend_at
-        .map(|at| at.elapsed())
-        .filter(|since| !since.is_zero());
-    if !should_extend(session.streaming, session.extend_enabled, held, since) {
+    if !session.streaming || !session.extend_enabled {
         return None;
+    }
+    // 有待退避的重试时以重试时刻为准（覆盖常规 40s 节拍，防热循环）。
+    if let Some(retry_at) = session.extend_retry_at {
+        if Instant::now() < retry_at {
+            return None;
+        }
+    } else {
+        let held = session
+            .voice_started
+            .map(|started| started.elapsed())
+            .filter(|held| !held.is_zero());
+        let since = session
+            .last_extend_at
+            .map(|at| at.elapsed())
+            .filter(|since| !since.is_zero());
+        if !should_extend(session.streaming, session.extend_enabled, held, since) {
+            return None;
+        }
     }
     AtvvCommand::MicrophoneExtend {
         version: session.capabilities.version,

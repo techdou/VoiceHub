@@ -92,6 +92,43 @@ mod tests {
     }
 }
 
+/// 简单落盘 logger：无外部依赖，追加写入 app_data 下的日志文件。
+/// 没有它，全应用的 log::info!/warn!/error! 都是空操作（logger 从未注册），
+/// 真机出问题零排障证据。
+struct FileLogger {
+    file: std::sync::Mutex<std::fs::File>,
+}
+
+impl log::Log for FileLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        use std::io::Write;
+        if let Ok(mut file) = self.file.lock() {
+            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+            let _ = writeln!(
+                file,
+                "{timestamp} {:<5} {}: {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+    }
+
+    fn flush(&self) {
+        use std::io::Write;
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.flush();
+        }
+    }
+}
+
 fn init_logging(app: &tauri::AppHandle) -> Option<()> {
     let dir = app
         .path()
@@ -99,13 +136,22 @@ fn init_logging(app: &tauri::AppHandle) -> Option<()> {
         .ok()?;
     let store = Store::new(&dir);
     let target = store.log_file();
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(target)
         .ok()?;
-    // 简单文件日志（无外部依赖；按天分文件）。
-    let _ = file;
+    // log crate 的 std feature 被依赖树关掉了，set_boxed_logger 不可用；
+    // 用 set_logger + Box::leak（logger 生命周期 = 进程生命周期，泄漏即设计）。
+    let logger: &'static FileLogger = Box::leak(Box::new(FileLogger {
+        file: std::sync::Mutex::new(file),
+    }));
+    log::set_logger(logger).ok()?;
+    log::set_max_level(log::LevelFilter::Info);
+    log::info!("logging initialized");
     Some(())
 }
 

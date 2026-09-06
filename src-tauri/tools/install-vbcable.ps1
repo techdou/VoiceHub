@@ -48,7 +48,8 @@ try {
         Write-InstallState "elevation_required" "Administrator permission is required; confirm the Windows UAC prompt"
         $scriptPath = $MyInvocation.MyCommand.Path
         $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Install -StateDirectory `"$StateDirectory`""
-        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs | Out-Null
+        # $PSHOME = System32\WindowsPowerShell\v1.0 绝对路径，避免按名解析的劫持面
+        Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -ArgumentList $arguments -Verb RunAs | Out-Null
         exit 740
     }
 
@@ -59,7 +60,11 @@ try {
 
     $actualSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualSha256 -ne $expectedSha256) {
-        Write-InstallState "verification_failed" "SHA-256 verification failed; installation refused" 1
+        # 删掉残包：上次下载中断留下的半截 zip 不删，之后每次重试都会
+        # 立刻撞 verification_failed（55 行的"已存在就跳过下载"逻辑），
+        # 安装功能永久卡死。
+        Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+        Write-InstallState "verification_failed" "SHA-256 verification failed; deleted the bad package so the next attempt re-downloads" 1
         throw "VB-CABLE package SHA-256 mismatch: $actualSha256"
     }
 

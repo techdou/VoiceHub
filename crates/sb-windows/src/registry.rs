@@ -1,7 +1,7 @@
 //! 注册表检测：VB-CABLE 内核驱动服务（VBAudioVACMME）存在性。
 //! 比端点名检测更底层（音频服务未枚举也能判定驱动已装）。
 
-const DRIVER_SERVICE: &str = r"VBAudioVACMME";
+const DRIVER_SERVICE: &str = r"SYSTEM\CurrentControlSet\Services\VBAudioVACMME";
 
 pub fn driver_service_present() -> bool {
     use windows::core::PCWSTR;

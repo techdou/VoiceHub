@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
@@ -91,7 +91,7 @@ function setSayItKey(vk: number) {
   if (!props.settings) return;
   emit("update-settings", {
     ...props.settings,
-    provider: { ...props.settings.provider, customVk: vk },
+    provider: { ...props.settings.provider, sayitVk: vk },
   });
 }
 
@@ -115,6 +115,58 @@ function setCustomMode(mode: "toggle" | "hold") {
     provider: { ...props.settings.provider, customMode: mode },
   });
 }
+
+// Custom provider 触发键录制（keydown 捕获 → Windows VK；
+// 与 ActionPicker 的录制器同一套 MOD 约定：Alt=1 Ctrl=2 Shift=4 Win=8）。
+const recordingCustomKey = ref(false);
+
+function customKeyLabel(vk: number, modifiers: number): string {
+  if (!vk) return t("connection.provider.custom_key_unset");
+  const special: Record<number, string> = {
+    0x08: "Backspace", 0x09: "Tab", 0x0d: "Enter", 0x1b: "Esc", 0x20: "Space",
+    0x21: "PgUp", 0x22: "PgDn", 0x23: "End", 0x24: "Home",
+    0x25: "←", 0x26: "↑", 0x27: "→", 0x28: "↓", 0x2d: "Insert", 0x2e: "Delete",
+    0xa0: "Shift", 0xa1: "RShift", 0xa2: "Ctrl", 0xa3: "RCtrl",
+    0xa4: "Alt", 0xa5: "RAlt", 0x5b: "Win",
+  };
+  const base =
+    special[vk] ??
+    (vk >= 0x70 && vk <= 0x7b
+      ? `F${vk - 0x6f}`
+      : (vk >= 0x30 && vk <= 0x39) || (vk >= 0x41 && vk <= 0x5a)
+        ? String.fromCharCode(vk)
+        : `0x${vk.toString(16).toUpperCase()}`);
+  const parts = [
+    modifiers & 2 ? "Ctrl" : "",
+    modifiers & 4 ? "Shift" : "",
+    modifiers & 1 ? "Alt" : "",
+    modifiers & 8 ? "Win" : "",
+  ].filter(Boolean);
+  return [...parts, base].join("+");
+}
+
+function onCustomKeyCapture(event: KeyboardEvent) {
+  if (!recordingCustomKey.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  // 纯修饰键按下不算完成（等主键）。
+  if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return;
+  const vk = event.which || event.keyCode;
+  if (!vk || !props.settings) return;
+  let modifiers = 0;
+  if (event.ctrlKey) modifiers |= 2;
+  if (event.shiftKey) modifiers |= 4;
+  if (event.altKey) modifiers |= 1;
+  if (event.metaKey) modifiers |= 8;
+  emit("update-settings", {
+    ...props.settings,
+    provider: { ...props.settings.provider, customVk: vk, customModifiers: modifiers },
+  });
+  recordingCustomKey.value = false;
+}
+
+onMounted(() => window.addEventListener("keydown", onCustomKeyCapture, true));
+onBeforeUnmount(() => window.removeEventListener("keydown", onCustomKeyCapture, true));
 
 function phaseLabel(phase: string | undefined): string {
   if (!phase) return "—";
@@ -296,7 +348,7 @@ const providerOptions = [
       <div v-if="settings.provider.kind === 'sayit'" class="setting-row">
         <div class="label">{{ t("connection.provider.sayit_key") }}</div>
         <select
-          :value="settings.provider.customVk === 0xa3 ? 0xa3 : 0xa5"
+          :value="settings.provider.sayitVk === 0xa3 ? 0xa3 : 0xa5"
           @change="setSayItKey(Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="0xa5">{{ t("connection.provider.sayit_key.ralt") }}</option>
@@ -305,6 +357,20 @@ const providerOptions = [
       </div>
       <p v-if="settings.provider.kind === 'we_type'" class="hint">
         {{ t("connection.provider.we_type_hint") }}
+      </p>
+      <div v-if="settings.provider.kind === 'custom'" class="setting-row">
+        <div>
+          <div class="label">{{ t("connection.provider.custom_key") }}</div>
+          <div class="desc">
+            {{ customKeyLabel(settings.provider.customVk, settings.provider.customModifiers) }}
+          </div>
+        </div>
+        <button class="btn" @click="recordingCustomKey = !recordingCustomKey">
+          {{ recordingCustomKey ? t("connection.provider.custom_key_listening") : t("connection.provider.custom_key_record") }}
+        </button>
+      </div>
+      <p v-if="settings.provider.kind === 'custom' && recordingCustomKey" class="hint">
+        {{ t("connection.provider.custom_key_listening") }}
       </p>
       <div v-if="settings.provider.kind === 'custom'" class="setting-row">
         <div>

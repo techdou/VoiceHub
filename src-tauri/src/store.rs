@@ -33,10 +33,24 @@ impl Store {
     }
 
     pub fn load_settings(&self) -> AppSettings {
-        match fs::read_to_string(self.settings_path()) {
-            Ok(raw) => AppSettings::load(&raw).unwrap_or_default(),
-            Err(_) => AppSettings::default(),
+        // 主文件损坏（半截写入/磁盘问题）时回退 .bak——atomic_write_json
+        // 每次保存前都会备份，不回读等于白备份（全部键位配置无声丢失）。
+        let path = self.settings_path();
+        if let Ok(raw) = fs::read_to_string(&path) {
+            match AppSettings::load(&raw) {
+                Ok(settings) => return settings,
+                Err(_) => {
+                    if let Ok(bak) = fs::read_to_string(path.with_extension("bak")) {
+                        if let Ok(settings) = AppSettings::load(&bak) {
+                            log::warn!("settings.json 解析失败，已从 .bak 备份恢复");
+                            return settings;
+                        }
+                    }
+                    log::warn!("settings.json 解析失败且无可用 .bak，重置为默认设置");
+                }
+            }
         }
+        AppSettings::default()
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> std::io::Result<()> {
@@ -44,10 +58,19 @@ impl Store {
     }
 
     pub fn load_statistics(&self) -> UsageStatistics {
-        match fs::read_to_string(self.statistics_path()) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
-            Err(_) => UsageStatistics::default(),
+        let path = self.statistics_path();
+        if let Ok(raw) = fs::read_to_string(&path) {
+            if let Ok(stats) = serde_json::from_str(&raw) {
+                return stats;
+            }
+            if let Ok(bak) = fs::read_to_string(path.with_extension("bak")) {
+                if let Ok(stats) = serde_json::from_str(&bak) {
+                    log::warn!("statistics.json 解析失败，已从 .bak 备份恢复");
+                    return stats;
+                }
+            }
         }
+        UsageStatistics::default()
     }
 
     pub fn save_statistics(&self, stats: &UsageStatistics) -> std::io::Result<()> {

@@ -45,7 +45,10 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         .is_ok()
         {
             let path = String::from_utf16_lossy(&buffer[..len as usize]).to_lowercase();
-            if path.ends_with(&state.target_lower) {
+            // 按路径末段精确相等比较：ends_with 会把 "notsayit.exe"
+            // 误配成目标 "sayit.exe"。
+            let exe_name = path.rsplit('\\').next().unwrap_or(path.as_str());
+            if exe_name == state.target_lower {
                 state.found = Some(hwnd);
                 return BOOL(0); // 停止枚举
             }

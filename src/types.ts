@@ -76,6 +76,8 @@ export interface ProviderConfig {
   customVk: number;
   customModifiers: number;
   customMode: TriggerMode;
+  /** SayIt 触发键（0 = 默认右 Alt）；与 customVk 互不干扰 */
+  sayitVk: number;
   stopDelayMs: number;
   startupGraceMs: number;
 }

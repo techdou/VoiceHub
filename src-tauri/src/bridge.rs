@@ -37,7 +37,9 @@ enum InternalEvent {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+// 前端按 PascalCase 判别（types.ts / App.vue / 各页面 switch），
+// camelCase 会把 tag 转成 "bleState" 导致事件永远匹配不上——勿改。
+#[serde(rename_all = "PascalCase", tag = "type")]
 pub enum UiEvent {
     BleState { snapshot: sb_windows::ble::BleSnapshot },
     VoiceState { recording: bool, level: f32 },
@@ -590,4 +592,81 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 前后端事件契约：tag 值必须与前端 types.ts 的判别字符串完全一致。
+    /// 前端对应清单见 src/i18n 无关、src/types.ts UiEvent 与各页 switch。
+    #[test]
+    fn ui_event_tags_match_frontend_contract() {
+        let cases: Vec<(UiEvent, &str)> = vec![
+            (
+                UiEvent::BleState {
+                    snapshot: sb_windows::ble::BleSnapshot::default(),
+                },
+                "BleState",
+            ),
+            (
+                UiEvent::VoiceState {
+                    recording: true,
+                    level: 0.5,
+                },
+                "VoiceState",
+            ),
+            (UiEvent::Battery { percent: 80 }, "Battery"),
+            (
+                UiEvent::ActionReceipt {
+                    button: "ok".into(),
+                    gesture: "single".into(),
+                    action: "音量+".into(),
+                    ok: true,
+                },
+                "ActionReceipt",
+            ),
+            (
+                UiEvent::ButtonActivity {
+                    button: "ok".into(),
+                    pressed: true,
+                },
+                "ButtonActivity",
+            ),
+            (UiEvent::ShowSettings, "ShowSettings"),
+            (
+                UiEvent::AudioEndpointChanged {
+                    name: "CABLE Input".into(),
+                },
+                "AudioEndpointChanged",
+            ),
+        ];
+        for (event, expected_tag) in cases {
+            let value = serde_json::to_value(&event).unwrap();
+            assert_eq!(value["type"], expected_tag, "UiEvent tag 契约被破坏");
+        }
+
+        // 字段名也是契约的一部分（前端直接读 payload.snapshot / .recording 等）。
+        let ble = serde_json::to_value(UiEvent::BleState {
+            snapshot: sb_windows::ble::BleSnapshot::default(),
+        })
+        .unwrap();
+        assert!(ble.get("snapshot").is_some(), "BleState 缺 snapshot 字段");
+        let voice = serde_json::to_value(UiEvent::VoiceState {
+            recording: false,
+            level: 0.0,
+        })
+        .unwrap();
+        assert!(voice.get("recording").is_some() && voice.get("level").is_some());
+        let receipt = serde_json::to_value(UiEvent::ActionReceipt {
+            button: "ok".into(),
+            gesture: "single".into(),
+            action: "音量+".into(),
+            ok: true,
+        })
+        .unwrap();
+        for field in ["button", "gesture", "action", "ok"] {
+            assert!(receipt.get(field).is_some(), "ActionReceipt 缺 {field} 字段");
+        }
+    }
 }

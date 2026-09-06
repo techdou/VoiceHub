@@ -4,8 +4,9 @@
 //! 避免自注事件被 key_gate 误吞）。
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, VIRTUAL_KEY,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC_EX,
+    VIRTUAL_KEY,
 };
 
 use crate::Result;
@@ -42,61 +43,19 @@ fn modifier_vks(modifiers: u8) -> Vec<u16> {
     vks
 }
 
-/// VK → 扫描码 + 扩展位（覆盖动作表用到的键；未覆盖返回 None）。
-/// 扩展键（方向/翻页/Home/End/媒体等）必须带 KEYEVENTF_EXTENDEDKEY，
-/// 否则被系统解释成小键盘键。
+/// VK → 扫描码 + 扩展位。扫描码没有线性规律（字母区、媒体键都是散布值），
+/// 静态表已经被实测打脸过一轮，直接问系统要：MAPVK_VK_TO_VSC_EX 返回
+/// 低 8 位扫描码，扩展键带 0xE000 前缀。
+/// 注意 Windows 的已知缺陷：方向键与导航簇（Insert/Delete/Home/End/PgUp/PgDn）
+/// 是扩展键但返回值不带 E0 前缀，这批必须用硬编码集合兜底——不带
+/// KEYEVENTF_EXTENDEDKEY 时 0x4B 会被解释成小键盘 4 而非左方向键。
 fn vk_to_scan(vk: u16) -> Option<(u16, bool)> {
-    const EXTENDED: bool = true;
-    let (scan, ext) = match vk {
-        0x08 => (0x0E, false),          // Backspace
-        0x09 => (0x0F, false),          // Tab
-        0x0D => (0x1C, false),          // Enter
-        0x1B => (0x01, false),          // Esc
-        0x20 => (0x39, false),          // Space
-        0x21 => (0x49, EXTENDED),       // PgUp
-        0x22 => (0x51, EXTENDED),       // PgDn
-        0x23 => (0x4F, EXTENDED),       // End
-        0x24 => (0x47, EXTENDED),       // Home
-        0x25 => (0x4B, EXTENDED),       // Left
-        0x26 => (0x48, EXTENDED),       // Up
-        0x27 => (0x4D, EXTENDED),       // Right
-        0x28 => (0x50, EXTENDED),       // Down
-        0x2D => (0x52, EXTENDED),       // Insert
-        0x2E => (0x53, EXTENDED),       // Delete
-        0x30..=0x39 => (0x02 + vk - 0x30, false),  // 数字行
-        0x41..=0x5A => (0x10 + vk - 0x41, false),  // A-Z 主键区
-        0x5B => (0x5B, EXTENDED),       // LWin
-        0x5C => (0x5C, EXTENDED),       // RWin
-        0x60..=0x69 => (0x52 + vk - 0x60, false),  // 小键盘数字
-        0x70..=0x7B => (0x3B + vk - 0x70, false),  // F1-F12
-        0x90 => (0x46, false),          // ScrollLock
-        0xA0 => (0x2A, false),          // LShift
-        0xA1 => (0x36, false),          // RShift（非扩展：左右 Shift 靠扫描码区分）
-        0xA2 => (0x1D, false),          // LControl
-        0xA3 => (0x1D, EXTENDED),       // RControl（扩展）
-        0xA4 => (0x38, false),          // LMenu(Alt)
-        0xA5 => (0x38, EXTENDED),       // RMenu(AltGr)（扩展）
-        0xA6 => (0x6A, EXTENDED),       // BrowserBack
-        0xA7 => (0x69, EXTENDED),       // BrowserForward
-        0xA8 => (0x6C, EXTENDED),       // BrowserRefresh
-        0xA9 => (0x68, EXTENDED),       // BrowserStop
-        0xAA => (0x20, EXTENDED),       // BrowserSearch
-        0xAB => (0x42, EXTENDED),       // BrowserFavorites
-        0xAC => (0x44, EXTENDED),       // BrowserHome
-        0xAD => (0xA2, EXTENDED),       // VolumeMute
-        0xAE => (0xB0, EXTENDED),       // VolumeDown
-        0xAF => (0xAF, EXTENDED),       // VolumeUp
-        0xB0 => (0xB3, EXTENDED),       // MediaNext
-        0xB1 => (0xB2, EXTENDED),       // MediaPrev
-        0xB2 => (0xB1, EXTENDED),       // MediaStop
-        0xB3 => (0xCC, EXTENDED),       // MediaPlayPause
-        0xB4 => (0x98, EXTENDED),       // LaunchMail
-        0xB5 => (0x99, EXTENDED),       // LaunchMediaSelect
-        0xB6 => (0xA2, EXTENDED),       // LaunchApp1
-        0xB7 => (0xA1, EXTENDED),       // LaunchApp2
-        _ => return None,
-    };
-    Some((scan, ext))
+    let raw = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
+    if raw == 0 {
+        return None;
+    }
+    let ext = raw & 0xE000 != 0 || matches!(vk, 0x21..=0x28 | 0x2D | 0x2E | 0x5D | 0x6F);
+    Some(((raw & 0xFF) as u16, ext))
 }
 
 fn key_input(scan: u16, extended: bool, up: bool) -> INPUT {
@@ -225,6 +184,48 @@ mod tests {
             0xAF,
         ] {
             assert!(vk_to_scan(vk).is_some(), "vk 0x{vk:02X} missing scan code");
+        }
+    }
+
+    #[test]
+    fn scan_codes_match_os_ground_truth() {
+        // 真值取自 MapVirtualKeyW(MAPVK_VK_TO_VSC_EX) 实测——扫描码没有
+        // 线性规律，回归测试必须断言值，不能只断言"能解析"。
+        let cases: &[(u16, u16, bool)] = &[
+            (0x41, 0x1E, false), // A
+            (0x57, 0x11, false), // W
+            (0x5A, 0x2C, false), // Z
+            (0x30, 0x0B, false), // 0（数字行）
+            (0x0D, 0x1C, false), // Enter
+            (0x20, 0x39, false), // Space
+            (0x70, 0x3B, false), // F1
+            (0x74, 0x3F, false), // F5
+            (0xAD, 0x20, true),  // VolumeMute
+            (0xAE, 0x2E, true),  // VolumeDown
+            (0xAF, 0x30, true),  // VolumeUp
+            (0xB0, 0x19, true),  // MediaNext
+            (0xB1, 0x10, true),  // MediaPrev
+            (0xB2, 0x24, true),  // MediaStop
+            (0xB3, 0x22, true),  // MediaPlayPause
+            (0xA6, 0x6A, true),  // BrowserBack
+            (0xA8, 0x67, true),  // BrowserRefresh
+            (0xAA, 0x65, true),  // BrowserSearch
+            (0xAC, 0x32, true),  // BrowserHome
+            (0xB4, 0x6C, true),  // LaunchMail
+            (0xB6, 0x6B, true),  // LaunchApp1
+            (0x25, 0x4B, true),  // Left
+            (0x24, 0x47, true),  // Home
+            (0x5B, 0x5B, true),  // LWin
+            (0xA2, 0x1D, false), // LControl
+            (0xA0, 0x2A, false), // LShift
+            (0x60, 0x52, false), // Numpad0
+        ];
+        for &(vk, scan, ext) in cases {
+            assert_eq!(
+                vk_to_scan(vk),
+                Some((scan, ext)),
+                "vk 0x{vk:02X} scan code mismatch"
+            );
         }
     }
 
