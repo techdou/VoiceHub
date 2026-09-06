@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
@@ -17,6 +17,53 @@ const props = defineProps<{
 
 const emit = defineEmits<{ "update-settings": [settings: AppSettings] }>();
 const { t } = useI18n();
+
+// 草稿模式：改动先落 draft，点「保存」才真实生效+写盘。
+// 背景：音频端点保存时会真实打开设备（可能失败），必须让用户明确地
+// 「保存 → 看到成功/失败」，而不是改完静默丢失（2026-09-06 事故）。
+const draft = ref<AppSettings | null>(null);
+watch(
+  () => props.settings,
+  (next) => {
+    draft.value = next ? structuredClone(next) : null;
+  },
+  { immediate: true },
+);
+
+const dirty = computed(
+  () =>
+    !!draft.value &&
+    !!props.settings &&
+    JSON.stringify(draft.value) !== JSON.stringify(props.settings),
+);
+
+const saving = ref(false);
+const endpointError = ref("");
+
+async function saveAll() {
+  const next = draft.value;
+  if (!next || !props.settings || saving.value) return;
+  saving.value = true;
+  endpointError.value = "";
+  try {
+    // 端点变化优先走真实打开（失败即中止，其余设置也不落盘，用户可重试）。
+    if (next.audioEndpointName !== props.settings.audioEndpointName) {
+      const target = endpoints.value.find((e) => e.name === next.audioEndpointName);
+      if (!target) {
+        endpointError.value = `端点「${next.audioEndpointName}」不在列表中，请先刷新`;
+        return;
+      }
+      await api.selectAudioEndpoint(target.id, target.name);
+    }
+    // 其余字段统一写盘（端点名已由 selectAudioEndpoint 保存，此处全量覆盖不冲突）。
+    emit("update-settings", next);
+  } catch (error) {
+    // 端点打不开（独占占用等）：原地显示原因，草稿保留，UI 不回弹。
+    endpointError.value = String(error);
+  } finally {
+    saving.value = false;
+  }
+}
 
 const remotes = ref<PairedRemote[]>([]);
 const endpoints = ref<AudioEndpoint[]>([]);
@@ -45,85 +92,83 @@ async function onCableInstalled() {
   await refreshEndpoints();
   const cable = endpoints.value.find((e) => e.isVirtualCableCandidate);
   if (cable) {
-    await pickEndpoint(cable.id, cable.name);
+    // 安装完成的自动选择是即时动作：真实打开 + 立即写盘。
+    try {
+      await api.selectAudioEndpoint(cable.id, cable.name);
+      endpointError.value = "";
+      if (draft.value) draft.value.audioEndpointName = cable.name;
+    } catch (error) {
+      endpointError.value = String(error);
+    }
   }
 }
-
-async function pickEndpoint(id: string, name: string) {
-  if (!props.settings) return;
-  try {
-    await api.selectAudioEndpoint(id, name);
-    endpointError.value = "";
-    emit("update-settings", { ...props.settings, audioEndpointName: name });
-  } catch (error) {
-    // 端点打不开（如独占模式占用）：原地显示错误，UI 不弹回、不静默。
-    endpointError.value = String(error);
-  }
-}
-
-const endpointError = ref("");
 
 function pickProvider(kind: AppSettings["provider"]["kind"]) {
-  if (!props.settings) return;
-  emit("update-settings", {
-    ...props.settings,
-    provider: { ...props.settings.provider, kind },
-  });
+  if (!draft.value) return;
+  draft.value = {
+    ...draft.value,
+    provider: { ...draft.value.provider, kind },
+  };
 }
 
-// 拖动只改草稿值（不写盘），松手 @change 才保存。
+function setEndpointName(name: string) {
+  if (!draft.value) return;
+  draft.value = { ...draft.value, audioEndpointName: name };
+}
+
+// 拖动只改草稿值（不写盘），松手 @change 才进 draft。
 const gainDraft = ref(0);
 watchEffect(() => {
-  gainDraft.value = props.settings?.gainDb ?? 0;
+  gainDraft.value = draft.value?.gainDb ?? 0;
 });
 
 function commitGain() {
-  if (!props.settings) return;
-  emit("update-settings", { ...props.settings, gainDb: gainDraft.value });
+  if (!draft.value) return;
+  draft.value = { ...draft.value, gainDb: gainDraft.value };
 }
 
 function setLanguage(language: AppSettings["language"]) {
-  if (!props.settings) return;
-  emit("update-settings", { ...props.settings, language });
+  if (!draft.value) return;
+  draft.value = { ...draft.value, language };
 }
 
 function setTheme(theme: AppSettings["theme"]) {
-  if (!props.settings) return;
-  emit("update-settings", { ...props.settings, theme });
+  if (!draft.value) return;
+  draft.value = { ...draft.value, theme };
 }
 
 function setAutostart(enabled: boolean) {
-  if (!props.settings) return;
-  emit("update-settings", { ...props.settings, launchAtLogin: enabled });
+  if (!draft.value) return;
+  draft.value = { ...draft.value, launchAtLogin: enabled };
 }
 
 function setSayItKey(vk: number) {
-  if (!props.settings) return;
-  emit("update-settings", {
-    ...props.settings,
-    provider: { ...props.settings.provider, sayitVk: vk },
-  });
+  if (!draft.value) return;
+  draft.value = {
+    ...draft.value,
+    provider: { ...draft.value.provider, sayitVk: vk },
+  };
 }
 
 function setVoiceExtend(enabled: boolean) {
-  if (!props.settings) return;
-  emit("update-settings", { ...props.settings, experimentalVoiceExtend: enabled });
+  if (!draft.value) return;
+  draft.value = { ...draft.value, experimentalVoiceExtend: enabled };
 }
 
 function setSayItMode(mode: "toggle" | "hold") {
-  if (!props.settings) return;
-  emit("update-settings", {
-    ...props.settings,
-    provider: { ...props.settings.provider, customMode: mode },
-  });
+  if (!draft.value) return;
+  draft.value = {
+    ...draft.value,
+    provider: { ...draft.value.provider, customMode: mode },
+  };
 }
 
 function setCustomMode(mode: "toggle" | "hold") {
-  if (!props.settings) return;
-  emit("update-settings", {
-    ...props.settings,
-    provider: { ...props.settings.provider, customMode: mode },
-  });
+  if (!draft.value) return;
+  draft.value = {
+    ...draft.value,
+    provider: { ...draft.value.provider, customMode: mode },
+  };
 }
 
 // Custom provider 触发键录制（keydown 捕获 → Windows VK；
@@ -162,16 +207,16 @@ function onCustomKeyCapture(event: KeyboardEvent) {
   // 纯修饰键按下不算完成（等主键）。
   if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return;
   const vk = event.which || event.keyCode;
-  if (!vk || !props.settings) return;
+  if (!vk || !draft.value) return;
   let modifiers = 0;
   if (event.ctrlKey) modifiers |= 2;
   if (event.shiftKey) modifiers |= 4;
   if (event.altKey) modifiers |= 1;
   if (event.metaKey) modifiers |= 8;
-  emit("update-settings", {
-    ...props.settings,
-    provider: { ...props.settings.provider, customVk: vk, customModifiers: modifiers },
-  });
+  draft.value = {
+    ...draft.value,
+    provider: { ...draft.value.provider, customVk: vk, customModifiers: modifiers },
+  };
   recordingCustomKey.value = false;
 }
 
@@ -219,10 +264,21 @@ const providerOptions = [
 </script>
 
 <template>
-  <div class="page" v-if="settings">
+  <div class="page" v-if="draft">
     <div class="row between" style="align-items: baseline">
       <h1>{{ t("connection.title") }}</h1>
-      <SaveBadge :state="saveState" :error="saveError" />
+      <div class="row" style="gap: 10px; align-items: center">
+        <span v-if="dirty" class="dirty-mark">{{ t("connection.unsaved_changes") }}</span>
+        <button
+          class="btn"
+          :class="{ primary: dirty }"
+          :disabled="!dirty || saving"
+          @click="saveAll"
+        >
+          {{ saving ? t("common.saving") : t("common.save") }}
+        </button>
+        <SaveBadge :state="saveState" :error="saveError" />
+      </div>
     </div>
     <p class="page-sub">{{ t("app.tagline") }}</p>
 
@@ -253,7 +309,7 @@ const providerOptions = [
           <button class="btn" v-if="bleSnapshot?.phase === 'ready'" @click="api.disconnectRemote()">
             {{ t("common.disconnect") }}
           </button>
-          <button class="btn" v-else-if="settings.pairedDeviceId" @click="api.reconnectRemote()">
+          <button class="btn" v-else-if="draft.pairedDeviceId" @click="api.reconnectRemote()">
             {{ t("common.retry") }}
           </button>
         </div>
@@ -308,11 +364,8 @@ const providerOptions = [
       <div class="row" style="margin-bottom: 10px">
         <select
           v-if="endpoints.length"
-          :value="settings.audioEndpointName"
-          @change="
-            const target = endpoints.find((e) => e.name === ($event.target as HTMLSelectElement).value);
-            if (target) pickEndpoint(target.id, target.name);
-          "
+          :value="draft.audioEndpointName"
+          @change="setEndpointName(($event.target as HTMLSelectElement).value)"
         >
           <option v-for="endpoint in endpoints" :key="endpoint.id" :value="endpoint.name">
             {{ endpoint.name }}{{ endpoint.isVirtualCableCandidate ? "  · CABLE" : "" }}
@@ -341,76 +394,76 @@ const providerOptions = [
           v-for="option in providerOptions"
           :key="option.id"
           class="picker-item"
-          :class="{ current: settings.provider.kind === option.id }"
+          :class="{ current: draft.provider.kind === option.id }"
           @click="pickProvider(option.id)"
         >
           <span>{{ t(`connection.provider.${option.id}` as never) }}</span>
         </button>
       </div>
-      <p v-if="settings.provider.kind === 'sayit'" class="hint">
+      <p v-if="draft.provider.kind === 'sayit'" class="hint">
         {{ t("connection.provider.sayit_hint") }}
       </p>
-      <div v-if="settings.provider.kind === 'sayit'" class="setting-row">
+      <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
         <div class="label">{{ t("connection.provider.sayit_mode") }}</div>
         <div class="row">
           <button
             class="btn"
-            :class="{ primary: settings.provider.customMode === 'toggle' }"
+            :class="{ primary: draft.provider.customMode === 'toggle' }"
             @click="setSayItMode('toggle')"
           >
             {{ t("connection.provider.sayit_mode.toggle") }}
           </button>
           <button
             class="btn"
-            :class="{ primary: settings.provider.customMode === 'hold' }"
+            :class="{ primary: draft.provider.customMode === 'hold' }"
             @click="setSayItMode('hold')"
           >
             {{ t("connection.provider.sayit_mode.hold") }}
           </button>
         </div>
       </div>
-      <div v-if="settings.provider.kind === 'sayit'" class="setting-row">
+      <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
         <div class="label">{{ t("connection.provider.sayit_key") }}</div>
         <select
-          :value="settings.provider.sayitVk === 0xa3 ? 0xa3 : 0xa5"
+          :value="draft.provider.sayitVk === 0xa3 ? 0xa3 : 0xa5"
           @change="setSayItKey(Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="0xa5">{{ t("connection.provider.sayit_key.ralt") }}</option>
           <option :value="0xa3">{{ t("connection.provider.sayit_key.rctrl") }}</option>
         </select>
       </div>
-      <p v-if="settings.provider.kind === 'we_type'" class="hint">
+      <p v-if="draft.provider.kind === 'we_type'" class="hint">
         {{ t("connection.provider.we_type_hint") }}
       </p>
-      <div v-if="settings.provider.kind === 'custom'" class="setting-row">
+      <div v-if="draft.provider.kind === 'custom'" class="setting-row">
         <div>
           <div class="label">{{ t("connection.provider.custom_key") }}</div>
           <div class="desc">
-            {{ customKeyLabel(settings.provider.customVk, settings.provider.customModifiers) }}
+            {{ customKeyLabel(draft.provider.customVk, draft.provider.customModifiers) }}
           </div>
         </div>
         <button class="btn" @click="recordingCustomKey = !recordingCustomKey">
           {{ recordingCustomKey ? t("connection.provider.custom_key_listening") : t("connection.provider.custom_key_record") }}
         </button>
       </div>
-      <p v-if="settings.provider.kind === 'custom' && recordingCustomKey" class="hint">
+      <p v-if="draft.provider.kind === 'custom' && recordingCustomKey" class="hint">
         {{ t("connection.provider.custom_key_listening") }}
       </p>
-      <div v-if="settings.provider.kind === 'custom'" class="setting-row">
+      <div v-if="draft.provider.kind === 'custom'" class="setting-row">
         <div>
           <div class="label">{{ t("connection.provider.mode.toggle") }} / {{ t("connection.provider.mode.hold") }}</div>
         </div>
         <div class="row">
           <button
             class="btn"
-            :class="{ primary: settings.provider.customMode === 'toggle' }"
+            :class="{ primary: draft.provider.customMode === 'toggle' }"
             @click="setCustomMode('toggle')"
           >
             {{ t("connection.provider.mode.toggle") }}
           </button>
           <button
             class="btn"
-            :class="{ primary: settings.provider.customMode === 'hold' }"
+            :class="{ primary: draft.provider.customMode === 'hold' }"
             @click="setCustomMode('hold')"
           >
             {{ t("connection.provider.mode.hold") }}
@@ -427,8 +480,8 @@ const providerOptions = [
         </div>
         <button
           class="switch"
-          :class="{ on: settings.experimentalVoiceExtend }"
-          @click="setVoiceExtend(!settings.experimentalVoiceExtend)"
+          :class="{ on: draft.experimentalVoiceExtend }"
+          @click="setVoiceExtend(!draft.experimentalVoiceExtend)"
         ></button>
       </div>
     </section>
@@ -455,7 +508,7 @@ const providerOptions = [
       <h3>{{ t("settings.general") }}</h3>
       <div class="setting-row">
         <div class="label">{{ t("settings.language") }}</div>
-        <select :value="settings.language" @change="setLanguage(($event.target as HTMLSelectElement).value as AppSettings['language'])">
+        <select :value="draft.language" @change="setLanguage(($event.target as HTMLSelectElement).value as AppSettings['language'])">
           <option value="system">{{ t("lang.system") }}</option>
           <option value="zh_cn">{{ t("lang.zh") }}</option>
           <option value="english">{{ t("lang.en") }}</option>
@@ -463,7 +516,7 @@ const providerOptions = [
       </div>
       <div class="setting-row">
         <div class="label">{{ t("settings.theme") }}</div>
-        <select :value="settings.theme" @change="setTheme(($event.target as HTMLSelectElement).value as AppSettings['theme'])">
+        <select :value="draft.theme" @change="setTheme(($event.target as HTMLSelectElement).value as AppSettings['theme'])">
           <option value="system">{{ t("theme.system") }}</option>
           <option value="light">{{ t("theme.light") }}</option>
           <option value="dark">{{ t("theme.dark") }}</option>
@@ -476,8 +529,8 @@ const providerOptions = [
         </div>
         <button
           class="switch"
-          :class="{ on: settings.launchAtLogin }"
-          @click="setAutostart(!settings.launchAtLogin)"
+          :class="{ on: draft.launchAtLogin }"
+          @click="setAutostart(!draft.launchAtLogin)"
         ></button>
       </div>
     </section>
@@ -488,6 +541,12 @@ const providerOptions = [
 </template>
 
 <style scoped>
+.dirty-mark {
+  font-size: 12px;
+  color: var(--warn, #c08a2d);
+  white-space: nowrap;
+}
+
 .device-list {
   display: grid;
   gap: 8px;

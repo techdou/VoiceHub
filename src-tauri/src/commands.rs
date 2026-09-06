@@ -65,10 +65,11 @@ pub fn select_audio_endpoint(bridge: State<'_, Arc<Bridge>>, id: String, name: S
     bridge
         .audio
         .select_endpoint(id)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("选择「{name}」失败：{e}"))?;
     let mut settings = bridge.settings();
     settings.audio_endpoint_name = name;
-    bridge.apply_settings(settings);
+    // 端点已真实打开：跳过 restore，避免释放-重开的互斥竞态窗口。
+    bridge.apply_settings_with(settings, false);
     Ok(())
 }
 

@@ -36,6 +36,23 @@ fn poll_interval(phase: AudioPhase, queued: usize, sink_started: bool) -> Durati
 }
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+/// 端点被占用的错误码（AUDCLNT_E_DEVICE_IN_USE），wasapi crate 把它
+/// Display 成 "Windows returned an error: 0x8889000A"，只能按字符串认。
+const DEVICE_IN_USE_CODE: &str = "0x8889000A";
+const SELECT_RETRY_COUNT: usize = 8;
+const SELECT_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+
+/// 给原始 WASAPI 错误补一层人话与可操作建议（用户在 UI 直接看得到）。
+fn explain_audio_error(message: &str) -> String {
+    if message.contains(DEVICE_IN_USE_CODE) {
+        format!(
+            "{message}（端点被占用：同一根 VB-CABLE 的不同声道规格互斥，\
+             或其他应用正独占该设备。请关闭占用它的应用后重试）"
+        )
+    } else {
+        message.to_owned()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioPhase {
@@ -166,11 +183,38 @@ fn worker_loop(receiver: Receiver<AudioMessage>, state: Arc<Mutex<AudioSnapshot>
                 let _ = reply.send(list_endpoints());
             }
             Ok(AudioMessage::SelectEndpoint { id, reply }) => {
-                sink = None;
                 queue.clear();
-                match AudioSink::open(&id) {
-                    Ok(new_sink) => {
-                        let mut snapshot = state.lock().unwrap_or_else(|p| p.into_inner());
+                let previous_id = sink
+                    .as_ref()
+                    .map(|s| s.id.clone())
+                    .or_else(|| state.lock().unwrap_or_else(|p| p.into_inner()).endpoint_id.clone());
+                sink = None;
+                // DEVICE_IN_USE（0x8889000A）常见于：同线另一 pin 刚释放、
+                // audiodg 拆线未完，或外部应用独占。前两种等一小会儿就好，
+                // 值得重试；其他错误快速失败。
+                let mut opened = None;
+                let mut last_error = None;
+                for attempt in 0..SELECT_RETRY_COUNT {
+                    if attempt > 0 {
+                        std::thread::sleep(SELECT_RETRY_INTERVAL);
+                    }
+                    match AudioSink::open(&id) {
+                        Ok(new_sink) => {
+                            opened = Some(new_sink);
+                            break;
+                        }
+                        Err(error) => {
+                            let retryable = error.to_string().contains(DEVICE_IN_USE_CODE);
+                            log::warn!("打开端点失败（第 {} 次）：{error}", attempt + 1);
+                            last_error = Some(error);
+                            if !retryable {
+                                break;
+                            }
+                        }
+                    }
+                }
+                match opened {
+                    Some(new_sink) => {                        let mut snapshot = state.lock().unwrap_or_else(|p| p.into_inner());
                         snapshot.endpoint_id = Some(id);
                         snapshot.endpoint_name = Some(new_sink.name.clone());
                         snapshot.phase = AudioPhase::Idle;
@@ -180,9 +224,29 @@ fn worker_loop(receiver: Receiver<AudioMessage>, state: Arc<Mutex<AudioSnapshot>
                         sink = Some(new_sink);
                         let _ = reply.send(reply_value);
                     }
-                    Err(error) => {
-                        fail(&state, format!("打开输出端点失败：{error}"));
-                        let _ = reply.send(Err(error));
+                    None => {
+                        let error = explain_audio_error(&last_error.map(|e| e.to_string()).unwrap_or_default());
+                        // 失败后不能裸奔：旧端点已被丢掉，必须重开回去，
+                        // 否则音频链路整体瘫痪且 UI 无感知。
+                        if let Some(old_id) = previous_id {
+                            match AudioSink::open(&old_id) {
+                                Ok(old_sink) => {
+                                    let mut snapshot = state.lock().unwrap_or_else(|p| p.into_inner());
+                                    snapshot.endpoint_id = Some(old_id);
+                                    snapshot.endpoint_name = Some(old_sink.name.clone());
+                                    snapshot.phase = AudioPhase::Idle;
+                                    drop(snapshot);
+                                    sink = Some(old_sink);
+                                }
+                                Err(reopen_error) => {
+                                    log::error!("切回旧端点也失败：{reopen_error}");
+                                    fail(&state, format!("切回旧端点失败：{reopen_error}"));
+                                }
+                            }
+                        } else {
+                            fail(&state, error.clone());
+                        }
+                        let _ = reply.send(Err(PlatformError::Message(error)));
                     }
                 }
             }
@@ -309,6 +373,7 @@ fn drain(
 }
 
 struct AudioSink {
+    id: String,
     name: String,
     client: AudioClient,
     render_client: AudioRenderClient,
@@ -345,7 +410,7 @@ impl AudioSink {
         let render_client = client
             .get_audiorenderclient()
             .map_err(|e| PlatformError::Message(format!("{e}")))?;
-        Ok(Self { name, client, render_client, started: false })
+        Ok(Self { id: endpoint_id.to_owned(), name, client, render_client, started: false })
     }
 
     fn reset(&mut self) -> Result<()> {
@@ -393,9 +458,25 @@ fn list_endpoints() -> Result<Vec<AudioEndpoint>> {
     endpoints.sort_by(|l, r| {
         r.is_virtual_cable_candidate
             .cmp(&l.is_virtual_cable_candidate)
+            // 候选中标准 2ch CABLE Input 优先于多通道变体（"CABLE In 16ch" 等）：
+            // 变体线没有 capture 端，语音工具收不到声；且同线 pin 互斥，
+            // 谁先被打开另一档就 DEVICE_IN_USE（2026-09-06 实测）。
+            // 判据：变体命名是 "CABLE In NNch (...)"，不含 "cable input"。
+            .then_with(|| stereo_cable_rank(l).cmp(&stereo_cable_rank(r)))
             .then_with(|| l.name.to_lowercase().cmp(&r.name.to_lowercase()))
     });
     Ok(endpoints)
+}
+
+/// CABLE 候选里的排序位次：0 = 标准 2ch 端点，1 = 多通道变体，非候选不影响排序。
+fn stereo_cable_rank(endpoint: &AudioEndpoint) -> u8 {
+    if endpoint.is_virtual_cable_candidate
+        && !endpoint.name.to_lowercase().contains("cable input")
+    {
+        1
+    } else {
+        0
+    }
 }
 
 fn set_phase(state: &Arc<Mutex<AudioSnapshot>>, phase: AudioPhase, generation: u64) -> AudioSnapshot {
@@ -407,6 +488,9 @@ fn set_phase(state: &Arc<Mutex<AudioSnapshot>>, phase: AudioPhase, generation: u
 }
 
 fn fail(state: &Arc<Mutex<AudioSnapshot>>, message: String) {
+    // 2026-09-06 排查实录：端点选择失败只写快照不落日志，事后无从查因。
+    // UI 红字一闪而过，settings.json 不更新，用户只看到"选了不保存"。
+    log::warn!("audio: {message}");
     let mut snapshot = state.lock().unwrap_or_else(|p| p.into_inner());
     snapshot.phase = AudioPhase::Failed;
     snapshot.last_error = Some(message);
@@ -433,5 +517,76 @@ mod tests {
     #[test]
     fn idle_poll_is_meaningfully_slower() {
         assert!(IDLE_POLL_INTERVAL >= POLL_INTERVAL * 20);
+    }
+
+    #[test]
+    fn stereo_cable_input_sorts_before_multichannel_variant() {
+        let endpoints = vec![
+            AudioEndpoint { is_virtual_cable_candidate: true, id: "16".into(), name: "CABLE In 16ch (VB-Audio Virtual Cable)".into() },
+            AudioEndpoint { is_virtual_cable_candidate: true, id: "2".into(), name: "CABLE Input (VB-Audio Virtual Cable)".into() },
+            AudioEndpoint { is_virtual_cable_candidate: false, id: "spk".into(), name: "扬声器 (Realtek)".into() },
+        ];
+        let mut sorted = endpoints;
+        sorted.sort_by(|l, r| {
+            r.is_virtual_cable_candidate
+                .cmp(&l.is_virtual_cable_candidate)
+                .then_with(|| stereo_cable_rank(l).cmp(&stereo_cable_rank(r)))
+                .then_with(|| l.name.to_lowercase().cmp(&r.name.to_lowercase()))
+        });
+        assert_eq!(sorted[0].name, "CABLE Input (VB-Audio Virtual Cable)");
+        assert_eq!(sorted[1].name, "CABLE In 16ch (VB-Audio Virtual Cable)");
+        assert_eq!(sorted[2].name, "扬声器 (Realtek)");
+    }
+
+    /// 真机集成测试：VB-CABLE 的 2ch 与 16ch 是同一根线上的互斥 pin，
+    /// 声桥内部切换（先释放旧 sink 再打开新端点）必须成功——这是
+    /// 2026-09-06 "CABLE Input 选不上"事故的直接回归。无 VB-CABLE 的
+    /// 机器自动跳过。
+    #[test]
+    fn switch_between_cable_pins_keeps_audio_alive() {
+        let runtime = AudioRuntime::new();
+        let endpoints = match runtime.list_endpoints() {
+            Ok(endpoints) => endpoints,
+            Err(_) => {
+                eprintln!("跳过：无法枚举音频端点");
+                return;
+            }
+        };
+        let stereo = endpoints
+            .iter()
+            .find(|e| e.is_virtual_cable_candidate && e.name.to_lowercase().contains("cable input"))
+            .cloned();
+        let Some(stereo) = stereo else {
+            eprintln!("跳过：本机无 VB-CABLE 端点");
+            return;
+        };
+        // 选中 2ch → 再切到 2ch 自身之外的任意其他端点（有 16ch 用 16ch，
+        // 没有就用第一个非候选端点）→ 再切回来。
+        let other = endpoints
+            .iter()
+            .find(|e| e.is_virtual_cable_candidate && e.id != stereo.id)
+            .or_else(|| endpoints.iter().find(|e| !e.is_virtual_cable_candidate))
+            .cloned();
+        let first = runtime.select_endpoint(stereo.id.clone());
+        assert!(first.is_ok(), "选中 2ch 失败：{first:?}");
+        if let Some(other) = other {
+            let switched = runtime.select_endpoint(other.id.clone());
+            assert!(switched.is_ok(), "从 2ch 切到 {} 失败：{switched:?}", other.name);
+            let back = runtime.select_endpoint(stereo.id.clone());
+            assert!(back.is_ok(), "切回 2ch 失败：{back:?}");
+            assert_eq!(
+                runtime.snapshot().endpoint_name.as_deref(),
+                Some(stereo.name.as_str())
+            );
+        }
+        // 选不存在的端点必须报错，且旧 sink 存活（endpoint 不被清空）。
+        let bad = runtime.select_endpoint("不存在的端点ID".into());
+        assert!(bad.is_err());
+        assert_eq!(
+            runtime.snapshot().endpoint_name.as_deref(),
+            Some(stereo.name.as_str()),
+            "失败的切换不应丢掉当前端点"
+        );
+        runtime.shutdown();
     }
 }

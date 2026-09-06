@@ -466,19 +466,28 @@ impl Bridge {
     }
 
     pub fn apply_settings(self: &Arc<Self>, settings: AppSettings) {
+        self.apply_settings_with(settings, true);
+    }
+
+    /// `restore_audio=false`：调用方（select_audio_endpoint）已真实打开新端点，
+    /// 不再走 restore——释放再重开会在同线 pin 互斥窗口里被外部进程抢线。
+    pub fn apply_settings_with(self: &Arc<Self>, settings: AppSettings, restore_audio: bool) {
         let audio_changed;
         let autostart_changed;
         let language_changed;
         let extend_changed;
         {
             let mut inner = lock(&self.inner);
-            audio_changed = settings.audio_endpoint_name != inner.settings.audio_endpoint_name;
+            audio_changed = restore_audio && settings.audio_endpoint_name != inner.settings.audio_endpoint_name;
             autostart_changed = settings.launch_at_login != inner.settings.launch_at_login;
             language_changed = settings.language != inner.settings.language;
             extend_changed = settings.experimental_voice_extend != inner.settings.experimental_voice_extend;
             inner.settings = settings.clone();
         }
-        let _ = self.store.save_settings(&settings);
+        if let Err(error) = self.store.save_settings(&settings) {
+            // 写盘失败必须可见：UI 已更新而磁盘未同步，重启后设置回退。
+            log::warn!("settings save failed: {error}");
+        }
         if audio_changed {
             self.restore_endpoint_by_name(&settings.audio_endpoint_name);
         }
@@ -516,12 +525,40 @@ impl Bridge {
             return;
         }
         let endpoints = self.audio.list_endpoints().unwrap_or_default();
-        let found = endpoints
-            .iter()
-            .find(|e| e.name == name)
-            .or_else(|| endpoints.iter().find(|e| e.is_virtual_cable_candidate));
-        if let Some(endpoint) = found {
+        let is_stereo_cable = |e: &sb_windows::AudioEndpoint| {
+            e.is_virtual_cable_candidate && e.name.to_lowercase().contains("cable input")
+        };
+        let exact = endpoints.iter().find(|e| e.name == name);
+        let stereo = endpoints.iter().find(|e| is_stereo_cable(e));
+        // 多通道变体（"CABLE In 16ch" 等）没有 capture 端，语音工具收不到声，
+        // 且与标准 2ch pin 互斥、长期持有会把 2ch 锁成 DEVICE_IN_USE。
+        // 存在标准 2ch 端点时自动迁移过去并写回设置（2026-09-06 实测结论）。
+        let chosen = match (exact, stereo) {
+            (Some(current), Some(stereo))
+                if current.is_virtual_cable_candidate && !is_stereo_cable(current) =>
+            {
+                log::info!(
+                    "端点「{name}」是多通道变体且无 capture 端，迁移到「{}」",
+                    stereo.name
+                );
+                Some(stereo)
+            }
+            (Some(current), _) => Some(current),
+            (None, _) => endpoints.iter().find(|e| e.is_virtual_cable_candidate),
+        };
+        if let Some(endpoint) = chosen {
             let _ = self.audio.select_endpoint(endpoint.id.clone());
+            // 实际端点与设置里的名字不一致（迁移或 fallback）时写回，
+            // 否则每次启动都重走一遍查找。
+            if endpoint.name != name {
+                let mut inner = lock(&self.inner);
+                inner.settings.audio_endpoint_name = endpoint.name.clone();
+                let settings = inner.settings.clone();
+                drop(inner);
+                if let Err(error) = self.store.save_settings(&settings) {
+                    log::warn!("endpoint 迁移写回失败：{error}");
+                }
+            }
             self.emit_ui(UiEvent::AudioEndpointChanged { name: endpoint.name.clone() });
         } else {
             log::warn!("audio endpoint not found: {name}");
