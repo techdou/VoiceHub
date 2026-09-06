@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { formatDuration, useI18n } from "../i18n";
@@ -8,14 +8,20 @@ import type { DailyUsage, UiEvent, UsageStatistics } from "../types";
 const { t } = useI18n();
 const stats = ref<UsageStatistics | null>(null);
 const range = ref<"today" | "week" | "recent7" | "all">("today");
+let unlisten: (() => void) | undefined;
 
 onMounted(async () => {
   stats.value = await api.getStatistics();
-  await listen<UiEvent>("bridge://event", (event) => {
+  unlisten = await listen<UiEvent>("bridge://event", (event) => {
     if (event.payload.type === "VoiceState" && !event.payload.recording) {
       api.getStatistics().then((next) => (stats.value = next));
     }
   });
+});
+
+onBeforeUnmount(() => {
+  unlisten?.();
+  unlisten = undefined;
 });
 
 const todayKey = computed(() => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { formatDuration, useI18n } from "../i18n";
@@ -7,12 +7,18 @@ import type { UiEvent, VoiceSessionRecord } from "../types";
 
 const { t } = useI18n();
 const records = ref<VoiceSessionRecord[]>([]);
+let unlisten: (() => void) | undefined;
 
 onMounted(async () => {
   await refresh();
-  await listen<UiEvent>("bridge://event", (event) => {
+  unlisten = await listen<UiEvent>("bridge://event", (event) => {
     if (event.payload.type === "VoiceState" && !event.payload.recording) refresh();
   });
+});
+
+onBeforeUnmount(() => {
+  unlisten?.();
+  unlisten = undefined;
 });
 
 async function refresh() {

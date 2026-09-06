@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { useI18n } from "../i18n";
@@ -26,6 +26,7 @@ const recording = ref(false);
 const gestureMode = ref<"single" | "double" | "long">("single");
 const selected = ref<string | null>(null);
 let receiptSeq = 0;
+let unlisten: (() => void) | undefined;
 
 const BUTTON_IDS = [
   "power", "up", "left", "ok", "right", "down", "back",
@@ -63,7 +64,7 @@ async function testVoice() {
 }
 
 onMounted(async () => {
-  await listen<UiEvent>("bridge://event", (event) => {
+  unlisten = await listen<UiEvent>("bridge://event", (event) => {
     const payload = event.payload;
     if (payload.type === "ActionReceipt") {
       receipts.value.unshift({
@@ -81,6 +82,11 @@ onMounted(async () => {
       if (!payload.recording) voiceBusy.value = false;
     }
   });
+});
+
+onBeforeUnmount(() => {
+  unlisten?.();
+  unlisten = undefined;
 });
 </script>
 

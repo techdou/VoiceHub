@@ -142,12 +142,19 @@ function setAutostart(enabled: boolean) {
   draft.value = { ...draft.value, launchAtLogin: enabled };
 }
 
-function setSayItKey(vk: number) {
+function setSayItTrigger(vk: number, modifiers: number) {
   if (!draft.value) return;
   draft.value = {
     ...draft.value,
-    provider: { ...draft.value.provider, sayitVk: vk },
+    provider: { ...draft.value.provider, sayitVk: vk, sayitModifiers: modifiers },
   };
+}
+
+/** 下拉值编码 "vk:modifiers"（0 视为默认右 Alt 单键）。 */
+function sayItTriggerValue(): string {
+  const provider = draft.value?.provider;
+  if (!provider) return "165:0";
+  return `${provider.sayitVk || 0xa5}:${provider.sayitModifiers || 0}`;
 }
 
 function setVoiceExtend(enabled: boolean) {
@@ -239,14 +246,20 @@ onMounted(async () => {
 
 const recording = ref(false);
 const voiceLevel = ref(0);
+let unlisten: (() => void) | undefined;
 
 onMounted(async () => {
-  await listen<UiEvent>("bridge://event", (event) => {
+  unlisten = await listen<UiEvent>("bridge://event", (event) => {
     if (event.payload.type === "VoiceState") {
       recording.value = event.payload.recording;
       voiceLevel.value = event.payload.level;
     }
   });
+});
+
+onBeforeUnmount(() => {
+  unlisten?.();
+  unlisten = undefined;
 });
 
 const cableCandidatePresent = computed(() =>
@@ -425,11 +438,15 @@ const providerOptions = [
       <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
         <div class="label">{{ t("connection.provider.sayit_key") }}</div>
         <select
-          :value="draft.provider.sayitVk === 0xa3 ? 0xa3 : 0xa5"
-          @change="setSayItKey(Number(($event.target as HTMLSelectElement).value))"
+          :value="sayItTriggerValue()"
+          @change="
+            const [vk, mods] = ($event.target as HTMLSelectElement).value.split(':').map(Number);
+            setSayItTrigger(vk, mods);
+          "
         >
-          <option :value="0xa5">{{ t("connection.provider.sayit_key.ralt") }}</option>
-          <option :value="0xa3">{{ t("connection.provider.sayit_key.rctrl") }}</option>
+          <option value="72:3">{{ t("connection.provider.sayit_key.combo") }}</option>
+          <option value="165:0">{{ t("connection.provider.sayit_key.ralt") }}</option>
+          <option value="163:0">{{ t("connection.provider.sayit_key.rctrl") }}</option>
         </select>
       </div>
       <p v-if="draft.provider.kind === 'we_type'" class="hint">

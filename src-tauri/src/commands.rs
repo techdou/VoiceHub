@@ -285,7 +285,16 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     let provider_detail = match settings.provider.kind {
         sb_core::provider::ProviderKind::WeType => "微信输入法：请在其设置中开启语音快捷键 Ctrl+Win，并把录音设备设为 CABLE Output".into(),
         sb_core::provider::ProviderKind::Doubao => "豆包输入法：按住式触发，请确认其语音快捷键与声桥配置一致".into(),
-        sb_core::provider::ProviderKind::SayIt => "SayIt：录音设备设为 CABLE Output（本地 Whisper 转写）；免提模式=其「免提模式」键与声桥触发键一致，按住说话=其「按住说话」键与声桥触发键一致（默认右 Alt）".into(),
+        sb_core::provider::ProviderKind::SayIt => {
+            let (vk, modifiers) = settings.provider.shortcut();
+            if modifiers != 0 {
+                format!(
+                    "SayIt：录音设备设为 CABLE Output；触发键=组合键（vk 0x{vk:02X} + mods {modifiers}）——与 SayIt 的免提键保持一致即可被遥控器联动"
+                )
+            } else {
+                "SayIt：录音设备设为 CABLE Output；当前触发键是单键（右 Alt/右 Ctrl）——SayIt 会忽略程序注入的单键，遥控器无法触发（手动按键可用）；遥控器联动请两边都改用组合键 Ctrl+Alt+H".into()
+            }
+        }
         sb_core::provider::ProviderKind::WinH => "Windows 听写（Win+H）：系统语音输入".into(),
         sb_core::provider::ProviderKind::Custom => "自定义语音工具".into(),
         sb_core::provider::ProviderKind::None => "未配置语音工具（仅测试音频链路）".into(),

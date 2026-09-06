@@ -76,8 +76,10 @@ export interface ProviderConfig {
   customVk: number;
   customModifiers: number;
   customMode: TriggerMode;
-  /** SayIt 触发键（0 = 默认右 Alt）；与 customVk 互不干扰 */
+  /** SayIt 触发键主键（0 = 默认右 Alt）；与 customVk 互不干扰 */
   sayitVk: number;
+  /** SayIt 触发键修饰键（0 = 单键）。SayIt 过滤注入的单键，程序联动必须用组合键 */
+  sayitModifiers?: number;
   stopDelayMs: number;
   startupGraceMs: number;
 }

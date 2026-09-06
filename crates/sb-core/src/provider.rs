@@ -55,9 +55,14 @@ pub struct ProviderConfig {
     pub custom_vk: u16,
     pub custom_modifiers: u8,
     pub custom_mode: TriggerMode,
-    /// SayIt 触发键（kind == SayIt 时生效；0 = 默认右 Alt）。
+    /// SayIt 触发键主键（kind == SayIt 时生效；0 = 默认右 Alt）。
     /// 独立字段：与 custom_vk 混用会在 SayIt/Custom 间互相污染。
     pub sayit_vk: u16,
+    /// SayIt 触发键修饰键位掩码（MOD_* 组合；0 = 无修饰的单键）。
+    /// 单键注入会被 SayIt 的 LL 钩子注入过滤丢弃（is_synthetic，0.1.9 源码
+    /// keyboard/mod.rs:1695）；**组合键走 RegisterHotKey 通道、不区分注入**，
+    /// 是程序触发 SayIt 免提模式的唯一可行路径（2026-09-07 实测）。
+    pub sayit_modifiers: u8,
     /// toggle 模式收尾触发的延迟（毫秒），等待音频排空。
     pub stop_delay_ms: u32,
     /// 麦克风启动等待（毫秒）：给 Provider 留出启动时间，期间音频先缓冲。
@@ -72,6 +77,7 @@ impl Default for ProviderConfig {
             custom_modifiers: 0,
             custom_mode: TriggerMode::Toggle,
             sayit_vk: 0,
+            sayit_modifiers: 0,
             stop_delay_ms: 180,
             startup_grace_ms: 80,
         }
@@ -92,15 +98,18 @@ pub enum ProviderTrigger {
 }
 
 impl ProviderConfig {
-    fn shortcut(&self) -> (u16, u8) {
+    /// 当前生效的 (vk, modifiers)（诊断页也用它展示）。
+    pub fn shortcut(&self) -> (u16, u8) {
         match self.kind {
             ProviderKind::WeType => WETYPE_TOGGLE,
             ProviderKind::Doubao => (vk::LCONTROL, 0), // 默认占位：豆包按住式默认键可在 UI 改
             ProviderKind::WinH => WIN_H,
-            // 默认右 Alt（与作者实际 SayIt 配置对齐）；用户可在 UI 换右 Ctrl。
-            // 避免右 Shift——长按 8s 触发筛选键会让录音停不下来。
+            // 默认右 Alt（与作者实际 SayIt 配置对齐）；用户可在 UI 换右 Ctrl
+            // 或组合键。避免右 Shift——长按 8s 触发筛选键会让录音停不下来。
+            // 注意：单键（modifiers=0）注入会被 SayIt 的钩子注入过滤丢弃，
+            // 程序联动必须用组合键（RegisterHotKey 通道）。
             ProviderKind::SayIt => {
-                (if self.sayit_vk != 0 { self.sayit_vk } else { VK_RMENU }, 0)
+                (if self.sayit_vk != 0 { self.sayit_vk } else { VK_RMENU }, self.sayit_modifiers)
             }
             ProviderKind::Custom => (self.custom_vk, self.custom_modifiers),
             ProviderKind::None => (0, 0),
@@ -160,7 +169,7 @@ impl ProviderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::MOD_CONTROL;
+    use crate::actions::{MOD_ALT, MOD_CONTROL};
 
     #[test]
     fn provider_kind_wire_names_match_frontend_literals() {
@@ -254,6 +263,29 @@ mod tests {
             ProviderTrigger::Tap { vk: VK_RCONTROL, modifiers: 0 }
         );
         assert!(config.drain_ms() >= 120);
+    }
+
+    #[test]
+    fn sayit_combo_key_path_is_the_injectable_one() {
+        // 组合键（Ctrl+Alt+H）：SayIt 的 RegisterHotKey 通道不区分注入，
+        // 是程序触发免提模式的唯一可行路径（2026-09-07 实测）。
+        let combo = ProviderConfig {
+            kind: ProviderKind::SayIt,
+            sayit_vk: 0x48,
+            sayit_modifiers: MOD_CONTROL | MOD_ALT,
+            ..Default::default()
+        };
+        assert_eq!(
+            combo.trigger_on_stream_start(),
+            ProviderTrigger::Tap { vk: 0x48, modifiers: MOD_CONTROL | MOD_ALT }
+        );
+        // 反序列化兼容：旧配置无 sayitModifiers 字段 → 默认 0（单键右 Alt）。
+        let legacy = serde_json::from_str::<ProviderConfig>(
+            r#"{"kind":"sayit","customVk":0,"customModifiers":0,"customMode":"toggle","sayitVk":0,"stopDelayMs":180,"startupGraceMs":80}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.sayit_modifiers, 0);
+        assert_eq!(legacy.shortcut(), (VK_RMENU, 0));
     }
 
     #[test]

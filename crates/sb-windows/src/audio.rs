@@ -560,12 +560,12 @@ mod tests {
             eprintln!("跳过：本机无 VB-CABLE 端点");
             return;
         };
-        // 选中 2ch → 再切到 2ch 自身之外的任意其他端点（有 16ch 用 16ch，
-        // 没有就用第一个非候选端点）→ 再切回来。
+        // 选中 2ch → 再切到可独立打开的普通端点 → 再切回来。
+        // 同一根 VB-CABLE 的多通道 pin 与 2ch pin 在 Windows 上互斥，
+        // 不能把它作为“切换成功”的测试目标。
         let other = endpoints
             .iter()
-            .find(|e| e.is_virtual_cable_candidate && e.id != stereo.id)
-            .or_else(|| endpoints.iter().find(|e| !e.is_virtual_cable_candidate))
+            .find(|e| !e.is_virtual_cable_candidate)
             .cloned();
         let first = runtime.select_endpoint(stereo.id.clone());
         assert!(first.is_ok(), "选中 2ch 失败：{first:?}");

@@ -102,12 +102,18 @@ onBeforeUnmount(() => observer?.disconnect());
     <div
       class="mc-canvas"
       :style="{
-        transform: `scale(${scale})`,
         height: `${CANVAS.height * scale}px`,
-        width: `${CANVAS.width}px`,
+        width: `${CANVAS.width * scale}px`,
       }"
     >
-      <div class="mc-inner" :style="{ width: `${CANVAS.width}px`, height: `${CANVAS.height}px` }">
+      <div
+        class="mc-inner"
+        :style="{
+          width: `${CANVAS.width}px`,
+          height: `${CANVAS.height}px`,
+          transform: `scale(${scale})`,
+        }"
+      >
         <!-- 连线层 -->
         <svg
           class="mc-links"
@@ -217,12 +223,13 @@ onBeforeUnmount(() => observer?.disconnect());
 }
 
 .mc-canvas {
-  transform-origin: top center;
+  /* 占位宽高按 scale 收缩，仅负责布局居中；缩放放在 mc-inner 上。 */
   margin: 0 auto;
 }
 
 .mc-inner {
   position: relative;
+  transform-origin: top left;
 }
 
 .mc-links {
