@@ -80,17 +80,21 @@ impl RemoteButton {
     }
 }
 
-/// 解析遥控器 usage 数组报文（report ID 1）。
+/// 解析遥控器 usage 数组报文。
 ///
-/// 报文为 2 字节小端 usage 数组（部分固件首字节带 report ID，自动剥离）；
+/// 已知两种带 report ID 的格式（奇数长度 = 前缀 1 字节 report ID）：
+/// - RC001 / 旧代固件：7 字节 `[1, u16×3]`；
+/// - RC003（PID 0x5070，2026-09 真机实测）：3 字节 `[2, usage_lo, usage_hi]`，
+///   consumer 集合 inputReportBytes=3、reportID=2、ARRAY、reportCount=1。
 /// 返回当前按下的 usage 集合，空集 = 全部释放。
 pub fn parse_usage_report(data: &[u8]) -> Option<Vec<u16>> {
     let mut bytes = data;
-    if bytes.len() == 7 && bytes[0] == 1 {
+    // 奇数长度一律剥掉首字节 report ID（覆盖 [2,lo,hi] 与 [1,...×6]）。
+    if bytes.len() % 2 != 0 {
         bytes = &bytes[1..];
     }
-    if bytes.is_empty() || bytes.len() % 2 != 0 {
-        return None;
+    if bytes.is_empty() {
+        return Some(Vec::new());
     }
     let mut usages = Vec::with_capacity(bytes.len() / 2);
     for pair in bytes.chunks(2) {
@@ -131,13 +135,16 @@ pub fn diff_usage_sets(
     edges
 }
 
-/// 语音键：键盘页 usage 0x3E（F5）。Xiaomi VID 0x2717 / PID 0x32B8。
+/// 语音键：键盘页 usage 0x3E（F5）。Xiaomi VID 0x2717。
+/// PID 仅作参考标识（设备过滤只比对 VID）：RC001 固件报 0x32B8，
+/// RC003 触摸板遥控器（2026-09 真机实测）报 0x5070。
 pub struct VoiceKeyHid;
 
 impl VoiceKeyHid {
     pub const KEYBOARD_USAGE: u16 = 0x3E;
     pub const VENDOR_ID: u16 = 0x2717;
-    pub const PRODUCT_ID: u16 = 0x32B8;
+    pub const PRODUCT_ID_RC001: u16 = 0x32B8;
+    pub const PRODUCT_ID_RC003: u16 = 0x5070;
 }
 
 #[cfg(test)]
@@ -157,15 +164,19 @@ mod tests {
         assert_eq!(parse_usage_report(&report), Some(vec![0x52, 0x28]));
     }
 
+    /// RC003（PID 0x5070）真机格式：3 字节 [reportID=2, usage_lo, usage_hi]。
+    #[test]
+    fn parses_rc003_three_byte_report() {
+        assert_eq!(parse_usage_report(&[0x02, 0xF1, 0x00]), Some(vec![0xF1]));
+        assert_eq!(parse_usage_report(&[0x02, 0x52, 0x00]), Some(vec![0x52]));
+        // 释放报文：usage 0 → 空集。
+        assert_eq!(parse_usage_report(&[0x02, 0x00, 0x00]), Some(vec![]));
+    }
+
     #[test]
     fn parses_bare_array_report() {
         let report = [0xF1, 0x00];
         assert_eq!(parse_usage_report(&report), Some(vec![0xF1]));
-    }
-
-    #[test]
-    fn rejects_odd_length() {
-        assert_eq!(parse_usage_report(&[0x52, 0x00, 0x28]), None);
     }
 
     #[test]

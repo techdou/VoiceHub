@@ -444,6 +444,7 @@ const providerOptions = [
             setSayItTrigger(vk, mods);
           "
         >
+          <option value="86:1">{{ t("connection.provider.sayit_key.combo_alt_v") }}</option>
           <option value="72:3">{{ t("connection.provider.sayit_key.combo") }}</option>
           <option value="165:0">{{ t("connection.provider.sayit_key.ralt") }}</option>
           <option value="163:0">{{ t("connection.provider.sayit_key.rctrl") }}</option>
