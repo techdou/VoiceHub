@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use tauri::{Manager, State};
 
-use sb_core::buttons::RemoteButton;
-use sb_core::gesture::Gesture;
-use sb_core::settings::AppSettings;
-use sb_core::statistics::UsageStatistics;
+use voicehub_core::buttons::RemoteButton;
+use voicehub_core::gesture::Gesture;
+use voicehub_core::settings::AppSettings;
+use voicehub_core::statistics::UsageStatistics;
 
 use crate::bridge::Bridge;
 
@@ -36,12 +36,12 @@ pub fn save_settings(bridge: State<'_, Arc<Bridge>>, settings: AppSettings) -> R
 }
 
 #[tauri::command]
-pub fn get_ble_snapshot(bridge: State<'_, Arc<Bridge>>) -> sb_windows::ble::BleSnapshot {
+pub fn get_ble_snapshot(bridge: State<'_, Arc<Bridge>>) -> voicehub_windows::ble::BleSnapshot {
     bridge.ble.snapshot()
 }
 
 #[tauri::command]
-pub fn list_paired_remotes(bridge: State<'_, Arc<Bridge>>) -> Vec<sb_windows::ble::PairedRemote> {
+pub fn list_paired_remotes(bridge: State<'_, Arc<Bridge>>) -> Vec<voicehub_windows::ble::PairedRemote> {
     bridge.ble.list_paired()
 }
 
@@ -69,7 +69,7 @@ pub fn reconnect_remote(bridge: State<'_, Arc<Bridge>>) {
 }
 
 #[tauri::command]
-pub fn list_audio_endpoints(bridge: State<'_, Arc<Bridge>>) -> Vec<sb_windows::AudioEndpoint> {
+pub fn list_audio_endpoints(bridge: State<'_, Arc<Bridge>>) -> Vec<voicehub_windows::AudioEndpoint> {
     bridge.audio.list_endpoints().unwrap_or_default()
 }
 
@@ -91,7 +91,7 @@ pub fn get_statistics(bridge: State<'_, Arc<Bridge>>) -> UsageStatistics {
 }
 
 #[tauri::command]
-pub fn get_history(bridge: State<'_, Arc<Bridge>>, limit: Option<usize>) -> Vec<sb_core::settings::VoiceSessionRecord> {
+pub fn get_history(bridge: State<'_, Arc<Bridge>>, limit: Option<usize>) -> Vec<voicehub_core::settings::VoiceSessionRecord> {
     bridge.store.load_history(limit.unwrap_or(200).min(1000))
 }
 
@@ -119,14 +119,14 @@ pub fn bind_process_to_profile(
 pub fn unbind_process(bridge: State<'_, Arc<Bridge>>, process: String) -> Result<(), String> {
     let mut settings = bridge.settings();
     settings.profiles.rules.process_bindings.remove(
-        &sb_core::profiles::normalize_process_name(&process),
+        &voicehub_core::profiles::normalize_process_name(&process),
     );
     bridge.apply_settings(settings)
 }
 
 #[tauri::command]
 pub fn get_foreground_process() -> Option<String> {
-    sb_windows::foreground::foreground_process_name()
+    voicehub_windows::foreground::foreground_process_name()
 }
 
 /// 把某方案重置为出厂默认映射。
@@ -141,7 +141,7 @@ pub fn reset_profile_to_default(bridge: State<'_, Arc<Bridge>>, profile_id: Stri
     else {
         return Err(format!("方案不存在：{profile_id}"));
     };
-    profile.mapping = sb_core::mapping::default_mapping();
+    profile.mapping = voicehub_core::mapping::default_mapping();
     bridge.apply_settings(settings)
 }
 
@@ -192,7 +192,7 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     let mut items = Vec::new();
 
     // 蓝牙无线电。
-    items.push(match sb_windows::radio::probe_radio() {
+    items.push(match voicehub_windows::radio::probe_radio() {
         Ok(true) => DiagnosticItem {
             id: "bluetooth".into(),
             title: "蓝牙无线电".into(),
@@ -234,13 +234,13 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     // 当前连接。
     let snapshot = bridge.ble.snapshot();
     items.push(match snapshot.phase {
-        sb_windows::ble::ConnectionPhase::Ready => DiagnosticItem {
+        voicehub_windows::ble::ConnectionPhase::Ready => DiagnosticItem {
             id: "connection".into(),
             title: "语音通道".into(),
             detail: format!("已连接 {}", snapshot.remote_name.clone().unwrap_or_default()),
             status: "ok".into(),
         },
-        sb_windows::ble::ConnectionPhase::Stopped => DiagnosticItem {
+        voicehub_windows::ble::ConnectionPhase::Stopped => DiagnosticItem {
             id: "connection".into(),
             title: "语音通道".into(),
             detail: "未连接（未选择遥控器）".into(),
@@ -261,7 +261,7 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
         let endpoint_present = endpoints.iter().any(|e| e.is_virtual_cable_candidate);
         crate::cable::status(&data_dir, endpoint_present)
     };
-    items.push(if bridge.settings().provider.kind == sb_core::provider::ProviderKind::SayIt {
+    items.push(if bridge.settings().provider.kind == voicehub_core::provider::ProviderKind::SayIt {
         DiagnosticItem { id: "virtual_cable".into(), title: "音频通道".into(),
             detail: "内嵌识别：遥控器 PCM 直接送入语音引擎".into(), status: "ok".into() }
     } else if cable_status.installed() {
@@ -285,7 +285,7 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     });
 
     // F5 吞键闸。
-    items.push(if sb_windows::key_gate::is_installed() {
+    items.push(if voicehub_windows::key_gate::is_installed() {
         DiagnosticItem {
             id: "key_gate".into(),
             title: "语音键拦截".into(),
@@ -304,12 +304,12 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     // Provider 提示。
     let settings = bridge.settings();
     let provider_detail = match settings.provider.kind {
-        sb_core::provider::ProviderKind::WeType => "微信输入法：请在其设置中开启语音快捷键 Ctrl+Win，并把录音设备设为 CABLE Output".into(),
-        sb_core::provider::ProviderKind::Doubao => "豆包输入法：按住式触发，请确认其语音快捷键与声桥配置一致".into(),
-        sb_core::provider::ProviderKind::SayIt => "声枢内嵌 SayIt：由录音会话直接调用当前语音引擎".into(),
-        sb_core::provider::ProviderKind::WinH => "Windows 听写（Win+H）：系统语音输入".into(),
-        sb_core::provider::ProviderKind::Custom => "自定义语音工具".into(),
-        sb_core::provider::ProviderKind::None => "未配置语音工具（仅测试音频链路）".into(),
+        voicehub_core::provider::ProviderKind::WeType => "微信输入法：请在其设置中开启语音快捷键 Ctrl+Win，并把录音设备设为 CABLE Output".into(),
+        voicehub_core::provider::ProviderKind::Doubao => "豆包输入法：按住式触发，请确认其语音快捷键与声桥配置一致".into(),
+        voicehub_core::provider::ProviderKind::SayIt => "声枢内嵌 SayIt：由录音会话直接调用当前语音引擎".into(),
+        voicehub_core::provider::ProviderKind::WinH => "Windows 听写（Win+H）：系统语音输入".into(),
+        voicehub_core::provider::ProviderKind::Custom => "自定义语音工具".into(),
+        voicehub_core::provider::ProviderKind::None => "未配置语音工具（仅测试音频链路）".into(),
     };
     items.push(DiagnosticItem {
         id: "provider".into(),

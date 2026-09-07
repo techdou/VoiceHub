@@ -15,23 +15,23 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 
-use sb_core::actions::ButtonAction;
-use sb_core::buttons::RemoteButton;
-use sb_core::gesture::{Gesture, GestureRecognizer};
-use sb_core::provider::ProviderTrigger;
-use sb_core::settings::{AppSettings, VoiceSessionRecord};
-use sb_core::statistics::{UsageEvent, UsageStatistics};
+use voicehub_core::actions::ButtonAction;
+use voicehub_core::buttons::RemoteButton;
+use voicehub_core::gesture::{Gesture, GestureRecognizer};
+use voicehub_core::provider::ProviderTrigger;
+use voicehub_core::settings::{AppSettings, VoiceSessionRecord};
+use voicehub_core::statistics::{UsageEvent, UsageStatistics};
 
 use crate::store::Store;
-use sb_windows::audio::AudioRuntime;
-use sb_windows::ble::{BleEvent, BleRuntime};
-use sb_windows::key_gate;
-use sb_windows::raw_input::{spawn_hid_monitor, HidEvent, HidInput, UsageTracker};
+use voicehub_windows::audio::AudioRuntime;
+use voicehub_windows::ble::{BleEvent, BleRuntime};
+use voicehub_windows::key_gate;
+use voicehub_windows::raw_input::{spawn_hid_monitor, HidEvent, HidInput, UsageTracker};
 
 enum InternalEvent {
     Hid(HidInput),
     Ble(BleEvent),
-    Power(sb_windows::power::PowerEvent),
+    Power(voicehub_windows::power::PowerEvent),
     /// 手势 tick（驱动单击窗口/长按判定）。
     Tick,
 }
@@ -41,7 +41,7 @@ enum InternalEvent {
 // camelCase 会把 tag 转成 "bleState" 导致事件永远匹配不上——勿改。
 #[serde(rename_all = "PascalCase", tag = "type")]
 pub enum UiEvent {
-    BleState { snapshot: sb_windows::ble::BleSnapshot },
+    BleState { snapshot: voicehub_windows::ble::BleSnapshot },
     VoiceState { recording: bool, level: f32 },
     Battery { percent: u8 },
     ActionReceipt { button: String, gesture: String, action: String, ok: bool },
@@ -71,7 +71,7 @@ pub struct Bridge {
     voice_lifecycle: Mutex<()>,
     level_packet_count: AtomicU64,
     pub remote_voice: Mutex<crate::remote_voice::RemoteVoice>,
-    voice_provider: Mutex<Option<(u8, sb_core::provider::ProviderConfig)>>,
+    voice_provider: Mutex<Option<(u8, voicehub_core::provider::ProviderConfig)>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -88,7 +88,7 @@ impl Bridge {
         {
             let forward = tx.clone();
             std::thread::Builder::new()
-                .name("sb-ble-forward".into())
+                .name("vh-ble-forward".into())
                 .spawn(move || {
                     while let Ok(event) = ble_rx.recv() {
                         let _ = forward.send(InternalEvent::Ble(event));
@@ -126,7 +126,7 @@ impl Bridge {
             let _ = spawn_hid_monitor(hid_tx);
             let forward = tx.clone();
             std::thread::Builder::new()
-                .name("sb-hid-forward".into())
+                .name("vh-hid-forward".into())
                 .spawn(move || {
                     while let Ok(event) = hid_rx.recv() {
                         let _ = forward.send(InternalEvent::Hid(event));
@@ -137,11 +137,11 @@ impl Bridge {
 
         // 电源通知。
         {
-            let (power_tx, power_rx) = channel::<sb_windows::power::PowerEvent>();
-            let _ = sb_windows::power::spawn_power_monitor(power_tx);
+            let (power_tx, power_rx) = channel::<voicehub_windows::power::PowerEvent>();
+            let _ = voicehub_windows::power::spawn_power_monitor(power_tx);
             let forward = tx.clone();
             std::thread::Builder::new()
-                .name("sb-power-forward".into())
+                .name("vh-power-forward".into())
                 .spawn(move || {
                     while let Ok(event) = power_rx.recv() {
                         let _ = forward.send(InternalEvent::Power(event));
@@ -154,7 +154,7 @@ impl Bridge {
         {
             let tick_tx = tx.clone();
             std::thread::Builder::new()
-                .name("sb-gesture-tick".into())
+                .name("vh-gesture-tick".into())
                 .spawn(move || loop {
                     std::thread::sleep(Duration::from_millis(15));
                     if tick_tx.send(InternalEvent::Tick).is_err() {
@@ -168,7 +168,7 @@ impl Bridge {
         {
             let bridge = bridge.clone();
             std::thread::Builder::new()
-                .name("sb-dispatcher".into())
+                .name("vh-dispatcher".into())
                 .spawn(move || {
                     while let Ok(event) = rx.recv() {
                         bridge.handle(event);
@@ -188,7 +188,7 @@ impl Bridge {
                 inner.settings.onboarding_complete,
             )
         };
-        let direct = bridge.settings().provider.kind == sb_core::provider::ProviderKind::SayIt;
+        let direct = bridge.settings().provider.kind == voicehub_core::provider::ProviderKind::SayIt;
         if !direct && endpoint.is_empty() {
             // 未配置过端点：自动挑虚拟声卡候选并写回设置（省一次手动下拉）。
             if let Some(candidate) = bridge
@@ -253,7 +253,7 @@ impl Bridge {
             InternalEvent::Hid(input) => self.handle_hid(input),
             InternalEvent::Ble(ble_event) => self.handle_ble(ble_event),
             InternalEvent::Power(power) => match power {
-                sb_windows::power::PowerEvent::Suspend => {
+                voicehub_windows::power::PowerEvent::Suspend => {
                     let event = {
                         let _lifecycle = lock(&self.voice_lifecycle);
                         let event = self.reset_voice_locked("System suspended");
@@ -262,7 +262,7 @@ impl Bridge {
                     };
                     self.emit_ui(event);
                 }
-                sb_windows::power::PowerEvent::Resume => {
+                voicehub_windows::power::PowerEvent::Resume => {
                     log::info!("system resume → reconnect");
                     self.ble.reconnect_now();
                 }
@@ -283,7 +283,7 @@ impl Bridge {
                     for edge in &edges {
                         // 画布实时反馈：沿事件直接推 UI（低频，无需节流）。
                         self.emit_ui(UiEvent::ButtonActivity {
-                            button: sb_core::mapping::ButtonMapping::key(edge.button),
+                            button: voicehub_core::mapping::ButtonMapping::key(edge.button),
                             pressed: edge.pressed,
                         });
                     }
@@ -298,7 +298,7 @@ impl Bridge {
                             counted = true;
                             inner.statistics.apply(
                                 UsageEvent::ButtonPress {
-                                    button_id: sb_core::mapping::ButtonMapping::key(edge.button),
+                                    button_id: voicehub_core::mapping::ButtonMapping::key(edge.button),
                                 },
                                 chrono::Local::now(),
                             );
@@ -314,16 +314,16 @@ impl Bridge {
                     counted = true;
                     inner.statistics.apply(
                         UsageEvent::ButtonPress {
-                            button_id: sb_core::mapping::ButtonMapping::key(button),
+                            button_id: voicehub_core::mapping::ButtonMapping::key(button),
                         },
                         chrono::Local::now(),
                     );
                     self.emit_ui(UiEvent::ButtonActivity {
-                        button: sb_core::mapping::ButtonMapping::key(button),
+                        button: voicehub_core::mapping::ButtonMapping::key(button),
                         pressed: true,
                     });
                     self.emit_ui(UiEvent::ButtonActivity {
-                        button: sb_core::mapping::ButtonMapping::key(button),
+                        button: voicehub_core::mapping::ButtonMapping::key(button),
                         pressed: false,
                     });
                     gestures.push((button, Gesture::SingleClick));
@@ -341,7 +341,7 @@ impl Bridge {
     }
 
     fn dispatch_gesture(self: &Arc<Self>, button: RemoteButton, gesture: Gesture) {
-        let foreground = sb_windows::foreground::foreground_process_name();
+        let foreground = voicehub_windows::foreground::foreground_process_name();
         let action = {
             let inner = lock(&self.inner);
             if !inner.settings.button_mapping_enabled {
@@ -363,7 +363,7 @@ impl Bridge {
             Gesture::Repeat => "连发",
         };
         self.emit_ui(UiEvent::ActionReceipt {
-            button: sb_core::mapping::ButtonMapping::key(button),
+            button: voicehub_core::mapping::ButtonMapping::key(button),
             gesture: gesture_label.to_string(),
             action: action_label(&action),
             ok,
@@ -372,7 +372,7 @@ impl Bridge {
     }
 
     fn execute_action(self: &Arc<Self>, action: &ButtonAction) -> bool {
-        use sb_windows::send_input::{media, tap, volume, volume_mute, KeyChord};
+        use voicehub_windows::send_input::{media, tap, volume, volume_mute, KeyChord};
         let result = match action {
             ButtonAction::Disabled => Ok(()),
             ButtonAction::Shortcut { vk, modifiers, .. } => tap(KeyChord::new(*vk, *modifiers)),
@@ -382,13 +382,13 @@ impl Bridge {
             ButtonAction::VolumeDown => volume(true),
             ButtonAction::VolumeMute => volume_mute(),
             ButtonAction::OpenApp { target, .. } | ButtonAction::OpenUrl { url: target } => {
-                sb_windows::shell::open_target(target)
+                voicehub_windows::shell::open_target(target)
             }
-            ButtonAction::Screenshot { region } => sb_windows::shell::screenshot(*region),
-            ButtonAction::ShowDesktop => tap(KeyChord::new(0x44, sb_core::actions::MOD_WIN)), // Win+D
-            ButtonAction::TaskView => tap(KeyChord::new(0x09, sb_core::actions::MOD_WIN)), // Win+Tab
-            ButtonAction::AppSwitcher => tap(KeyChord::new(0x09, sb_core::actions::MOD_ALT)), // Alt+Tab
-            ButtonAction::ClickConfirm => sb_windows::shell::left_click(),
+            ButtonAction::Screenshot { region } => voicehub_windows::shell::screenshot(*region),
+            ButtonAction::ShowDesktop => tap(KeyChord::new(0x44, voicehub_core::actions::MOD_WIN)), // Win+D
+            ButtonAction::TaskView => tap(KeyChord::new(0x09, voicehub_core::actions::MOD_WIN)), // Win+Tab
+            ButtonAction::AppSwitcher => tap(KeyChord::new(0x09, voicehub_core::actions::MOD_ALT)), // Alt+Tab
+            ButtonAction::ClickConfirm => voicehub_windows::shell::left_click(),
             ButtonAction::OpenSettings => {
                 self.emit_ui(UiEvent::ShowSettings);
                 Ok(())
@@ -408,7 +408,7 @@ impl Bridge {
             BleEvent::SnapshotChanged => {
                 let snapshot = self.ble.snapshot();
                 let mut events = Vec::new();
-                if snapshot.phase != sb_windows::ble::ConnectionPhase::Ready {
+                if snapshot.phase != voicehub_windows::ble::ConnectionPhase::Ready {
                     let event = {
                         let _lifecycle = lock(&self.voice_lifecycle);
                         self.reset_voice_locked("Remote disconnected")
@@ -436,8 +436,8 @@ impl Bridge {
             let generation = self.voice_generation.load(Ordering::Relaxed);
             if expected_generation.is_some_and(|expected| expected != generation) { return; }
             if !self.voice_active.load(Ordering::Relaxed) || self.voice_finishing.load(Ordering::Relaxed) { return; }
-            let level = sb_core::pcm::measure(&samples);
-            let direct = lock(&self.voice_provider).as_ref().is_some_and(|(_, p)| p.kind == sb_core::provider::ProviderKind::SayIt);
+            let level = voicehub_core::pcm::measure(&samples);
+            let direct = lock(&self.voice_provider).as_ref().is_some_and(|(_, p)| p.kind == voicehub_core::provider::ProviderKind::SayIt);
             if direct {
                 if !lock(&self.remote_voice).push(generation, &samples) {
                     // 会话已销毁（renderer reload 换 client / 30s 未确认过期 / 主动拒绝）：
@@ -498,7 +498,7 @@ impl Bridge {
             self.voice_active.store(true, Ordering::Relaxed);
             let provider = lock(&self.inner).settings.provider.clone();
             *lock(&self.voice_provider) = Some((session_id, provider.clone()));
-            if provider.kind == sb_core::provider::ProviderKind::SayIt {
+            if provider.kind == voicehub_core::provider::ProviderKind::SayIt {
                 if !lock(&self.remote_voice).begin(generation, now_ms()) {
                     log::warn!("Remote recorder busy; ignored generation={generation}");
                     self.voice_active.store(false, Ordering::Relaxed);
@@ -523,7 +523,7 @@ impl Bridge {
             /// 直连路径：样本已全在 RemoteVoice 缓冲，end 后 renderer drain，立即收尾。
             DirectDone(UiEvent),
             /// 外部 Provider：保留会话至 drain 窗口结束（把尾巴样本灌满虚拟声卡）。
-            Drain { generation: u64, started_at: u64, duration_ms: u64, provider: sb_core::provider::ProviderConfig },
+            Drain { generation: u64, started_at: u64, duration_ms: u64, provider: voicehub_core::provider::ProviderConfig },
         }
         let stop = {
             let _lifecycle = lock(&self.voice_lifecycle);
@@ -537,7 +537,7 @@ impl Bridge {
             let generation = self.voice_generation.load(Ordering::Relaxed);
             let started_at = self.voice_started_at_ms.load(Ordering::Relaxed);
             let duration_ms = now_ms().saturating_sub(started_at);
-            if provider.kind == sb_core::provider::ProviderKind::SayIt {
+            if provider.kind == voicehub_core::provider::ProviderKind::SayIt {
                 let sample_count = lock(&self.remote_voice).received() as u64;
                 lock(&self.remote_voice).end(generation);
                 *lock(&self.voice_provider) = None;
@@ -557,7 +557,7 @@ impl Bridge {
                 let bridge = self.clone();
                 let provider_for_thread = provider.clone();
                 let spawned = std::thread::Builder::new()
-                    .name("sb-voice-finish".into())
+                    .name("vh-voice-finish".into())
                     .spawn(move || {
                         std::thread::sleep(Duration::from_millis(drain_ms));
                         bridge.finish_drained_session(generation, session_id, &provider_for_thread, started_at, duration_ms);
@@ -577,7 +577,7 @@ impl Bridge {
         self: &Arc<Self>,
         generation: u64,
         session_id: u8,
-        provider: &sb_core::provider::ProviderConfig,
+        provider: &voicehub_core::provider::ProviderConfig,
         started_at: u64,
         duration_ms: u64,
     ) {
@@ -603,7 +603,7 @@ impl Bridge {
     /// sample_count：直连路径为 RemoteVoice 实收值；外部 Provider 路径音频直接进
     /// 声卡、不经我们计数，记 0。
     fn record_voice_session_since(self: &Arc<Self>, started_at: u64, duration_ms: u64, sample_count: u64) {
-        let foreground = sb_windows::foreground::foreground_process_name();
+        let foreground = voicehub_windows::foreground::foreground_process_name();
         let profile_name = {
             let inner = lock(&self.inner);
             inner
@@ -632,7 +632,7 @@ impl Bridge {
     }
 
     fn trigger_provider(self: &Arc<Self>, trigger: ProviderTrigger) {
-        use sb_windows::send_input::{press, release, tap, KeyChord};
+        use voicehub_windows::send_input::{press, release, tap, KeyChord};
         let result = match trigger {
             ProviderTrigger::Tap { vk, modifiers } => tap(KeyChord::new(vk, modifiers)),
             ProviderTrigger::Press { vk, modifiers } => press(KeyChord::new(vk, modifiers)),
@@ -668,7 +668,7 @@ impl Bridge {
             // 锁内只 diff + 更新内存；写盘（含 sync_all）挪到锁外——锁内写盘会把
             // 15ms tick / HID / BLE 事件分发一起阻塞在磁盘延迟上。
             previous = inner.settings.clone();
-            audio_changed = restore_audio && settings.provider.kind != sb_core::provider::ProviderKind::SayIt &&
+            audio_changed = restore_audio && settings.provider.kind != voicehub_core::provider::ProviderKind::SayIt &&
                 (settings.audio_endpoint_name != previous.audio_endpoint_name || settings.provider.kind != previous.provider.kind);
             autostart_changed = settings.launch_at_login != previous.launch_at_login;
             language_changed = settings.language != previous.language;
@@ -726,7 +726,7 @@ impl Bridge {
             return;
         }
         let endpoints = self.audio.list_endpoints().unwrap_or_default();
-        let is_stereo_cable = |e: &sb_windows::AudioEndpoint| {
+        let is_stereo_cable = |e: &voicehub_windows::AudioEndpoint| {
             e.is_virtual_cable_candidate && e.name.to_lowercase().contains("cable input")
         };
         let exact = endpoints.iter().find(|e| e.name == name);
@@ -776,7 +776,7 @@ impl Bridge {
         let generation = self.on_voice_started(0xFE).ok_or("Recorder is busy or previous recording is still processing")?;
         let bridge = self.clone();
         std::thread::Builder::new()
-            .name("sb-sim-voice".into())
+            .name("vh-sim-voice".into())
             .spawn(move || {
                 let sample_rate = 16_000u64;
                 let total = pcm.as_ref().map_or((sample_rate * duration_ms / 1000).max(1), |samples| samples.len() as u64);
@@ -852,7 +852,7 @@ mod tests {
         let cases: Vec<(UiEvent, &str)> = vec![
             (
                 UiEvent::BleState {
-                    snapshot: sb_windows::ble::BleSnapshot::default(),
+                    snapshot: voicehub_windows::ble::BleSnapshot::default(),
                 },
                 "BleState",
             ),
@@ -895,7 +895,7 @@ mod tests {
 
         // 字段名也是契约的一部分（前端直接读 payload.snapshot / .recording 等）。
         let ble = serde_json::to_value(UiEvent::BleState {
-            snapshot: sb_windows::ble::BleSnapshot::default(),
+            snapshot: voicehub_windows::ble::BleSnapshot::default(),
         })
         .unwrap();
         assert!(ble.get("snapshot").is_some(), "BleState 缺 snapshot 字段");

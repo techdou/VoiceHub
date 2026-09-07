@@ -61,12 +61,12 @@ async function persistSettings(next: AppSettings) {
     // 写盘失败必须可见：UI 已更新而磁盘/后端未同步，重启后设置回退（sayit 序列化坑即由此潜伏）。
     saveState.value = "error";
     saveError.value = String(error);
-    console.error("[soundbridge] save_settings failed:", error);
+    console.error("[voicehub] save_settings failed:", error);
     // 乐观更新回滚：回读后端真值，避免 UI 一直显示未落盘的状态。
     try {
       settings.value = await api.getSettings();
     } catch (reloadError) {
-      console.error("[soundbridge] reload settings after save failure:", reloadError);
+      console.error("[voicehub] reload settings after save failure:", reloadError);
     }
   }
 }
@@ -150,12 +150,12 @@ onMounted(async () => {
   try {
     await reloadSettings();
   } catch (error) {
-    console.error("[soundbridge] load settings failed:", error);
+    console.error("[voicehub] load settings failed:", error);
   }
   try {
     await refreshBle();
   } catch (error) {
-    console.error("[soundbridge] ble snapshot failed:", error);
+    console.error("[voicehub] ble snapshot failed:", error);
   }
 });
 </script>

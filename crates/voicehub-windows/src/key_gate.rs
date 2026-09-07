@@ -89,7 +89,7 @@ pub fn install() -> bool {
     }
     MASTER.store(true, Ordering::Relaxed);
     std::thread::Builder::new()
-        .name("sb-key-gate".into())
+        .name("vh-key-gate".into())
         .spawn(|| unsafe {
             match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
                 Ok(hook) => {

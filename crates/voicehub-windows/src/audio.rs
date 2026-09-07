@@ -108,7 +108,7 @@ impl AudioRuntime {
         let state = Arc::new(Mutex::new(AudioSnapshot::default()));
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
-            .name("sb-wasapi".into())
+            .name("vh-wasapi".into())
             .spawn(move || worker_loop(receiver, worker_state))
             .ok();
         Self { sender, state, worker: Mutex::new(worker) }

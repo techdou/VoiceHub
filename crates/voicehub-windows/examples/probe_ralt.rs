@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED};
 
-use sb_windows::send_input::{press, release, tap, KeyChord};
+use voicehub_windows::send_input::{press, release, tap, KeyChord};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());

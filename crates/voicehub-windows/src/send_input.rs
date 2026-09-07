@@ -11,7 +11,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 use crate::Result;
 
-use sb_core::actions::{MediaKeyCode, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+use voicehub_core::actions::{MediaKeyCode, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
 
 /// 一个待注入的组合键。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -111,7 +111,7 @@ async function connect(id: string, name: string) {
     emit("sync-settings", await api.getSettings());
   } catch (error) {
     connectError.value = String(error);
-    console.error("[soundbridge] connect_remote failed:", error);
+    console.error("[voicehub] connect_remote failed:", error);
   } finally {
     busy.value = false;
   }
@@ -127,7 +127,7 @@ async function runAction(action: () => Promise<void>) {
     await action();
   } catch (error) {
     connectError.value = String(error);
-    console.error("[soundbridge] action failed:", error);
+    console.error("[voicehub] action failed:", error);
   } finally {
     actionBusy.value = false;
   }

@@ -21,12 +21,12 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::{
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Storage::Streams::{DataReader, DataWriter};
 
-use sb_core::adpcm::ImaAdpcmCodec;
-use sb_core::atvv::{AtvvCapabilities, AtvvCommand, AtvvControlEvent, AtvvUuids};
-use sb_core::frame::FrameAccumulator;
-use sb_core::pcm;
-use sb_core::reconnect::ReconnectPolicy;
-use sb_core::remote_model::{is_voice_remote_name, RemoteModel};
+use voicehub_core::adpcm::ImaAdpcmCodec;
+use voicehub_core::atvv::{AtvvCapabilities, AtvvCommand, AtvvControlEvent, AtvvUuids};
+use voicehub_core::frame::FrameAccumulator;
+use voicehub_core::pcm;
+use voicehub_core::reconnect::ReconnectPolicy;
+use voicehub_core::remote_model::{is_voice_remote_name, RemoteModel};
 
 use crate::key_gate;
 use crate::radio;
@@ -118,7 +118,7 @@ impl BleRuntime {
         let state = Arc::new(Mutex::new(BleSnapshot::default()));
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
-            .name("sb-ble".into())
+            .name("vh-ble".into())
             .spawn(move || worker_loop(receiver, events, worker_state))
             .expect("spawn BLE worker");
         Self { sender, state, worker: Mutex::new(Some(worker)) }

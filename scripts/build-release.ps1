@@ -30,7 +30,7 @@ if (-not $SkipInstaller) {
 # Keep native inference and VC runtimes beside the portable executable.
 $portable = "$out/VoiceHub-portable"
 New-Item -ItemType Directory -Force -Path $portable | Out-Null
-Copy-Item "$release/soundbridge-app.exe" "$portable/VoiceHub.exe" -Force
+Copy-Item "$release/voicehub-app.exe" "$portable/VoiceHub.exe" -Force
 Copy-Item "src-tauri/transcribe-libs/*.dll" $portable -Force
 Copy-Item "vendor/sayit/native/resources" $portable -Recurse -Force
 Copy-Item "vendor/sayit/LICENSE" "$portable/LICENSE-SayIt" -Force

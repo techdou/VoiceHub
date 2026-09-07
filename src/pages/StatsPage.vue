@@ -22,7 +22,7 @@ onMounted(async () => {
   try {
     stats.value = await api.getStatistics();
   } catch (error) {
-    console.error("[soundbridge] load statistics failed:", error);
+    console.error("[voicehub] load statistics failed:", error);
   }
 });
 

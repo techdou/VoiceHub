@@ -281,14 +281,14 @@ unsafe fn handle_raw_input(_wparam: WPARAM, lparam: LPARAM) -> Option<(String, S
     let len = hid.dwSizeHid as usize * hid.dwCount as usize;
     let data = std::slice::from_raw_parts(hid.bRawData.as_ptr(), len);
     let hex: Vec<String> = data.iter().map(|b| format!("{b:02X}")).collect();
-    let parsed = sb_core::buttons::parse_usage_report(data);
+    let parsed = voicehub_core::buttons::parse_usage_report(data);
     let detail = match parsed {
         None => "parse_usage_report -> None (REJECTED)".to_string(),
         Some(usages) => {
             let mapped: Vec<String> = usages
                 .iter()
                 .map(|&u| {
-                    match sb_core::buttons::RemoteButton::from_hid_usage(u) {
+                    match voicehub_core::buttons::RemoteButton::from_hid_usage(u) {
                         Some(b) => format!("0x{u:04X}=>{b:?}"),
                         None => format!("0x{u:04X}=>UNMAPPED"),
                     }

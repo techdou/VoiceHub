@@ -100,7 +100,7 @@ pub fn read_install_state(app_data: &Path) -> Option<CableInstallState> {
 
 /// 注册表检测 VBAudioVACMME 驱动服务（平台层实现）。
 pub fn driver_service_present() -> bool {
-    sb_windows::registry::driver_service_present()
+    voicehub_windows::registry::driver_service_present()
 }
 
 /// busy 判定（纯函数，单测覆盖）。
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn status_parses_state_file() {
-        let dir = std::env::temp_dir().join(format!("sb-cable-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vh-cable-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("vb-cable")).unwrap();
         std::fs::write(
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn corrupted_state_file_is_none() {
-        let dir = std::env::temp_dir().join(format!("sb-cable-bad-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vh-cable-bad-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("vb-cable")).unwrap();
         std::fs::write(dir.join("vb-cable/install-state.json"), "not json").unwrap();
         assert!(read_install_state(&dir).is_none());

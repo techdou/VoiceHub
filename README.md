@@ -39,7 +39,7 @@
 
 ## 安装与使用
 
-1. 从 [GitHub Releases](https://github.com/techdou/soundbridge/releases) 获取已发布的安装包或便携版。主分支的新修复可能尚未包含在旧安装包中，也可以按下文从源码构建。
+1. 从 [GitHub Releases](https://github.com/techdou/VoiceHub/releases) 获取已发布的安装包或便携版。主分支的新修复可能尚未包含在旧安装包中，也可以按下文从源码构建。
 2. 在 Windows 蓝牙设置中配对遥控器，在“设备连接”页选择设备，语音工具选择“声枢内嵌引擎”并保存。
 3. 在“语音引擎”选择本地模式，下载模型或选择已有 GGUF 文件并点击“加载并启用”。
 4. 使用第三方或本机服务时，选择云 API 模式，添加“自定义 ASR / OpenAI 兼容”，填写服务地址与模型名，按服务要求填写密钥。
@@ -104,12 +104,12 @@
 准备 Rust stable（MSVC 工具链）、Visual Studio 2022 C++ Build Tools、Windows SDK、Node.js 22+ 和 pnpm。安装 C++ 桌面开发与 CMake 工具组件。首次构建会编译本地推理依赖并下载所需资源。
 
 ```powershell
-git clone https://github.com/techdou/soundbridge.git
-cd soundbridge
+git clone https://github.com/techdou/VoiceHub.git
+cd VoiceHub
 pnpm install --frozen-lockfile
 pnpm build
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1 -Action build -Standalone
-.\target\debug\soundbridge-app.exe
+.\target\debug\voicehub-app.exe
 ```
 
 `-Standalone` 将前端资源嵌入应用，可脱离 Vite 启动。构建脚本负责初始化 MSVC、CMake 与本地推理库的构建环境。
@@ -120,7 +120,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1 -Ac
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1 -Action build
-.\target\debug\soundbridge-app.exe
+.\target\debug\voicehub-app.exe
 ```
 
 默认开发地址为 `http://localhost:5173`。网页依赖 Tauri 原生接口，应通过桌面应用验收。

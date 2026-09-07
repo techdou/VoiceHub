@@ -1,7 +1,7 @@
 //! List current Raw Input sources and the selected remote's input filter decision.
 //! Usage: cargo run -p sb-windows --example check_input_sources -- <pairedDeviceId>
 
-use sb_windows::raw_input::is_selected_remote;
+use voicehub_windows::raw_input::is_selected_remote;
 use windows::Win32::UI::Input::{
     GetRawInputDeviceInfoW, GetRawInputDeviceList, RAWINPUTDEVICELIST, RIDI_DEVICENAME,
 };

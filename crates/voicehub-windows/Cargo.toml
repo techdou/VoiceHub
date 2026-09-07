@@ -1,13 +1,13 @@
 [package]
-name = "sb-windows"
+name = "voicehub-windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "SoundBridge Windows platform layer: WinRT BLE, Raw Input, keyboard hook, SendInput, WASAPI, foreground process, power notifications"
+description = "VoiceHub Windows platform layer: WinRT BLE, Raw Input, keyboard hook, SendInput, WASAPI, foreground process, power notifications"
 
 [dependencies]
-sb-core = { path = "../sb-core" }
+voicehub-core = { path = "../voicehub-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

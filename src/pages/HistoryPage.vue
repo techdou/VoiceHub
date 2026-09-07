@@ -19,7 +19,7 @@ onMounted(async () => {
   try {
     await refresh();
   } catch (error) {
-    console.error("[soundbridge] load history failed:", error);
+    console.error("[voicehub] load history failed:", error);
   }
 });
 

@@ -3899,31 +3899,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sb-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "sb-windows"
-version = "0.1.0"
-dependencies = [
- "futures",
- "log",
- "sb-core",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "wasapi",
- "windows 0.62.2",
- "windows-version",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4361,33 +4336,6 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "soundbridge-app"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "log",
- "sb-core",
- "sb-windows",
- "serde",
- "serde_json",
- "sys-locale",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-opener",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tokio",
- "transcribe-cpp",
- "voicehub-sayit",
 ]
 
 [[package]]
@@ -5692,6 +5640,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "voicehub-app"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "log",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-opener",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "transcribe-cpp",
+ "voicehub-core",
+ "voicehub-sayit",
+ "voicehub-windows",
+]
+
+[[package]]
+name = "voicehub-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "voicehub-sayit"
 version = "0.1.9"
 dependencies = [
@@ -5733,6 +5718,21 @@ dependencies = [
  "whoami",
  "windows 0.58.0",
  "zip 0.6.6",
+]
+
+[[package]]
+name = "voicehub-windows"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "voicehub-core",
+ "wasapi",
+ "windows 0.62.2",
+ "windows-version",
 ]
 
 [[package]]

@@ -4,8 +4,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use sb_core::settings::{AppSettings, VoiceSessionRecord};
-use sb_core::statistics::UsageStatistics;
+use voicehub_core::settings::{AppSettings, VoiceSessionRecord};
+use voicehub_core::statistics::UsageStatistics;
 
 pub struct Store {
     dir: PathBuf,
@@ -111,7 +111,7 @@ impl Store {
     pub fn log_file(&self) -> PathBuf {
         let dir = self.logs_dir();
         let _ = fs::create_dir_all(&dir);
-        dir.join(format!("soundbridge-{}.log", chrono::Local::now().format("%Y%m%d")))
+        dir.join(format!("voicehub-{}.log", chrono::Local::now().format("%Y%m%d")))
     }
 }
 
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn settings_roundtrip_through_disk() {
-        let dir = std::env::temp_dir().join(format!("sb-store-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vh-store-test-{}", std::process::id()));
         let store = Store::new(&dir);
         let mut settings = AppSettings::default();
         settings.gain_db = 3.5;
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn history_appends_and_reads_newest_first() {
-        let dir = std::env::temp_dir().join(format!("sb-history-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vh-history-test-{}", std::process::id()));
         let store = Store::new(&dir);
         for i in 0..3 {
             store

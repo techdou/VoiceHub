@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/sb-core",
-    "crates/sb-windows",
+    "crates/voicehub-core",
+    "crates/voicehub-windows",
     "src-tauri",
     "vendor/sayit/native",
 ]
@@ -11,7 +11,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-repository = "https://github.com/techdou/soundbridge"
+repository = "https://github.com/techdou/VoiceHub"
 
 [workspace.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

@@ -149,7 +149,7 @@ pub fn screenshot(region: bool) -> Result<()> {
     if region {
         return crate::send_input::tap(crate::send_input::KeyChord::new(
             0x53, // S
-            sb_core::actions::MOD_SHIFT | sb_core::actions::MOD_WIN,
+            voicehub_core::actions::MOD_SHIFT | voicehub_core::actions::MOD_WIN,
         ));
     }
     // PrintScreen：扩展键，扫描码 0x37，必须带 EXTENDEDKEY。

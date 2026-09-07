@@ -1,5 +1,5 @@
 [package]
-name = "sb-core"
+name = "voicehub-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

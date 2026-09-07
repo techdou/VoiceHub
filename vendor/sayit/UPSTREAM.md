@@ -5,8 +5,8 @@ Revision: fcb0cc2e9bd62143c861a685fc2fc82226f83c92 (0.1.9)
 Copyright: Liu Qianglong and SayIt contributors, 2026.
 License: GNU Affero General Public License version 3; see LICENSE.
 
-VoiceHub includes and modifies this runtime. It uses the existing SoundBridge
-hardware layer and adds direct remote PCM capture, integrated navigation and
+VoiceHub includes and modifies this runtime. It uses the existing VoiceHub hardware layer
+(formerly SoundBridge) and adds direct remote PCM capture, integrated navigation and
 custom ASR configuration. Standalone SayIt update installation is disabled.
 The embedded runtime uses its own data directory and does not modify the
 standalone SayIt installation. Upstream server connection remains configurable;

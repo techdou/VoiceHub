@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WINDOW_STYLE, WM_INPUT, WNDCLASSW,
 };
 
-use sb_core::buttons::{parse_usage_report, RemoteButton, VoiceKeyHid};
+use voicehub_core::buttons::{parse_usage_report, RemoteButton, VoiceKeyHid};
 
 /// 从 Raw Input 线程发往宿主的事件。
 #[derive(Debug, Clone, PartialEq)]
@@ -60,7 +60,7 @@ const WM_APP_HID: u32 = 0x8000; // 未用（占位），窗口过程按 WM_INPUT
 /// 启动 HID 捕获线程。返回停机句柄。
 pub fn spawn_hid_monitor(sender: Sender<HidInput>) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
-        .name("sb-raw-input".into())
+        .name("vh-raw-input".into())
         .spawn(move || run_monitor(sender))
         .map_err(|e| std::io::Error::other(e.to_string()))
 }
@@ -340,8 +340,8 @@ impl Default for UsageTracker {
 
 impl UsageTracker {
     /// usage 集合 → 按键沿（按时间顺序：先释放后按下）。
-    pub fn update(&mut self, usages: &[u16]) -> Vec<sb_core::buttons::ButtonEdge> {
-        let edges = sb_core::buttons::diff_usage_sets(&self.previous, usages);
+    pub fn update(&mut self, usages: &[u16]) -> Vec<voicehub_core::buttons::ButtonEdge> {
+        let edges = voicehub_core::buttons::diff_usage_sets(&self.previous, usages);
         self.previous = usages.to_vec();
         edges
     }
@@ -470,8 +470,8 @@ mod tests {
         assert_eq!(
             edges,
             vec![
-                sb_core::buttons::ButtonEdge { button: RemoteButton::Ok, pressed: true },
-                sb_core::buttons::ButtonEdge { button: RemoteButton::Ok, pressed: false },
+                voicehub_core::buttons::ButtonEdge { button: RemoteButton::Ok, pressed: true },
+                voicehub_core::buttons::ButtonEdge { button: RemoteButton::Ok, pressed: false },
             ]
         );
     }

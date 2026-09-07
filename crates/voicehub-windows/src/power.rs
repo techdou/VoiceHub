@@ -20,7 +20,7 @@ pub fn spawn_power_monitor(sender: Sender<PowerEvent>) -> windows::core::Result<
     let (tx, rx) = std::sync::mpsc::channel::<PowerEvent>();
     // 转发线程：回调线程 → 用户通道。
     let forwarder = std::thread::Builder::new()
-        .name("sb-power-forward".into())
+        .name("vh-power-forward".into())
         .spawn(move || {
             while let Ok(event) = rx.recv() {
                 let _ = sender.send(event);

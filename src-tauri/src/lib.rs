@@ -12,7 +12,7 @@ use tauri::{tray::TrayIconBuilder, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 use bridge::Bridge;
-use sb_core::settings::Language;
+use voicehub_core::settings::Language;
 use store::Store;
 
 /// 托盘文案（zh / en）。键集一致性由测试锁定。
@@ -152,7 +152,7 @@ impl LoggerState {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dir.join(format!("soundbridge-{day}.log")))
+            .open(dir.join(format!("voicehub-{day}.log")))
             .ok()?;
         Some(LoggerState { dir: dir.to_path_buf(), day: day.to_string(), file })
     }

@@ -34,7 +34,7 @@ function Invoke-VoiceHubBuild {
         if ($SkipInstaller) { & pnpm tauri build --no-bundle } else { & pnpm tauri build }
     } else {
         $buildArgs = @($Action, '--workspace', '-j', '4')
-        if ($Standalone) { $buildArgs += @('--features', 'soundbridge-app/custom-protocol') }
+        if ($Standalone) { $buildArgs += @('--features', 'voicehub-app/custom-protocol') }
         if ($Release) { $buildArgs += '--release' }
         & cargo @buildArgs
     }

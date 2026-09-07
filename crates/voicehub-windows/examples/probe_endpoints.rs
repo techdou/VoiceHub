@@ -35,7 +35,7 @@ fn main() {
                 continue;
             }
         };
-        let candidate = sb_windows::is_virtual_cable_input_name(&name);
+        let candidate = voicehub_windows::is_virtual_cable_input_name(&name);
         let id = device.get_id().unwrap_or_default();
         // 与 audio.rs AudioSink::open 完全一致的打开路径。
         let result = (|| -> Result<(), String> {
