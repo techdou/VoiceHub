@@ -4,6 +4,8 @@
 
 # 声枢 VoiceHub
 
+[![CI](https://github.com/techdou/VoiceHub/actions/workflows/ci.yml/badge.svg)](https://github.com/techdou/VoiceHub/actions/workflows/ci.yml)
+
 声枢是面向 Windows 的语音输入工作区，整合原声桥的蓝牙遥控器与按键映射，以及 SayIt 0.1.9 的录音、识别、AI 整理和文本填入功能。默认直接传输遥控器音频，无需运行独立 SayIt，也无需安装虚拟声卡。
 
 ```text
@@ -22,7 +24,8 @@
 - 多套键位方案，可按前台应用自动选择方案。
 - 使用统计：按键次数、语音会话数、累计时长、最长单次时长，支持今日、本周、近 7 天和全部范围。
 - 连接与音频自检、虚拟声卡安装引导、托盘常驻和可选开机自启。
-- 模拟遥控器，用于检查映射与音频链路。
+- 模拟遥控器，用于检查映射与音频链路；内置 15 秒真实语音测试素材，可核对识别准确性。
+- 语音触发：遥控器语音键固定为按住说话（蓝牙音频直传）；免提与按住说话还可绑定到其他遥控器键，经系统麦克风录音并直接通知识别引擎，不占用键盘快捷键。
 
 ## 环境要求
 
@@ -151,8 +154,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -S
 
 ```text
 crates/
-  sb-core/       协议、音频解码、手势、映射与统计逻辑
-  sb-windows/    蓝牙、原始输入、按键注入与 Windows 音频接口
+  voicehub-core/    协议、音频解码、手势、映射与统计逻辑
+  voicehub-windows/ 蓝牙、原始输入、按键注入与 Windows 音频接口
 src/             硬件设置的 Vue 页面、共享资源与测试
 vendor/sayit/
   frontend/      内嵌语音工作区与前端测试
@@ -177,7 +180,7 @@ THIRD_PARTY_NOTICES.md  第三方声明
 - 文字未填入时，先确认目标输入框已聚焦。管理员权限窗口、安全输入框及特殊编辑器可能限制模拟输入，应结合诊断日志排查。
 - 内嵌模式无音频时，先检查遥控器连接状态、电平与所选识别模型。只有外部输入法兼容模式才需要核对 `CABLE Input` / `CABLE Output` 和虚拟声卡占用情况。
 - 遇到鼠标操作导致统计增加或额外确认，请先退出旧版声桥并确认运行的是修正版；不要同时运行不同版本。
-- `crates/sb-windows/examples/check_input_sources.rs` 是只读输入来源诊断工具，可列出设备并显示筛选结果。输出包含设备路径，分享前需要脱敏。
+- `crates/voicehub-windows/examples/check_input_sources.rs` 是只读输入来源诊断工具，可列出设备并显示筛选结果。输出包含设备路径，分享前需要脱敏。
 
 ## 许可证与第三方组件
 

@@ -61,6 +61,11 @@ id_ed25519*
 .claude/
 .omx/
 .aider*
+.zcode/
+.gemini/
+.antigravity/
+.kimi/
+.agent*/
 *.code-workspace
 *.suo
 *.user
