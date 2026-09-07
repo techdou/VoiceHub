@@ -5,6 +5,7 @@
 # 声枢 VoiceHub
 
 [![CI](https://github.com/techdou/VoiceHub/actions/workflows/ci.yml/badge.svg)](https://github.com/techdou/VoiceHub/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/techdou/VoiceHub)](https://github.com/techdou/VoiceHub/releases)
 
 声枢是面向 Windows 的语音输入工作区，整合原声桥的蓝牙遥控器与按键映射，以及 SayIt 0.1.9 的录音、识别、AI 整理和文本填入功能。默认直接传输遥控器音频，无需运行独立 SayIt，也无需安装虚拟声卡。
 
@@ -12,6 +13,12 @@
 遥控器语音键 → 蓝牙音频 → 声枢录音会话 → 本地或第三方 ASR → 当前输入框
 遥控器按键   → 设备来源校验 → 按键统计与自定义映射
 ```
+
+## 界面预览
+
+| 主工作区 | 按键映射 |
+| :---: | :---: |
+| ![主工作区](site/assets/home.png) | ![按键映射](site/assets/buttons.png) |
 
 ## 功能
 
@@ -153,6 +160,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -S
 ## 目录结构
 
 ```text
+.github/         持续集成工作流（前端测试、原生测试与构建）
 crates/
   voicehub-core/    协议、音频解码、手势、映射与统计逻辑
   voicehub-windows/ 蓝牙、原始输入、按键注入与 Windows 音频接口
@@ -164,6 +172,7 @@ vendor/sayit/
   UPSTREAM.md    上游版本与修改归属声明
 src-tauri/       桌面应用编排、命令、托盘及持久化
 public/          应用静态资源
+site/            GitHub Pages 落地页与界面截图
 scripts/         构建与验证脚本
 README.md        公开使用说明
 LICENSE          项目许可证
