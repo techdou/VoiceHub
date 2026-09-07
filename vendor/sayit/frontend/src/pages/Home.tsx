@@ -1,8 +1,8 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Link } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
-import { ArrowUpRight, AudioLines, Bluetooth, Clock, FileText } from 'lucide-react'
-import { getStats, listHistory, type HistoryRecord, type Stats } from '@/services/store'
+import { ArrowUpRight, AudioLines, Bluetooth, Clock, FileText, Mic } from 'lucide-react'
+import { getSetting, getStats, listHistory, type HistoryRecord, type Stats } from '@/services/store'
 import { getModeStatus, refreshModeStatus, subscribeModeStatus } from '@/stores/modeStatus'
 import { getLocale } from '@/i18n'
 import { useT } from '@/i18n/useT'
@@ -14,6 +14,7 @@ export default function Home() {
   const [records, setRecords] = useState<HistoryRecord[]>([])
   const [remote, setRemote] = useState<{ phase: string; remoteName?: string } | null>(null)
   const [error, setError] = useState('')
+  const [micLabel, setMicLabel] = useState('')
   const mode = useSyncExternalStore(subscribeModeStatus, getModeStatus)
   useEffect(() => {
     let disposed = false
@@ -26,6 +27,21 @@ export default function Home() {
     void refresh(); void refreshModeStatus()
     const timer = setInterval(() => void refresh(), 3000)
     return () => { disposed = true; clearInterval(timer) }
+  }, [])
+  // 输入源明示：遥控器不是必选项——未连接时按住 PTT 键即用系统麦克风录音。
+  // label 需要麦克风权限才非空，拿不到就退回"默认麦克风"。
+  useEffect(() => {
+    let disposed = false
+    void (async () => {
+      const selected = await getSetting('selectedMic', '').catch(() => '')
+      let label = ''
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        label = devices.find(d => d.kind === 'audioinput' && d.deviceId === selected)?.label ?? ''
+      } catch { /* 无权限/枚举失败 */ }
+      if (!disposed) setMicLabel(label)
+    })()
+    return () => { disposed = true }
   }, [])
   const connected = remote?.phase === 'ready'
   return <div className="mx-auto max-w-4xl">
@@ -42,6 +58,23 @@ export default function Home() {
       <Link to="/remote/connection" className="group flex min-w-0 items-start gap-3 py-2">
         <Bluetooth className="mt-1 h-5 w-5 shrink-0 text-info-strong" />
         <div className="min-w-0 flex-1"><p className="text-xs text-muted-foreground">{en ? 'Remote' : '遥控器'}</p><p className="mt-1 text-sm font-semibold">{remote?.remoteName || (en ? 'No remote connected' : '未连接遥控器')}</p><p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-success' : 'bg-muted-foreground'}`} />{connected ? (en ? 'Connected' : '已连接') : (en ? 'Disconnected' : '未连接')}</p></div>
+        <ArrowUpRight className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
+      </Link>
+      <Link to="/settings" className="group flex min-w-0 items-start gap-3 py-2">
+        <Mic className="mt-1 h-5 w-5 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{en ? 'Microphone input' : '麦克风输入'}</p>
+          <p className="mt-1 text-sm font-semibold">
+            {connected
+              ? (en ? 'Remote has priority; mic as fallback' : '遥控器优先，麦克风兜底')
+              : (micLabel || (en ? 'System default microphone' : '系统默认麦克风'))}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {connected
+              ? (en ? 'Remote voice key records from the remote; PTT key still uses this mic' : '遥控器语音键走遥控器录音；按住 PTT 键仍用此麦克风')
+              : (en ? 'Hold the PTT key to dictate with this microphone — no remote required' : '无需遥控器：按住 PTT 键即可用此麦克风口述')}
+          </p>
+        </div>
         <ArrowUpRight className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
       </Link>
     </div>

@@ -139,6 +139,17 @@ const MANUAL_PATCHES = [
       return null;
     },
   },
+  {
+    id: 'home-input-source-card',
+    files: ['frontend/src/pages/Home.tsx'],
+    describe: 'Workspace home shows a microphone-input card: remote takes priority when connected; otherwise the PTT key dictates with the configured system mic (remote is optional).',
+    verify() {
+      const home = readVendor('frontend/src/pages/Home.tsx');
+      if (!home.includes('selectedMic')) return 'Home.tsx lost the selectedMic wiring';
+      if (!home.includes('Mic className')) return 'Home.tsx lost the input-source card';
+      return null;
+    },
+  },
 ];
 
 function importUpstream() {
