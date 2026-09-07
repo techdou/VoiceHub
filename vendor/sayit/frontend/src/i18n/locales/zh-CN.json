@@ -224,7 +224,7 @@
   "settings.app.title": "应用",
   "settings.app.autoLaunch": "开机自启动",
   "settings.app.autoLaunchDesc": "系统启动时自动运行声枢",
-  "settingsNav.general": "设置",
+  "settingsNav.general": "通用",
   "settingsNav.appearance": "外观",
   "settingsNav.personalization": "使用统计",
   "settingsNav.diagnostics": "诊断",
@@ -1307,5 +1307,7 @@
   "builtinApp.notepad": "记事本",
   "builtinApp.codex": "Codex",
   "builtinApp.weixin": "微信",
-  "builtinApp.qq": "QQ"
+  "builtinApp.qq": "QQ",
+  "asr.billingNote": "卡上耗时是真跑一次识别测出来的，会产生一次真实计费调用。",
+  "asrTest.placeholder": "点击「开始测试」后，此处会显示识别文本与耗时。"
 }

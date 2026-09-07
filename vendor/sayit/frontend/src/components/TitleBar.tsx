@@ -35,7 +35,7 @@ export default function TitleBar() {
         <span data-tauri-drag-region className="whitespace-nowrap text-sm font-semibold text-foreground">声枢 <span className="voicehub-brand-english ml-1.5 text-xs font-normal text-muted-foreground">VoiceHub</span></span>
       </div>
       <div className="flex items-center">
-        <div className="flex items-center pr-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <div className="flex items-center pr-10" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <Tooltip content={t('titleBar.presetTooltip', { name: presetName })}>
             <button
               type="button"

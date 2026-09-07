@@ -224,7 +224,7 @@
   "settings.app.title": "App",
   "settings.app.autoLaunch": "Start with Windows",
   "settings.app.autoLaunchDesc": "Runs VoiceHub automatically when Windows starts",
-  "settingsNav.general": "Settings",
+  "settingsNav.general": "General",
   "settingsNav.appearance": "Appearance",
   "settingsNav.personalization": "Usage",
   "settingsNav.diagnostics": "Diagnostics",
@@ -1307,5 +1307,7 @@
   "builtinApp.notepad": "Notepad",
   "builtinApp.codex": "Codex",
   "builtinApp.weixin": "WeChat",
-  "builtinApp.qq": "QQ"
+  "builtinApp.qq": "QQ",
+  "asr.billingNote": "Latency figures come from real recognition runs — each test is billed.",
+  "asrTest.placeholder": "After you press Start, the recognized text and latency will appear here."
 }

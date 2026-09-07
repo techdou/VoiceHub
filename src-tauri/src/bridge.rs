@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 
-use voicehub_core::actions::ButtonAction;
+use voicehub_core::actions::{ButtonAction, CustomShortcut};
 use voicehub_core::buttons::RemoteButton;
 use voicehub_core::gesture::{Gesture, GestureRecognizer};
 use voicehub_core::provider::ProviderTrigger;
@@ -56,6 +56,8 @@ struct BridgeInner {
     statistics: UsageStatistics,
     gesture: GestureRecognizer,
     usage_tracker: UsageTracker,
+    /// push-to-talk 直通键的按住态：释放沿据此注入 release。
+    hold_active: std::collections::HashSet<RemoteButton>,
 }
 
 pub struct Bridge {
@@ -105,6 +107,7 @@ impl Bridge {
                 statistics,
                 gesture: GestureRecognizer::new(),
                 usage_tracker: UsageTracker::default(),
+                hold_active: Default::default(),
             }),
             store: store.clone(),
             app: app.clone(),
@@ -288,6 +291,40 @@ impl Bridge {
                         });
                     }
                     for edge in edges {
+                        // push-to-talk 直通：边沿直达注入（press/release 对），绕过
+                        // 单击/双击/长按判定——按住期间不应再触发其他手势槽。
+                        let foreground = voicehub_windows::foreground::foreground_process_name();
+                        let hold_chord = inner
+                            .settings
+                            .profiles
+                            .resolve_active(foreground.as_deref())
+                            .mapping
+                            .bindings
+                            .get(&voicehub_core::mapping::ButtonMapping::key(edge.button))
+                            .and_then(|binding| binding.push_to_talk.clone());
+                        if let Some(chord) = hold_chord {
+                            let result = if edge.pressed {
+                                inner.hold_active.insert(edge.button);
+                                voicehub_windows::send_input::press(voicehub_windows::send_input::KeyChord::new(chord.vk, chord.modifiers))
+                            } else if inner.hold_active.remove(&edge.button) {
+                                voicehub_windows::send_input::release(voicehub_windows::send_input::KeyChord::new(chord.vk, chord.modifiers))
+                            } else {
+                                Ok(())
+                            };
+                            if let Err(error) = result {
+                                log::warn!("push-to-talk trigger failed: {error}");
+                            }
+                            if edge.pressed {
+                                counted = true;
+                                inner.statistics.apply(
+                                    UsageEvent::ButtonPress {
+                                        button_id: voicehub_core::mapping::ButtonMapping::key(edge.button),
+                                    },
+                                    chrono::Local::now(),
+                                );
+                            }
+                            continue;
+                        }
                         let events = if edge.pressed {
                             inner.gesture.press(edge.button, now)
                         } else {
@@ -459,6 +496,30 @@ impl Bridge {
     /// 返回给 UI 的收尾事件，由调用方在锁外 emit。
     fn reset_voice_locked(self: &Arc<Self>, cancel_reason: &str) -> UiEvent {
         lock(&self.remote_voice).cancel(cancel_reason);
+        // 遥控器断连/系统挂起时释放所有按住中的 push-to-talk 组合键，
+        // 否则释放沿永远不会来，目标程序里组合键会卡住。
+        let held: Vec<CustomShortcut> = {
+            let mut inner = lock(&self.inner);
+            let buttons: Vec<RemoteButton> = inner.hold_active.drain().collect();
+            buttons
+                .into_iter()
+                .filter_map(|button| {
+                    inner
+                        .settings
+                        .profiles
+                        .resolve_active(None)
+                        .mapping
+                        .bindings
+                        .get(&voicehub_core::mapping::ButtonMapping::key(button))
+                        .and_then(|binding| binding.push_to_talk.clone())
+                })
+                .collect()
+        };
+        for chord in held {
+            if let Err(error) = voicehub_windows::send_input::release(voicehub_windows::send_input::KeyChord::new(chord.vk, chord.modifiers)) {
+                log::warn!("release held push-to-talk on disconnect failed: {error}");
+            }
+        }
         self.voice_generation.fetch_add(1, Ordering::Relaxed);
         self.voice_active.store(false, Ordering::Relaxed);
         self.voice_finishing.store(false, Ordering::Relaxed);

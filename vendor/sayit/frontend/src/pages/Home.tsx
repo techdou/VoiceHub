@@ -1,9 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Link } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/core'
-import { ArrowUpRight, AudioLines, Bluetooth, Clock, FileText, Mic } from 'lucide-react'
+import { ArrowUpRight, AudioLines, Bluetooth, Clock, FileText, Mic, Wand2 } from 'lucide-react'
 import { getSetting, getStats, listHistory, type HistoryRecord, type Stats } from '@/services/store'
 import { getModeStatus, refreshModeStatus, subscribeModeStatus } from '@/stores/modeStatus'
+import { subscribeAiEnabled, getAiEnabled } from '@/stores/aiEnabled'
 import { getLocale } from '@/i18n'
 import { useT } from '@/i18n/useT'
 
@@ -16,6 +17,7 @@ export default function Home() {
   const [error, setError] = useState('')
   const [micLabel, setMicLabel] = useState('')
   const mode = useSyncExternalStore(subscribeModeStatus, getModeStatus)
+  const aiEnabled = useSyncExternalStore(subscribeAiEnabled, getAiEnabled)
   useEffect(() => {
     let disposed = false
     const refresh = async () => {
@@ -56,7 +58,7 @@ export default function Home() {
         <ArrowUpRight className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
       </Link>
       <Link to="/remote/connection" className="group flex min-w-0 items-start gap-3 py-2">
-        <Bluetooth className="mt-1 h-5 w-5 shrink-0 text-info-strong" />
+        <Bluetooth className="mt-1 h-5 w-5 shrink-0 text-primary" />
         <div className="min-w-0 flex-1"><p className="text-xs text-muted-foreground">{en ? 'Remote' : '遥控器'}</p><p className="mt-1 text-sm font-semibold">{remote?.remoteName || (en ? 'No remote connected' : '未连接遥控器')}</p><p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-success' : 'bg-muted-foreground'}`} />{connected ? (en ? 'Connected' : '已连接') : (en ? 'Disconnected' : '未连接')}</p></div>
         <ArrowUpRight className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
       </Link>
@@ -77,6 +79,20 @@ export default function Home() {
         </div>
         <ArrowUpRight className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
       </Link>
+      <Link to="/ai-instructions" className="group flex min-w-0 items-start gap-3 py-2">
+        <Wand2 className="mt-1 h-5 w-5 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{en ? 'AI cleanup' : 'AI 整理'}</p>
+          <p className="mt-1 text-sm font-semibold">
+            {aiEnabled ? (en ? 'On — transcripts get polished' : '已开启 · 转写后自动整理') : (en ? 'Off — raw transcripts' : '已关闭 · 原文直出')}
+          </p>
+          <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className={`h-1.5 w-1.5 rounded-full ${aiEnabled ? 'bg-success' : 'bg-muted-foreground'}`} />
+            {en ? 'Toggle anytime from the title bar' : '可随时在标题栏开关'}
+          </p>
+        </div>
+        <ArrowUpRight className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
+      </Link>
     </div>
     <dl className="grid grid-cols-3 divide-x border-b py-6">
       {[{ name: en ? 'Dictation' : '累计口述', value: (stats.totalDurationSec / 60).toFixed(1), unit: en ? 'min' : '分钟' },
@@ -88,7 +104,15 @@ export default function Home() {
       <div className="mb-3 flex items-center justify-between"><h2 className="font-semibold">{en ? 'Recent transcripts' : '最近转写'}</h2><Link to="/history" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary">{en ? 'All history' : '全部记录'}<ArrowUpRight size={14} /></Link></div>
       {error && <p role="alert" className="py-3 text-sm text-destructive-strong">{error}</p>}
       {records.length === 0 ? <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-muted-foreground"><FileText className="h-7 w-7" /><p className="text-sm">{en ? 'No transcripts yet' : '暂无转写记录'}</p><Link to="/voice-engine" className="text-xs text-primary underline">{en ? 'Configure speech engine' : '配置语音引擎'}</Link></div> :
-        records.map(record => <Link key={record.id} to="/history" className="block border-b py-4 hover:bg-muted/40"><p className="line-clamp-2 text-sm leading-7">{record.llmText || record.asrText || record.failReason}</p><p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Clock size={12} />{new Date(record.timestamp).toLocaleString(getLocale())}<span>{(record.durationSec ?? 0).toFixed(1)} s</span></p></Link>)}
+        records.map(record => (
+          <Link key={record.id} to="/history" className="group flex items-start gap-3 border-b py-2.5 hover:bg-muted/40">
+            <div className="min-w-0 flex-1">
+              <p className="line-clamp-1 text-sm leading-6">{record.llmText || record.asrText || record.failReason}</p>
+              <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Clock size={12} />{new Date(record.timestamp).toLocaleString(getLocale())}<span>{(record.durationSec ?? 0).toFixed(1)} s</span></p>
+            </div>
+            <ArrowUpRight size={14} className="mt-2 shrink-0 text-muted-foreground group-hover:text-primary" />
+          </Link>
+        ))}
     </section>
   </div>
 }

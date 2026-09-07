@@ -859,6 +859,10 @@ export default function CloudAPISection() {
             <p className="mt-0.5 text-xs text-muted-foreground">
               {t('asr.desc')}
             </p>
+            <p className="mt-1 flex items-center gap-1.5 text-xs text-warning-strong">
+              <span aria-hidden>⚠</span>
+              {t('asr.billingNote')}
+            </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {/* 并发跑，所以没有「停止」：invoke 发出去的请求没法撤回，

@@ -217,6 +217,12 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
           />
         )}
 
+        {!result && !error && !testing && (
+          <p className="mt-4 rounded-md border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">
+            {t('asrTest.placeholder')}
+          </p>
+        )}
+
         {error && (
           <Feedback
             className="mt-4"

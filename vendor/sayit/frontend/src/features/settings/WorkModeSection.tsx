@@ -130,7 +130,7 @@ export default function WorkModeSection({ value, onChange }: Props) {
                 aria-checked={isActive}
                 onClick={() => onChange(m.value)}
                 className={`relative rounded-lg border p-4 text-left transition-colors ${isActive
-                  ? 'border-primary bg-primary/5'
+                  ? 'border-primary bg-primary/15 shadow-sm'
                   : 'border-border hover:bg-accent'
                   }`}
               >
