@@ -23,6 +23,17 @@ const { t } = useI18n();
 // 草稿模式（与连接页一致）：映射改动先落 draft，点「保存」才写盘生效。
 // 此前每次编辑都立即写盘——误触即改坏键位，且无"改完再统一保存"的回旋余地。
 const draft = ref<Pick<AppSettings, "profiles" | "buttonMappingEnabled"> | null>(null);
+// dirty 必须先于下面的 watch 声明：watch 是 immediate 的，回调里读 dirty。
+// 声明在 watch 之后时，"挂载时 settings 已加载"的路径（遥控器子页面间切换进来）
+// 会在 immediate 回调里撞 TDZ，组件挂载失败整页空白——ConnectionPage 同款坑。
+const dirty = computed(() => {
+  if (!draft.value || !props.settings) return false;
+  const current = {
+    profiles: props.settings.profiles,
+    buttonMappingEnabled: props.settings.buttonMappingEnabled,
+  };
+  return JSON.stringify(draft.value) !== JSON.stringify(current);
+});
 watch(
   () => props.settings,
   (next) => {
@@ -37,15 +48,6 @@ watch(
   },
   { immediate: true },
 );
-
-const dirty = computed(() => {
-  if (!draft.value || !props.settings) return false;
-  const current = {
-    profiles: props.settings.profiles,
-    buttonMappingEnabled: props.settings.buttonMappingEnabled,
-  };
-  return JSON.stringify(draft.value) !== JSON.stringify(current);
-});
 
 const saving = ref(false);
 function save() {
