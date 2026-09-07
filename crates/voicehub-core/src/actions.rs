@@ -108,6 +108,8 @@ pub enum ButtonAction {
     OpenSettings,
     /// 自定义快捷键（按键粒度引用，值存 mapping 的 shortcuts 表）。
     Custom { shortcut: CustomShortcut },
+    /// 免提触发（事件直连引擎 toggle-hands-free，不注入按键、不依赖引擎快捷键配置）。
+    TriggerHandsFree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,7 +197,8 @@ impl ButtonAction {
         match self {
             ButtonAction::Disabled
             | ButtonAction::Shortcut { .. }
-            | ButtonAction::Custom { .. } => ActionCategory::BasicKeys,
+            | ButtonAction::Custom { .. }
+            | ButtonAction::TriggerHandsFree => ActionCategory::BasicKeys,
             ButtonAction::MediaKey { .. }
             | ButtonAction::VolumeUp
             | ButtonAction::VolumeDown

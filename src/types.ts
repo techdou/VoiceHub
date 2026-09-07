@@ -26,7 +26,9 @@ export type ButtonAction =
   | { kind: "app_switcher" }
   | { kind: "click_confirm" }
   | { kind: "open_settings" }
-  | { kind: "custom"; shortcut: CustomShortcut };
+  | { kind: "custom"; shortcut: CustomShortcut }
+  /** 免提触发（事件直连引擎，不注入按键）。 */
+  | { kind: "trigger_hands_free" };
 
 export type RemoteButtonId =
   | "power"
@@ -46,8 +48,8 @@ export interface ButtonBinding {
   single: ButtonAction;
   double: ButtonAction;
   long: ButtonAction;
-  /** 边沿直达的按住说话触发键（Rust 端 serde default None，旧配置无此字段）。 */
-  pushToTalk?: CustomShortcut | null;
+  /** 边沿直达的按住说话触发键（事件直连引擎，Rust 端 serde default false）。 */
+  pushToTalk: boolean;
 }
 
 export interface ButtonMapping {

@@ -65,7 +65,12 @@ function slotAction(button: string, slot: Slot): ButtonAction {
 }
 
 function slotEnabled(button: string, slot: Slot): boolean {
+  if (isPushToTalk(button)) return false; // 按住说话直通键：三槽挂起（后端已互斥）
   return slot === "single" || props.secondaryButtons.has(button);
+}
+
+function isPushToTalk(button: string): boolean {
+  return props.bindings[button]?.pushToTalk ?? false;
 }
 
 function linkState(button: string) {
@@ -129,7 +134,7 @@ onBeforeUnmount(() => observer?.disconnect());
                 linkState(link.button).selected
                   ? 'var(--accent)'
                   : linkState(link.button).active
-                    ? 'rgba(232, 163, 61, 0.8)'
+                    ? 'var(--accent)'
                     : 'rgba(128, 128, 128, 0.4)'
               "
               :stroke-width="linkState(link.button).selected ? 1.8 : 1"
@@ -141,7 +146,7 @@ onBeforeUnmount(() => observer?.disconnect());
                 linkState(link.button).selected
                   ? 'var(--accent)'
                   : linkState(link.button).active
-                    ? 'rgba(232, 163, 61, 0.8)'
+                    ? 'var(--accent)'
                     : 'rgba(128, 128, 128, 0.5)'
               "
             />
@@ -150,7 +155,7 @@ onBeforeUnmount(() => observer?.disconnect());
               :cx="link.start.x"
               :cy="link.start.y"
               r="4.5"
-              fill="#e8a33d"
+              fill="var(--accent)"
             />
           </template>
         </svg>
@@ -182,6 +187,7 @@ onBeforeUnmount(() => observer?.disconnect());
               <span class="mc-key-icon">{{ buttonIcons[card.button] ?? "" }}</span>
               <strong>{{ buttonName(card.button) }}</strong>
             </span>
+            <span v-if="isPushToTalk(card.button)" class="mc-ptt-badge">PTT</span>
           </div>
           <div class="mc-slots">
             <button
@@ -265,8 +271,8 @@ onBeforeUnmount(() => observer?.disconnect());
 }
 
 .mc-card.active {
-  border-color: rgba(232, 163, 61, 0.8);
-  background: rgba(232, 163, 61, 0.1);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .mc-card-head {
@@ -360,7 +366,7 @@ onBeforeUnmount(() => observer?.disconnect());
 }
 
 .mc-fixed.on {
-  background: rgba(232, 163, 61, 0.18);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
@@ -368,5 +374,20 @@ onBeforeUnmount(() => observer?.disconnect());
   font-size: 11px;
   color: var(--text-secondary);
   line-height: 1.45;
+}
+.mc-ptt-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+}
+
+.mc-slot.disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 </style>

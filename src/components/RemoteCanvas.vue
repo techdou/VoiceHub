@@ -144,8 +144,8 @@ function isActive(id: string) {
 }
 
 .rc-key.active {
-  border-color: rgba(232, 163, 61, 0.85);
-  background: rgba(232, 163, 61, 0.28);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .rc-voice {
@@ -156,7 +156,7 @@ function isActive(id: string) {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 1px solid rgba(232, 163, 61, 0.55);
+  border: 1px solid var(--accent-soft);
   background: rgba(30, 30, 30, 0.55);
   color: #f4c37a;
   font-size: 12px;

@@ -19,6 +19,7 @@ const { t } = useI18n();
 const tab = ref<"basic" | "system" | "custom" | "apps">("basic");
 
 const basicPresets: Array<{ id: string; action: ButtonAction }> = [
+  { id: "hands_free", action: { kind: "trigger_hands_free" } },
   { id: "escape", action: { kind: "shortcut", vk: 0x1b, modifiers: 0, label: "Esc" } },
   { id: "enter", action: { kind: "shortcut", vk: 0x0d, modifiers: 0, label: "Enter" } },
   { id: "ctrl_enter", action: { kind: "shortcut", vk: 0x0d, modifiers: 2, label: "Ctrl+Enter" } },

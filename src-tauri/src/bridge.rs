@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 
-use voicehub_core::actions::{ButtonAction, CustomShortcut};
+use voicehub_core::actions::ButtonAction;
 use voicehub_core::buttons::RemoteButton;
 use voicehub_core::gesture::{Gesture, GestureRecognizer};
 use voicehub_core::provider::ProviderTrigger;
@@ -278,6 +278,7 @@ impl Bridge {
         let events = input.into_events_for(inner.settings.paired_device_id.as_deref());
         let mut gestures = Vec::new();
         let mut counted = false;
+        let mut ptt_events: Vec<&'static str> = Vec::new();
         for hid in events {
             match hid {
                 HidEvent::UsageSet(usages) => {
@@ -291,30 +292,27 @@ impl Bridge {
                         });
                     }
                     for edge in edges {
-                        // push-to-talk 直通：边沿直达注入（press/release 对），绕过
-                        // 单击/双击/长按判定——按住期间不应再触发其他手势槽。
+                        // push-to-talk 直通：边沿直达引擎事件（ptt-down/ptt-up），不经
+                        // SendInput 注入——注入的单键会被引擎键盘钩子过滤，事件直连
+                        // 才能让遥控器键可靠驱动"按住说话"。绕过手势判定。
+                        // hold_active 即快照：释放沿只看集合成员，不重解析配置——
+                        // 按住期间换前台/改绑定不会错发或漏发。
                         let foreground = voicehub_windows::foreground::foreground_process_name();
-                        let hold_chord = inner
+                        let is_ptt = inner
                             .settings
                             .profiles
                             .resolve_active(foreground.as_deref())
                             .mapping
                             .bindings
                             .get(&voicehub_core::mapping::ButtonMapping::key(edge.button))
-                            .and_then(|binding| binding.push_to_talk.clone());
-                        if let Some(chord) = hold_chord {
-                            let result = if edge.pressed {
-                                inner.hold_active.insert(edge.button);
-                                voicehub_windows::send_input::press(voicehub_windows::send_input::KeyChord::new(chord.vk, chord.modifiers))
-                            } else if inner.hold_active.remove(&edge.button) {
-                                voicehub_windows::send_input::release(voicehub_windows::send_input::KeyChord::new(chord.vk, chord.modifiers))
-                            } else {
-                                Ok(())
-                            };
-                            if let Err(error) = result {
-                                log::warn!("push-to-talk trigger failed: {error}");
-                            }
+                            .is_some_and(|binding| binding.push_to_talk);
+                        if is_ptt {
                             if edge.pressed {
+                                // 总开关关闭：不再发起新的 PTT（已按住的仍允许释放）。
+                                if inner.settings.button_mapping_enabled {
+                                    inner.hold_active.insert(edge.button);
+                                    ptt_events.push("ptt-down");
+                                }
                                 counted = true;
                                 inner.statistics.apply(
                                     UsageEvent::ButtonPress {
@@ -322,6 +320,8 @@ impl Bridge {
                                     },
                                     chrono::Local::now(),
                                 );
+                            } else if inner.hold_active.remove(&edge.button) {
+                                ptt_events.push("ptt-up");
                             }
                             continue;
                         }
@@ -369,6 +369,9 @@ impl Bridge {
             }
         }
         drop(inner);
+        for event_name in ptt_events {
+            let _ = self.app.emit(event_name, serde_json::json!({ "source": "voicehub-remote" }));
+        }
         for (button, gesture) in gestures {
             self.dispatch_gesture(button, gesture);
         }
@@ -428,6 +431,15 @@ impl Bridge {
             ButtonAction::ClickConfirm => voicehub_windows::shell::left_click(),
             ButtonAction::OpenSettings => {
                 self.emit_ui(UiEvent::ShowSettings);
+                Ok(())
+            }
+            // 免提触发：事件直连引擎（前端监听 toggle-hands-free），不注入按键——
+            // 注入的单键会被引擎键盘钩子过滤，组合键又要用户额外配置系统热键。
+            ButtonAction::TriggerHandsFree => {
+                let _ = self.app.emit(
+                    "toggle-hands-free",
+                    serde_json::json!({ "source": "voicehub-remote" }),
+                );
                 Ok(())
             }
         };
@@ -496,29 +508,18 @@ impl Bridge {
     /// 返回给 UI 的收尾事件，由调用方在锁外 emit。
     fn reset_voice_locked(self: &Arc<Self>, cancel_reason: &str) -> UiEvent {
         lock(&self.remote_voice).cancel(cancel_reason);
-        // 遥控器断连/系统挂起时释放所有按住中的 push-to-talk 组合键，
-        // 否则释放沿永远不会来，目标程序里组合键会卡住。
-        let held: Vec<CustomShortcut> = {
+        // 遥控器断连/系统挂起：按住中的 push-to-talk 会话没有释放沿了，必须补发
+        // ptt-up 收尾；同时重置 HID 差分与手势状态——否则重连后同键再按没有新的
+        // 按下沿（usage_tracker 还记着"已按下"），首次按键会无响应。
+        let held_ptt;
+        {
             let mut inner = lock(&self.inner);
-            let buttons: Vec<RemoteButton> = inner.hold_active.drain().collect();
-            buttons
-                .into_iter()
-                .filter_map(|button| {
-                    inner
-                        .settings
-                        .profiles
-                        .resolve_active(None)
-                        .mapping
-                        .bindings
-                        .get(&voicehub_core::mapping::ButtonMapping::key(button))
-                        .and_then(|binding| binding.push_to_talk.clone())
-                })
-                .collect()
-        };
-        for chord in held {
-            if let Err(error) = voicehub_windows::send_input::release(voicehub_windows::send_input::KeyChord::new(chord.vk, chord.modifiers)) {
-                log::warn!("release held push-to-talk on disconnect failed: {error}");
-            }
+            held_ptt = inner.hold_active.drain().count();
+            inner.gesture.reset();
+            inner.usage_tracker = UsageTracker::default();
+        }
+        for _ in 0..held_ptt {
+            let _ = self.app.emit("ptt-up", serde_json::json!({ "source": "voicehub-remote" }));
         }
         self.voice_generation.fetch_add(1, Ordering::Relaxed);
         self.voice_active.store(false, Ordering::Relaxed);
@@ -891,7 +892,8 @@ fn action_label(action: &ButtonAction) -> String {
         ButtonAction::TaskView => "任务视图".into(),
         ButtonAction::AppSwitcher => "切换应用".into(),
         ButtonAction::ClickConfirm => "点击确认".into(),
-        ButtonAction::OpenSettings => "打开声桥".into(),
+        ButtonAction::OpenSettings => "打开声枢".into(),
+        ButtonAction::TriggerHandsFree => "免提触发".into(),
     }
 }
 

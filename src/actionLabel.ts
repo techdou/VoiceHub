@@ -40,6 +40,8 @@ export function actionLabel(action: ButtonAction, t: T): string {
       return t("action.click_confirm");
     case "open_settings":
       return t("action.open_settings");
+    case "trigger_hands_free":
+      return t("buttons.action.hands_free");
     case "custom":
       return action.shortcut.label;
   }

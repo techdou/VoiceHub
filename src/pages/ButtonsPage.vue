@@ -2,7 +2,6 @@
 import { computed, ref, watch } from "vue";
 import { api } from "../api";
 import { useI18n } from "../i18n";
-import { useKeyRecorder } from "../useKeyRecorder";
 import type { AppSettings, ButtonAction, ButtonMapping, CustomShortcut, RemoteButtonId } from "../types";
 import ActionPicker from "../components/ActionPicker.vue";
 import MappingCanvas from "../components/MappingCanvas.vue";
@@ -63,41 +62,27 @@ const selectedButton = ref<RemoteButtonId | null>(null);
 const editingSlot = ref<"single" | "double" | "long">("single");
 const showPicker = ref(false);
 
-// 按住说话（push-to-talk）：边沿直达的第四通道——按下沿注入组合键、释放沿松开，
-// 让这个遥控器键变成"按住说话"的麦克风触发键。绑定后三槽手势失效（后端直通）。
-const { recording: recordingHoldKey, chordLabel: holdChordLabel } = useKeyRecorder(
-  (chord) => {
-    if (!selectedButton.value) return;
-    mutateProfiles((profiles) => {
-      const profile = profiles.profiles.find((p) => p.id === profiles.selectedProfileId);
-      if (!profile) return;
-      const binding = profile.mapping.bindings[selectedButton.value!] ??= {
-        single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" },
-      };
-      binding.pushToTalk = {
-        vk: chord.vk,
-        modifiers: chord.modifiers,
-        label: holdChordLabel(chord.vk, chord.modifiers),
-      };
-    });
-  },
-);
-
-function clearHoldKey() {
+// 按住说话（push-to-talk）：边沿直达的第四通道——按下沿发 ptt-down、释放沿发
+// ptt-up（事件直连引擎），让这个遥控器键变成"按住说话"的麦克风触发键。
+// 绑定后三槽手势被后端互斥忽略。开关式绑定，无需组合键。
+function toggleHoldKey() {
   if (!selectedButton.value) return;
+  const button = selectedButton.value;
+  const next = !selectedHoldEnabled.value;
   mutateProfiles((profiles) => {
     const profile = profiles.profiles.find((p) => p.id === profiles.selectedProfileId);
     if (!profile) return;
-    if (profile.mapping.bindings[selectedButton.value!]) {
-      profile.mapping.bindings[selectedButton.value!].pushToTalk = null;
-    }
+    const binding = profile.mapping.bindings[button] ??= {
+      single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" }, pushToTalk: false,
+    };
+    binding.pushToTalk = next;
   });
 }
 
-const selectedHoldChord = computed(() => {
+const selectedHoldEnabled = computed(() => {
   const button = selectedButton.value;
-  if (!button || !activeProfile.value) return null;
-  return activeProfile.value.mapping.bindings[button]?.pushToTalk ?? null;
+  if (!button || !activeProfile.value) return false;
+  return activeProfile.value.mapping.bindings[button]?.pushToTalk ?? false;
 });
 const newProfileName = ref("");
 const foregroundProcess = ref<string | null>(null);
@@ -142,7 +127,7 @@ function applyAction(action: ButtonAction) {
     const profile = profiles.profiles.find((p) => p.id === activeProfileId.value);
     if (!profile) return;
     const bindings = profile.mapping.bindings;
-    if (!bindings[button]) bindings[button] = { single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" } };
+    if (!bindings[button]) bindings[button] = { single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" }, pushToTalk: false };
     bindings[button][editingSlot.value] = action;
   });
   showPicker.value = false;
@@ -351,24 +336,16 @@ async function applyImport() {
         <div>
           <div class="label">{{ t("buttons.hold.title") }}</div>
           <div class="desc">
-            {{
-              selectedHoldChord
-                ? t("buttons.hold.bound", { key: selectedHoldChord.label })
-                : t("buttons.hold.empty")
-            }}
+            {{ selectedHoldEnabled ? t("buttons.hold.bound") : t("buttons.hold.empty") }}
           </div>
-          <p v-if="selectedHoldChord" class="hint" style="margin: 6px 0 0">{{ t("buttons.hold.hint") }}</p>
         </div>
-        <div class="row">
-          <button v-if="selectedHoldChord" class="btn subtle danger" @click="clearHoldKey">
-            {{ t("buttons.action.clear") }}
-          </button>
-          <button class="btn" @click="recordingHoldKey = !recordingHoldKey">
-            {{ recordingHoldKey ? t("buttons.action.recording.stop") : t("buttons.hold.record") }}
-          </button>
-        </div>
+        <button
+          class="switch"
+          :class="{ on: selectedHoldEnabled }"
+          :aria-label="t('buttons.hold.title')"
+          @click="toggleHoldKey"
+        ></button>
       </div>
-      <p v-if="recordingHoldKey" class="hint" style="margin-top: 8px">{{ t("buttons.action.recording") }}</p>
     </section>
 
     <section v-if="draft.profiles.smartEnabled" class="card">
