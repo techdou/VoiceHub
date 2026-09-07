@@ -173,7 +173,9 @@ const MANUAL_PATCHES = [
       if (!home.includes('AI cleanup') && !home.includes('AI 整理')) return 'Home.tsx lost the AI card';
       if (!home.includes('Wand2')) return 'Home.tsx AI card icon missing';
       const titlebar = readVendor('frontend/src/components/TitleBar.tsx');
-      if (!titlebar.includes('pr-10')) return 'TitleBar switch spacing regressed';
+      if (!titlebar.includes('w-10 shrink-0') || !titlebar.includes("WebkitAppRegion: 'drag'")) {
+        return 'TitleBar drag-gap between AI switch and window controls regressed';
+      }
       const about = readVendor('frontend/src/pages/About.tsx');
       if (!about.includes('CREDIT_GROUPS')) return 'About.tsx credits lost grouping';
       return null;

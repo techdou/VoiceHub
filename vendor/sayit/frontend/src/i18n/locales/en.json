@@ -1320,5 +1320,6 @@
   "about.credit.vibeFlow": "ATVV Bluetooth voice protocol reference",
   "about.credit.remoteMic": "Bluetooth microphone protocol reference",
   "about.credit.remoteMicWin": "Windows implementation reference",
-  "about.credit.vbcable": "Virtual audio cable (free/donationware)"
+  "about.credit.vbcable": "Virtual audio cable (free/donationware)",
+  "about.description": "The voice workspace is based on SayIt 0.1.9 by Liu Qianglong. The integrated build ships under AGPL-3.0; the original hardware modules retain their GPL-3.0 notices. See THIRD_PARTY_NOTICES in the repository for the full dependency list."
 }

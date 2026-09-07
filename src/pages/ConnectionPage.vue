@@ -300,14 +300,18 @@ const triggerError = ref("");
 const appliedMode = ref("");
 
 // 回显：从当前方案已有绑定推导两个下拉的选中键（此前固定默认值，用户改过也不回显）。
+// 用户手动改动过且未应用时跳过自动回显——外部设置更新（如设备连接）触发的
+// 全量同步不应把正在进行的选键打回原形。
+const handsFreeTouched = ref(false);
+const pttTouched = ref(false);
 watch(
   () => draft.value?.profiles,
   (profiles) => {
     const active = profiles?.profiles.find((p) => p.id === profiles?.selectedProfileId);
     if (!active) return;
     for (const [key, binding] of Object.entries(active.mapping.bindings)) {
-      if (binding.pushToTalk) pttRemote.value = key;
-      else if (binding.single?.kind === "trigger_hands_free") handsFreeRemote.value = key;
+      if (binding.pushToTalk && !pttTouched.value) pttRemote.value = key;
+      else if (binding.single?.kind === "trigger_hands_free" && !handsFreeTouched.value) handsFreeRemote.value = key;
     }
   },
   { immediate: true },
@@ -324,11 +328,8 @@ async function applyTrigger(mode: "handsfree" | "ptt") {
     const profiles = JSON.parse(JSON.stringify(draft.value.profiles)) as AppSettings["profiles"];
     const profile = profiles.profiles.find((p) => p.id === profiles.selectedProfileId);
     if (!profile) return;
-    // 互斥清理：同一键只保留一种触发模式（旧 PTT 绑定残留会让免提静默失效）。
-    for (const binding of Object.values(profile.mapping.bindings)) {
-      if (mode === "handsfree") binding.pushToTalk = false;
-      else if (binding.single?.kind === "trigger_hands_free") binding.single = { kind: "disabled" };
-    }
+    // 互斥只作用于目标键：同一键只保留一种模式（其余键不受影响——
+    // 免提键与按住键可以共存于不同遥控器键上）。
     const binding = profile.mapping.bindings[remoteKey] ??= {
       single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" },
       pushToTalk: false,
@@ -338,7 +339,7 @@ async function applyTrigger(mode: "handsfree" | "ptt") {
       binding.pushToTalk = false;
     } else {
       binding.pushToTalk = true;
-      binding.single = { kind: "disabled" };
+      if (binding.single?.kind === "trigger_hands_free") binding.single = { kind: "disabled" };
     }
     draft.value = { ...draft.value, profiles };
     await saveAll();
@@ -570,7 +571,7 @@ async function applyTrigger(mode: "handsfree" | "ptt") {
         </div>
       </div>
       <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 8px">
-        <select v-model="handsFreeRemote" style="min-width: 110px">
+        <select v-model="handsFreeRemote" style="min-width: 110px" @change="handsFreeTouched = true">
           <option v-for="key in REMOTE_KEY_OPTIONS" :key="key" :value="key">{{ t(`buttons.key_names.${key}`) }}</option>
         </select>
         <button class="btn primary" :disabled="!!triggerBusy" @click="applyTrigger('handsfree')">
@@ -585,7 +586,7 @@ async function applyTrigger(mode: "handsfree" | "ptt") {
         </div>
       </div>
       <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 8px">
-        <select v-model="pttRemote" style="min-width: 110px">
+        <select v-model="pttRemote" style="min-width: 110px" @change="pttTouched = true">
           <option v-for="key in REMOTE_KEY_OPTIONS" :key="key" :value="key">{{ t(`buttons.key_names.${key}`) }}</option>
         </select>
         <button class="btn primary" :disabled="!!triggerBusy" @click="applyTrigger('ptt')">
@@ -655,7 +656,6 @@ async function applyTrigger(mode: "handsfree" | "ptt") {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--panel-2);
-  cursor: pointer;
   font: inherit;
   color: var(--text);
   text-align: left;
@@ -669,11 +669,6 @@ async function applyTrigger(mode: "handsfree" | "ptt") {
 .device-item.connected {
   border-color: var(--accent);
   background: var(--accent-soft);
-}
-
-.device-item:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 .device-name {

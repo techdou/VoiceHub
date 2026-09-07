@@ -297,6 +297,13 @@ impl Bridge {
                         // 才能让遥控器键可靠驱动"按住说话"。绕过手势判定。
                         // hold_active 即快照：释放沿只看集合成员，不重解析配置——
                         // 按住期间换前台/改绑定不会错发或漏发。
+                        // 释放沿必须先于一切配置解析消费快照：按住期间切前台/换方案会让
+                        // is_ptt 解析翻转，若释放沿还套在 is_ptt 里，ptt-up 会丢失、
+                        // 录音挂死到 5 分钟熔断（复审 CRITICAL）。
+                        if !edge.pressed && inner.hold_active.remove(&edge.button) {
+                            ptt_events.push("ptt-up");
+                            continue;
+                        }
                         let foreground = voicehub_windows::foreground::foreground_process_name();
                         let is_ptt = inner
                             .settings
@@ -308,7 +315,7 @@ impl Bridge {
                             .is_some_and(|binding| binding.push_to_talk);
                         if is_ptt {
                             if edge.pressed {
-                                // 总开关关闭：不再发起新的 PTT（已按住的仍允许释放）。
+                                // 总开关关闭：不再发起新的 PTT（已按住的在上方快照路径释放）。
                                 if inner.settings.button_mapping_enabled {
                                     inner.hold_active.insert(edge.button);
                                     ptt_events.push("ptt-down");
@@ -320,9 +327,8 @@ impl Bridge {
                                     },
                                     chrono::Local::now(),
                                 );
-                            } else if inner.hold_active.remove(&edge.button) {
-                                ptt_events.push("ptt-up");
                             }
+                            // 释放沿已在快照路径处理；走到这里说明是孤立的按下后释放（无快照），忽略。
                             continue;
                         }
                         let events = if edge.pressed {

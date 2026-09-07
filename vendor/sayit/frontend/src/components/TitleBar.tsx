@@ -34,7 +34,7 @@ export default function TitleBar() {
         <img src={appIcon} alt="VoiceHub" className="h-7 w-7" draggable={false} />
         <span data-tauri-drag-region className="whitespace-nowrap text-sm font-semibold text-foreground">声枢 <span className="voicehub-brand-english ml-1.5 text-xs font-normal text-muted-foreground">VoiceHub</span></span>
       </div>
-      <div className="flex items-center pr-10">
+      <div className="flex items-center">
         <div className="flex items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <Tooltip content={t('titleBar.presetTooltip', { name: presetName })}>
             <button
@@ -53,6 +53,9 @@ export default function TitleBar() {
             </button>
           </Tooltip>
         </div>
+        {/* AI 开关与窗口控制之间的 40px 间隙：可拖拽（不能是 no-drag 死区），
+            且不能把关闭按钮推离屏幕右上角（菲茨定律）。 */}
+        <div data-tauri-drag-region className="h-full w-10 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
         <div className="flex" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <button onClick={() => bridge.minimize()}
             className="flex h-10 w-11 items-center justify-center hover:bg-accent"

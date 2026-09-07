@@ -51,7 +51,7 @@ export default function About() {
     </div>
     <section className="space-y-3">
       <h2 className="text-base font-semibold">{t('about.creditsTitle')}</h2>
-      <p className="text-sm text-muted-foreground">语音工作区基于 SayIt 0.1.9，原作者 Liu Qianglong。集成版本按 AGPL-3.0 提供；原声桥硬件模块保留 GPL-3.0 声明。完整依赖清单见仓库 THIRD_PARTY_NOTICES。</p>
+      <p className="text-sm text-muted-foreground">{t('about.description')}</p>
       <div className="space-y-4">
         {CREDIT_GROUPS.map(group => (
           <div key={group.titleKey}>

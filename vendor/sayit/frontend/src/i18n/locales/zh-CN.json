@@ -1320,5 +1320,6 @@
   "about.credit.vibeFlow": "ATVV 蓝牙语音协议参考",
   "about.credit.remoteMic": "蓝牙麦克风协议参考",
   "about.credit.remoteMicWin": "Windows 实现参考",
-  "about.credit.vbcable": "虚拟声卡（免费/donationware）"
+  "about.credit.vbcable": "虚拟声卡（免费/donationware）",
+  "about.description": "语音工作区基于 SayIt 0.1.9，原作者 Liu Qianglong。集成版本按 AGPL-3.0 提供；原声桥硬件模块保留 GPL-3.0 声明。完整依赖清单见仓库 THIRD_PARTY_NOTICES。"
 }

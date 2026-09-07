@@ -158,7 +158,7 @@ function isActive(id: string) {
   border-radius: 50%;
   border: 1px solid var(--accent-soft);
   background: rgba(30, 30, 30, 0.55);
-  color: #f4c37a;
+  color: var(--text-secondary);
   font-size: 12px;
   pointer-events: none;
 }
