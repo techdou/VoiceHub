@@ -15,27 +15,48 @@ const props = defineProps<{
   saveError: string;
 }>();
 
-const emit = defineEmits<{ "update-settings": [settings: AppSettings] }>();
+const emit = defineEmits<{
+  "update-settings": [settings: AppSettings];
+  /** 后端已自行落盘的设置回传（连接动作产生）：只更新 App 内存，不再写盘。 */
+  "sync-settings": [settings: AppSettings];
+}>();
 const { t } = useI18n();
 
 // 草稿模式：改动先落 draft，点「保存」才真实生效+写盘。
 // 背景：音频端点保存时会真实打开设备（可能失败），必须让用户明确地
 // 「保存 → 看到成功/失败」，而不是改完静默丢失（2026-09-06 事故）。
 const draft = ref<AppSettings | null>(null);
-watch(
-  () => props.settings,
-  (next) => {
-    // Settings may come back as a nested Vue proxy after saving the draft.
-    draft.value = next ? JSON.parse(JSON.stringify(next)) as AppSettings : null;
-  },
-  { immediate: true },
-);
 
+// dirty 必须先于下面的 watch 声明：watch 是 immediate 的，回调里读 dirty。
 const dirty = computed(
   () =>
     !!draft.value &&
     !!props.settings &&
     JSON.stringify(draft.value) !== JSON.stringify(props.settings),
+);
+
+watch(
+  () => props.settings,
+  (next) => {
+    if (!next) {
+      draft.value = null;
+      return;
+    }
+    if (dirty.value && draft.value) {
+      // 用户有未保存编辑（如正在切换 provider）：连接遥控器等后端动作会回传新
+      // 设置，此时只合并后端权威字段，其余编辑保留——整体重置会静默丢草稿。
+      draft.value = {
+        ...draft.value,
+        pairedDeviceId: next.pairedDeviceId,
+        pairedDeviceName: next.pairedDeviceName,
+        onboardingComplete: next.onboardingComplete,
+      };
+      return;
+    }
+    // Settings may come back as a nested Vue proxy after saving the draft.
+    draft.value = JSON.parse(JSON.stringify(next)) as AppSettings;
+  },
+  { immediate: true },
 );
 
 const saving = ref(false);
@@ -51,7 +72,7 @@ async function saveAll() {
     if (next.provider.kind !== 'sayit' && next.audioEndpointName !== props.settings.audioEndpointName) {
       const target = endpoints.value.find((e) => e.name === next.audioEndpointName);
       if (!target) {
-        endpointError.value = `端点「${next.audioEndpointName}」不在列表中，请先刷新`;
+        endpointError.value = t("connection.audio.endpoint_missing", { name: next.audioEndpointName });
         return;
       }
       await api.selectAudioEndpoint(target.id, target.name);
@@ -70,6 +91,7 @@ const remotes = ref<PairedRemote[]>([]);
 const endpoints = ref<AudioEndpoint[]>([]);
 const selectedRemoteId = ref("");
 const busy = ref(false);
+const connectError = ref("");
 
 async function refreshRemotes() {
   remotes.value = await api.listPairedRemotes();
@@ -82,11 +104,32 @@ async function refreshEndpoints() {
 async function connect(id: string, name: string) {
   selectedRemoteId.value = id;
   busy.value = true;
+  connectError.value = "";
   try {
     await api.connectRemote(id, name);
-    emit("update-settings", await api.getSettings());
+    // connect_remote 后端已写盘；这里只同步 App 内存（走 sync-settings 不再落盘）。
+    emit("sync-settings", await api.getSettings());
+  } catch (error) {
+    connectError.value = String(error);
+    console.error("[soundbridge] connect_remote failed:", error);
   } finally {
     busy.value = false;
+  }
+}
+
+/** 模板按钮的统一动作包装：防连点 + 失败可见，不再裸 invoke。 */
+const actionBusy = ref(false);
+async function runAction(action: () => Promise<void>) {
+  if (actionBusy.value) return;
+  actionBusy.value = true;
+  connectError.value = "";
+  try {
+    await action();
+  } catch (error) {
+    connectError.value = String(error);
+    console.error("[soundbridge] action failed:", error);
+  } finally {
+    actionBusy.value = false;
   }
 }
 
@@ -211,6 +254,9 @@ onMounted(async () => {
 const recording = ref(false);
 const voiceLevel = ref(0);
 let unlisten: (() => void) | undefined;
+// mounted 与 unmount 竞态：listen 的 Promise 落定前组件就被卸载的话，
+// 清理函数没人调，监听器泄漏（App.vue 同款 disposed 模式）。
+let disposed = false;
 
 onMounted(async () => {
   unlisten = await listen<UiEvent>("bridge://event", (event) => {
@@ -219,9 +265,11 @@ onMounted(async () => {
       voiceLevel.value = event.payload.level;
     }
   });
+  if (disposed) unlisten();
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   unlisten?.();
   unlisten = undefined;
 });
@@ -230,14 +278,7 @@ const cableCandidatePresent = computed(() =>
   endpoints.value.some((e) => e.isVirtualCableCandidate),
 );
 
-const providerOptions = [
-  { id: "sayit", hint: true },
-  { id: "we_type", hint: true },
-  { id: "doubao" },
-  { id: "win_h" },
-  { id: "custom" },
-  { id: "none" },
-] as const;
+const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom", "none"] as const;
 </script>
 
 <template>
@@ -283,17 +324,30 @@ const providerOptions = [
           </span>
         </div>
         <div class="row">
-          <button class="btn" v-if="bleSnapshot?.phase === 'ready'" @click="api.disconnectRemote()">
+          <button
+            class="btn"
+            v-if="bleSnapshot?.phase === 'ready'"
+            :disabled="actionBusy"
+            @click="runAction(() => api.disconnectRemote())"
+          >
             {{ t("common.disconnect") }}
           </button>
-          <button class="btn" v-else-if="draft.pairedDeviceId" @click="api.reconnectRemote()">
+          <button
+            class="btn"
+            v-else-if="draft.pairedDeviceId"
+            :disabled="actionBusy"
+            @click="runAction(() => api.reconnectRemote())"
+          >
             {{ t("common.retry") }}
           </button>
         </div>
       </div>
+      <p v-if="connectError" class="hint" style="margin-top: 8px; color: var(--fail)">
+        {{ connectError }}
+      </p>
       <div v-if="recording" class="row" style="margin-top: 10px">
         <span class="pulse-dot recording"></span>
-        <span style="font-size: 12px; color: var(--text-secondary)">语音中</span>
+        <span style="font-size: 12px; color: var(--text-secondary)">{{ t("connection.recording_badge") }}</span>
         <div class="level-bar">
           <div class="fill" :style="{ width: `${Math.min(100, voiceLevel * 140)}%` }"></div>
         </div>
@@ -359,7 +413,9 @@ const providerOptions = [
         @installed="onCableInstalled"
       />
       <div class="row" style="margin-top: 10px">
-        <button class="btn" @click="api.simulateVoice(2000)">{{ t("connection.voice_test") }}</button>
+        <button class="btn" :disabled="actionBusy" @click="runAction(() => api.simulateVoice(2000))">
+          {{ t("connection.voice_test") }}
+        </button>
         <span class="hint" style="margin: 0">{{ t("sim.voice_hint") }}</span>
       </div>
     </section>
@@ -369,16 +425,16 @@ const providerOptions = [
       <div style="display: grid; gap: 6px; margin-bottom: 12px">
         <button
           v-for="option in providerOptions"
-          :key="option.id"
+          :key="option"
           class="picker-item"
-          :class="{ current: draft.provider.kind === option.id }"
-          @click="pickProvider(option.id)"
+          :class="{ current: draft.provider.kind === option }"
+          @click="pickProvider(option)"
         >
-          <span>{{ option.id === 'sayit' ? '声枢内嵌引擎' : t(`connection.provider.${option.id}` as never) }}</span>
+          <span>{{ option === 'sayit' ? t("connection.provider.sayit_embedded") : t(`connection.provider.${option}` as never) }}</span>
         </button>
       </div>
       <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
-        <a class="btn" href="#/voice-engine">语音引擎与模型</a>
+        <a class="btn" href="#/voice-engine">{{ t("connection.open_engine_settings") }}</a>
       </div>
       <p v-if="draft.provider.kind === 'we_type'" class="hint">
         {{ t("connection.provider.we_type_hint") }}
@@ -454,7 +510,7 @@ const providerOptions = [
 
     <section class="card">
       <h3>{{ t("settings.general") }}</h3>
-      <a class="btn" href="#/settings">应用设置</a>
+      <a class="btn" href="#/settings">{{ t("settings.open") }}</a>
     </section>
   </div>
   <div v-else class="page">

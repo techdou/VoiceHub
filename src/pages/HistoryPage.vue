@@ -8,12 +8,19 @@ import type { UiEvent, VoiceSessionRecord } from "../types";
 const { t } = useI18n();
 const records = ref<VoiceSessionRecord[]>([]);
 let unlisten: (() => void) | undefined;
+// mounted 与 unmount 竞态：listen 落定前组件被卸载则清理函数无人调（App.vue 同款）。
+let disposed = false;
 
 onMounted(async () => {
-  await refresh();
   unlisten = await listen<UiEvent>("bridge://event", (event) => {
     if (event.payload.type === "VoiceState" && !event.payload.recording) refresh();
   });
+  if (disposed) unlisten();
+  try {
+    await refresh();
+  } catch (error) {
+    console.error("[soundbridge] load history failed:", error);
+  }
 });
 
 onBeforeUnmount(() => {
@@ -50,7 +57,7 @@ async function clearAll() {
     <p class="page-sub">{{ t("history.privacy") }}</p>
 
     <div v-if="records.length" class="history-list">
-      <div v-for="(record, index) in records" :key="index" class="history-item">
+      <div v-for="record in records" :key="`${record.startedAtMs}-${record.durationMs}`" class="history-item">
         <div>
           <strong>{{ formatTime(record.startedAtMs) }}</strong>
           <span class="meta">

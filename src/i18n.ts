@@ -49,20 +49,14 @@ const dict = {
     "connection.audio.title": "音频输出",
     "connection.audio.hint": "解码后的语音播放到该端点。装好 VB-CABLE 后选择 CABLE Input，语音工具从 CABLE Output 收音。",
     "connection.audio.install_vbcable": "获取 VB-CABLE",
+    "connection.audio.endpoint_missing": "端点「{name}」不在列表中，请先刷新",
     "connection.provider.title": "语音工具",
     "connection.provider.we_type": "微信输入法",
     "connection.provider.we_type_hint": "在其设置中把语音快捷键设为 Ctrl+Win，录音设备选 CABLE Output",
     "connection.provider.doubao": "豆包输入法（按住）",
-    "connection.provider.sayit": "SayIt（本地转写，推荐）",
-    "connection.provider.sayit_hint": "录音设备设为 CABLE Output；触发键两边必须一致：SayIt 的免提键与声枢此处选同一个。注意 SayIt 会忽略程序注入的单键（右 Alt/右 Ctrl 只能手按），遥控器联动请两边都用组合键（如 Ctrl+Alt+H）。",
-    "connection.provider.sayit_key": "触发键（两边的 SayIt 需设成同一个）",
-    "connection.provider.sayit_key.combo": "Ctrl+Alt+H（组合键，遥控器可联动）",
-    "connection.provider.sayit_key.combo_alt_v": "Alt+V（组合键，遥控器可联动，推荐）",
-    "connection.provider.sayit_mode": "录音模式",
-    "connection.provider.sayit_mode.toggle": "免提（点一下开始，再点结束）",
-    "connection.provider.sayit_mode.hold": "按住说话",
-    "connection.provider.sayit_key.rctrl": "右 Ctrl",
-    "connection.provider.sayit_key.ralt": "右 Alt",
+    "connection.provider.sayit_embedded": "声枢内嵌引擎",
+    "connection.open_engine_settings": "语音引擎与模型",
+    "connection.recording_badge": "语音中",
     "connection.provider.win_h": "Windows 听写（Win+H）",
     "connection.provider.custom": "自定义",
     "connection.provider.none": "仅音频（不触发工具）",
@@ -128,6 +122,7 @@ const dict = {
     "buttons.action.tab.custom": "自定义",
     "buttons.action.tab.apps": "应用",
     "settings.general": "通用",
+    "settings.open": "打开应用设置",
     "settings.language": "语言",
     "settings.theme": "外观",
     "settings.autostart": "开机自启",
@@ -189,6 +184,12 @@ const dict = {
     "sim.hint": "没有遥控器也能验证：按钮走真实映射分发，语音测试走真实音频管线到所选端点。",
     "sim.voice": "测试语音（2 秒扫频）",
     "sim.voice_hint": "听到声音 = 音频链路正常（或语音工具开始转写）",
+    "sim.voice_hint_direct": "音频将直接送入内嵌转写引擎（不经声卡发声），观察最近回执或转写结果判断链路是否正常。",
+    "sim.audio_file": "选择音频测试转写",
+    "sim.audio_too_long": "测试音频不能超过五分钟",
+    "buttons.action.apps.open_app": "打开应用（可执行路径或 URI）",
+    "buttons.action.apps.open_url": "打开网页（HTTPS）",
+    "buttons.action.apps.name_placeholder": "名称",
     "sim.recent": "最近动作回执",
     "about.title": "关于声枢",
     "about.version": "版本",
@@ -255,21 +256,15 @@ const dict = {
     "connection.audio.hint":
       "Decoded voice is played into this endpoint. Install VB-CABLE, pick CABLE Input here, and let your dictation tool record from CABLE Output.",
     "connection.audio.install_vbcable": "Get VB-CABLE",
+    "connection.audio.endpoint_missing": "Endpoint \"{name}\" is not in the list; refresh first",
     "connection.provider.title": "Dictation tool",
     "connection.provider.we_type": "WeChat Input (WeType)",
     "connection.provider.we_type_hint":
       "Set its voice shortcut to Ctrl+Win and microphone to CABLE Output",
     "connection.provider.doubao": "Doubao Input (hold)",
-    "connection.provider.sayit": "SayIt (local transcription, recommended)",
-    "connection.provider.sayit_hint": "Set the microphone to CABLE Output; the trigger key must match SayIt's hands-free key on both sides. Note: SayIt ignores single keys injected by programs (Right Alt/Ctrl only work when pressed by hand) — use the same combo key (e.g. Ctrl+Alt+H) on both sides for remote linkage.",
-    "connection.provider.sayit_key": "Trigger key (set the same key in SayIt)",
-    "connection.provider.sayit_key.combo": "Ctrl+Alt+H (combo, remote linkage)",
-    "connection.provider.sayit_key.combo_alt_v": "Alt+V (combo, remote linkage, recommended)",
-    "connection.provider.sayit_mode": "Dictation mode",
-    "connection.provider.sayit_mode.toggle": "Hands-free (click to start, click to end)",
-    "connection.provider.sayit_mode.hold": "Push to talk",
-    "connection.provider.sayit_key.rctrl": "Right Ctrl",
-    "connection.provider.sayit_key.ralt": "Right Alt",
+    "connection.provider.sayit_embedded": "VoiceHub embedded engine",
+    "connection.open_engine_settings": "Voice engine & models",
+    "connection.recording_badge": "Recording",
     "connection.provider.win_h": "Windows dictation (Win+H)",
     "connection.provider.custom": "Custom",
     "connection.provider.none": "Audio only (no tool)",
@@ -336,6 +331,7 @@ const dict = {
     "buttons.action.tab.custom": "Custom",
     "buttons.action.tab.apps": "Applications",
     "settings.general": "General",
+    "settings.open": "Open app settings",
     "settings.language": "Language",
     "settings.theme": "Appearance",
     "settings.autostart": "Launch at login",
@@ -398,6 +394,12 @@ const dict = {
       "Validate without hardware: buttons go through the real dispatch path; the voice test goes through the real audio pipeline.",
     "sim.voice": "Test voice (2s sweep)",
     "sim.voice_hint": "Audible sound = audio path OK (or your tool starts transcribing)",
+    "sim.voice_hint_direct": "Audio goes straight into the embedded engine (no sound from speakers); check the receipts or transcript to verify the path.",
+    "sim.audio_file": "Pick an audio file to test transcription",
+    "sim.audio_too_long": "Test audio must be at most five minutes",
+    "buttons.action.apps.open_app": "Open app (executable path or URI)",
+    "buttons.action.apps.open_url": "Open web page (HTTPS)",
+    "buttons.action.apps.name_placeholder": "Name",
     "sim.recent": "Recent action receipts",
     "about.title": "About VoiceHub",
     "about.version": "Version",
@@ -442,9 +444,16 @@ export function resolveLocale(language: string, systemLocale: string): Locale {
 
 export function useI18n() {
   // 直接返回函数（读取响应式 state），模板与 computed 中均可调用。
-  const t = (key: I18nKey): string => {
+  // params 做 {name} 占位符替换（无依赖的最小插值实现）。
+  const t = (key: I18nKey, params?: Record<string, string | number>): string => {
     const table = dict[state.locale] as Record<string, string>;
-    return table[key] ?? (dict.zh as Record<string, string>)[key] ?? key;
+    let text = table[key] ?? (dict.zh as Record<string, string>)[key] ?? key;
+    if (params) {
+      for (const [name, value] of Object.entries(params)) {
+        text = text.split(`{${name}}`).join(String(value));
+      }
+    }
+    return text;
   };
   return { t, locale: computed(() => state.locale) };
 }

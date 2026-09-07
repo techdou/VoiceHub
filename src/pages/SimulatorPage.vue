@@ -17,7 +17,7 @@ interface Receipt {
   at: string;
 }
 
-const props = defineProps<{ physicalActiveButtons?: Set<string> }>();
+const props = defineProps<{ physicalActiveButtons?: Set<string>; providerKind?: string }>();
 
 const receipts = ref<Receipt[]>([]);
 const voiceBusy = ref(false);
@@ -29,11 +29,19 @@ async function testAudioFile(event: Event) {
   const file = input.files?.[0];
   if (!file) return;
   voiceError.value = "";
+  // 解码前的粗筛：完整解码 1 小时的音频会先吃掉数百 MB 内存再被拒绝。
+  // 16kHz/16bit/mono 的 300s PCM ≈ 9.6MB，常见压缩比 >4:1，60MB 上限足够宽松。
+  if (file.size > 60 * 1024 * 1024) {
+    voiceError.value = t("sim.audio_too_long");
+    input.value = "";
+    return;
+  }
   voiceBusy.value = true;
-  const context = new AudioContext();
+  let context: AudioContext | null = null;
   try {
+    context = new AudioContext();
     const decoded = await context.decodeAudioData(await file.arrayBuffer());
-    if (decoded.duration > 300) throw new Error("测试音频不能超过五分钟");
+    if (decoded.duration > 300) throw new Error(t("sim.audio_too_long"));
     const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
     const source = offline.createBufferSource(); source.buffer = decoded; source.connect(offline.destination); source.start();
     const rendered = await offline.startRendering();
@@ -45,7 +53,7 @@ async function testAudioFile(event: Event) {
     for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
     await api.simulateVoice(undefined, btoa(binary));
   } catch (error) { voiceError.value = String(error); voiceBusy.value = false; }
-  finally { await context.close(); input.value = ""; }
+  finally { if (context) await context.close().catch(() => {}); input.value = ""; }
 }
 const voiceLevel = ref(0);
 const recording = ref(false);
@@ -53,6 +61,9 @@ const gestureMode = ref<"single" | "double" | "long">("single");
 const selected = ref<string | null>(null);
 let receiptSeq = 0;
 let unlisten: (() => void) | undefined;
+// mounted 与 unmount 竞态：listen 的 Promise 落定前组件就被卸载的话，
+// 清理函数没人调，监听器泄漏（App.vue 同款 disposed 模式）。
+let disposed = false;
 
 const BUTTON_IDS = [
   "power", "up", "left", "ok", "right", "down", "back",
@@ -110,9 +121,11 @@ onMounted(async () => {
       if (!payload.recording) voiceBusy.value = false;
     }
   });
+  if (disposed) unlisten();
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   unlisten?.();
   unlisten = undefined;
 });
@@ -155,9 +168,12 @@ onBeforeUnmount(() => {
               <div class="fill" :style="{ width: `${Math.min(100, voiceLevel * 140)}%` }"></div>
             </div>
           </div>
-          <p class="hint" style="margin-top: 10px">{{ t("sim.voice_hint") }}</p>
+          <!-- 默认（sayit 直连）路径 PCM 不经音频端点发声，"听到声音"的提示会误导用户判障。 -->
+          <p class="hint" style="margin-top: 10px">
+            {{ props.providerKind === 'sayit' ? t("sim.voice_hint_direct") : t("sim.voice_hint") }}
+          </p>
           <input ref="fileInput" type="file" accept="audio/*" hidden @change="testAudioFile" />
-          <button class="btn" :disabled="voiceBusy" @click="fileInput?.click()">选择音频测试转写</button>
+          <button class="btn" :disabled="voiceBusy" @click="fileInput?.click()">{{ t("sim.audio_file") }}</button>
           <p v-if="voiceError" role="alert" class="hint" style="color: var(--fail)">{{ voiceError }}</p>
         </section>
 

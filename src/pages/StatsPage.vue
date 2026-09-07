@@ -9,14 +9,21 @@ const { t } = useI18n();
 const stats = ref<UsageStatistics | null>(null);
 const range = ref<"today" | "week" | "recent7" | "all">("today");
 let unlisten: (() => void) | undefined;
+// mounted 与 unmount 竞态：listen 落定前组件被卸载则清理函数无人调（App.vue 同款）。
+let disposed = false;
 
 onMounted(async () => {
-  stats.value = await api.getStatistics();
   unlisten = await listen<UiEvent>("bridge://event", (event) => {
     if (event.payload.type === "VoiceState" && !event.payload.recording) {
       api.getStatistics().then((next) => (stats.value = next));
     }
   });
+  if (disposed) unlisten();
+  try {
+    stats.value = await api.getStatistics();
+  } catch (error) {
+    console.error("[soundbridge] load statistics failed:", error);
+  }
 });
 
 onBeforeUnmount(() => {
@@ -116,11 +123,15 @@ const chart = computed(() => {
 
 const chartMax = computed(() => Math.max(1, ...chart.value.map((d) => d.ms)));
 
-const buttonNames: Record<string, string> = {
-  power: "电源", up: "上", left: "左", ok: "OK", right: "右", down: "下",
-  back: "返回", volume_up: "音量+", home: "主页", volume_down: "音量−",
-  menu: "菜单", tv: "TV",
-};
+// 按键名直接复用 buttons.key_names.* 字典（此前手写中文，英文界面下错乱）。
+const buttonNames = computed<Record<string, string>>(() => ({
+  power: t("buttons.key_names.power"), up: t("buttons.key_names.up"),
+  left: t("buttons.key_names.left"), ok: "OK", right: t("buttons.key_names.right"),
+  down: t("buttons.key_names.down"), back: t("buttons.key_names.back"),
+  volume_up: t("buttons.key_names.volume_up"), home: t("buttons.key_names.home"),
+  volume_down: t("buttons.key_names.volume_down"), menu: t("buttons.key_names.menu"),
+  tv: "TV",
+}));
 </script>
 
 <template>

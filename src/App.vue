@@ -62,6 +62,12 @@ async function persistSettings(next: AppSettings) {
     saveState.value = "error";
     saveError.value = String(error);
     console.error("[soundbridge] save_settings failed:", error);
+    // 乐观更新回滚：回读后端真值，避免 UI 一直显示未落盘的状态。
+    try {
+      settings.value = await api.getSettings();
+    } catch (reloadError) {
+      console.error("[soundbridge] reload settings after save failure:", reloadError);
+    }
   }
 }
 
@@ -100,8 +106,8 @@ let disposed = false;
 let unlisten: (() => void) | undefined;
 onBeforeUnmount(() => { disposed = true; unlisten?.(); window.clearTimeout(saveStateTimer); });
 onMounted(async () => {
-  await reloadSettings();
-  await refreshBle();
+  // 先注册监听再取快照：fetch 期间发生的状态变化不会丢；
+  // 且任一 fetch 失败不阻断监听注册（否则 UI 永久停在初始态不再响应事件）。
   unlisten = await listen<UiEvent>("bridge://event", (event) => {
     const payload = event.payload;
     switch (payload.type) {
@@ -115,6 +121,12 @@ onMounted(async () => {
       case "VoiceState":
         recording.value = payload.recording;
         voiceLevel.value = payload.level;
+        break;
+      case "Battery":
+        // 电量实时推送：BLE 只发 Battery 事件、快照未必重推，原地更新避免 UI 显示旧电量。
+        if (bleSnapshot.value) {
+          bleSnapshot.value = { ...bleSnapshot.value, batteryPercent: payload.percent };
+        }
         break;
       case "ButtonActivity":
         {
@@ -135,6 +147,16 @@ onMounted(async () => {
     }
   });
   if (disposed) unlisten();
+  try {
+    await reloadSettings();
+  } catch (error) {
+    console.error("[soundbridge] load settings failed:", error);
+  }
+  try {
+    await refreshBle();
+  } catch (error) {
+    console.error("[soundbridge] ble snapshot failed:", error);
+  }
 });
 </script>
 
@@ -155,6 +177,7 @@ onMounted(async () => {
         :save-state="saveState"
         :save-error="saveError"
         @update-settings="persistSettings"
+        @sync-settings="(next) => (settings = next)"
       />
       <ButtonsPage
         v-else-if="page === 'buttons'"
@@ -171,6 +194,7 @@ onMounted(async () => {
       <SimulatorPage
         v-else-if="page === 'simulator'"
         :physical-active-buttons="activeButtons"
+        :provider-kind="settings?.provider.kind"
       />
       <AboutPage v-else-if="page === 'about'" :version="version" @open="openUrl" />
     </main>

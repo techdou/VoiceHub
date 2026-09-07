@@ -78,8 +78,9 @@ export interface ProviderConfig {
   customMode: TriggerMode;
   /** SayIt 触发键主键（0 = 默认右 Alt）；与 customVk 互不干扰 */
   sayitVk: number;
-  /** SayIt 触发键修饰键（0 = 单键）。SayIt 过滤注入的单键，程序联动必须用组合键 */
-  sayitModifiers?: number;
+  /** SayIt 触发键修饰键（0 = 单键）。SayIt 过滤注入的单键，程序联动必须用组合键。
+   *  Rust 端（provider.rs）必填且总是序列化，这里不带 ?（mirror 注释见文件头）。 */
+  sayitModifiers: number;
   stopDelayMs: number;
   startupGraceMs: number;
 }
@@ -94,7 +95,8 @@ export interface AppSettings {
   provider: ProviderConfig;
   profiles: ProfileStore;
   buttonMappingEnabled: boolean;
-  experimentalVoiceExtend?: boolean;
+  /** Rust 端（settings.rs）必填且总是序列化。 */
+  experimentalVoiceExtend: boolean;
   launchAtLogin: boolean;
   language: Language;
   theme: Theme;

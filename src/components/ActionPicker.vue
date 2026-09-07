@@ -220,15 +220,15 @@ const isCurrent = computed(
 
       <div class="picker-list" v-else style="padding: 16px; gap: 10px">
         <div>
-          <div class="label" style="font-size: 13px; margin-bottom: 4px">打开应用（可执行路径或 URI）</div>
+          <div class="label" style="font-size: 13px; margin-bottom: 4px">{{ t("buttons.action.apps.open_app") }}</div>
           <div class="row">
-            <input v-model="appPath" type="text" placeholder="C:\...\app.exe  或  cursor://" style="flex: 1" />
-            <input v-model="appName" type="text" placeholder="名称" style="width: 110px" />
+            <input v-model="appPath" type="text" placeholder="C:\...\app.exe · cursor://" style="flex: 1" />
+            <input v-model="appName" type="text" :placeholder="t('buttons.action.apps.name_placeholder')" style="width: 110px" />
             <button class="btn" @click="confirmApp">{{ t("common.confirm") }}</button>
           </div>
         </div>
         <div>
-          <div class="label" style="font-size: 13px; margin-bottom: 4px">打开网页（HTTPS）</div>
+          <div class="label" style="font-size: 13px; margin-bottom: 4px">{{ t("buttons.action.apps.open_url") }}</div>
           <div class="row">
             <input v-model="url" type="text" placeholder="example.com" style="flex: 1" />
             <button class="btn" @click="confirmUrl">{{ t("common.confirm") }}</button>
