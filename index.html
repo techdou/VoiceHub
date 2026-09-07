@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>声枢 VoiceHub — 把小米遥控器变成 Windows 无线麦克风</title>
+<meta name="description" content="声枢 VoiceHub：面向 Windows 的语音输入工作区。小米蓝牙遥控器直连本地/云端 ASR，开箱即用；免提与按住说话可绑定到任意遥控器键。" />
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+<style>
+  :root {
+    --bg: #f7f8f8;
+    --panel: #ffffff;
+    --text: #1d1d1f;
+    --text-2: #6e6e73;
+    --accent: #16745b;
+    --accent-deep: #105c48;
+    --accent-soft: #e4f2ed;
+    --border: #e3e4e5;
+    --radius: 10px;
+    --maxw: 980px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191a1c; --panel: #232426; --text: #f5f5f7; --text-2: #98989d;
+      --accent: #6bd4b0; --accent-deep: #46ad8c; --accent-soft: #193f33; --border: #333537;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.65;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  header { padding: 72px 0 40px; text-align: center; }
+  .logo { width: 76px; height: 76px; }
+  h1 { font-size: 34px; margin-top: 18px; letter-spacing: 0.5px; }
+  h1 .en { color: var(--text-2); font-weight: 500; }
+  .tagline { margin-top: 12px; font-size: 17px; color: var(--text-2); }
+  .actions { margin-top: 28px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 11px 26px;
+    border-radius: var(--radius); border: 1px solid var(--border); background: var(--panel);
+    color: var(--text); text-decoration: none; font-size: 15px; transition: border-color .15s;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.primary:hover { background: var(--accent-deep); }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #10271f; } }
+
+  .flow {
+    margin: 8px auto 0; max-width: 640px; padding: 14px 20px; border: 1px dashed var(--border);
+    border-radius: var(--radius); color: var(--text-2); font-size: 13.5px; font-family: Consolas, monospace;
+    text-align: center;
+  }
+
+  section { padding: 44px 0; }
+  h2 { font-size: 22px; margin-bottom: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+  .card h3 { font-size: 15.5px; margin-bottom: 6px; color: var(--accent); }
+  .card p { font-size: 14px; color: var(--text-2); }
+
+  .shots { display: grid; gap: 22px; }
+  .shot img {
+    width: 100%; border: 1px solid var(--border); border-radius: var(--radius); display: block;
+    background: var(--panel);
+  }
+  .shot figcaption { margin-top: 8px; font-size: 13px; color: var(--text-2); }
+
+  footer {
+    border-top: 1px solid var(--border); margin-top: 24px; padding: 28px 0 48px;
+    color: var(--text-2); font-size: 13px;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <img class="logo" src="assets/logo.svg" alt="VoiceHub" />
+  <h1>声枢 <span class="en">VoiceHub</span></h1>
+  <p class="tagline">把小米蓝牙遥控器变成 Windows 无线麦克风与语音遥控器</p>
+  <div class="actions">
+    <a class="btn primary" href="https://github.com/techdou/VoiceHub/releases/latest">下载最新版</a>
+    <a class="btn" href="https://github.com/techdou/VoiceHub">GitHub 源码</a>
+  </div>
+  <p class="flow">遥控器语音键 → 蓝牙音频直连 → 本地 / 云端识别 → 文字进入当前输入框</p>
+</header>
+
+<section class="wrap">
+  <h2>核心能力</h2>
+  <div class="cards">
+    <div class="card">
+      <h3>开箱即用的语音输入</h3>
+      <p>遥控器音频经蓝牙直传内置识别引擎，无需独立语音软件，也无需虚拟声卡。支持本地 GGUF 模型、OpenAI 兼容服务与多家云端供应商。</p>
+    </div>
+    <div class="card">
+      <h3>免提 / 按住，随键绑定</h3>
+      <p>语音键天然按住说话；免提与按住说话还可一键绑定到任意遥控器键，经系统麦克风录音并直接通知识别引擎，不占用键盘快捷键。</p>
+    </div>
+    <div class="card">
+      <h3>完整的遥控器映射</h3>
+      <p>12 键位单击 / 双击 / 长按三槽动作，多套键位方案按前台应用自动切换；按键统计、语音历史与链路自检一应俱全。</p>
+    </div>
+    <div class="card">
+      <h3>AI 整理与文本填入</h3>
+      <p>转写结果可经 AI 润色整理后填入输入框，支持自定义指令、热词与替换规则，标题栏一键开关。</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="screenshots">
+  <h2>界面</h2>
+  <div class="shots">
+    <figure class="shot">
+      <img src="assets/home.png" alt="声枢工作区首页" loading="lazy" />
+      <figcaption>工作区首页：语音引擎、遥控器、麦克风与 AI 整理状态一屏可见，转写记录即取即用。</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="assets/engine.png" alt="语音引擎配置页" loading="lazy" />
+      <figcaption>语音引擎：本地模型、云 API 与自部署服务器三种模式，内置识别测试。</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="assets/buttons.png" alt="按键映射页" loading="lazy" />
+      <figcaption>按键映射：遥控器实物画布，逐键配置动作与按住说话。</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="assets/connection.png" alt="设备连接页" loading="lazy" />
+      <figcaption>设备连接：蓝牙设备列表一键连接，语音触发一键绑定。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>声枢 VoiceHub 按 <a href="https://github.com/techdou/VoiceHub/blob/main/LICENSE">GPL-3.0 / AGPL-3.0</a> 分发，
+    内嵌 <a href="https://github.com/crosswk/SayIt">SayIt</a> 语音工作区，识别底座基于
+    <a href="https://github.com/ggerganov/whisper.cpp">whisper.cpp</a> 与
+    <a href="https://github.com/snakers4/silero-vad">Silero VAD</a>。
+    仅支持 Windows 10 1809+（x64）。小米遥控器为其所属公司的产品，本项目与其无隶属关系。</p>
+  </div>
+</footer>
+
+</body>
+</html>
