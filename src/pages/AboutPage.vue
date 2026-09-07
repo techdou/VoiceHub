@@ -9,6 +9,8 @@ const references = [
   { name: "vibe-flow（言灵）", url: "https://github.com/techdou/vibe-flow" },
   { name: "remote-mic-app（SayAll）", url: "https://github.com/techdou/remote-mic-app" },
   { name: "remote-mic-app-windows", url: "https://github.com/GetSayAll/remote-mic-app-windows" },
+  { name: "whisper.cpp / GGML", url: "https://github.com/ggerganov/whisper.cpp" },
+  { name: "Silero VAD", url: "https://github.com/snakers4/silero-vad" },
   { name: "VB-CABLE（虚拟声卡）", url: "https://vb-audio.com/Cable/" },
 ];
 </script>
@@ -20,12 +22,12 @@ const references = [
 
     <section class="card row between">
       <div>
-        <strong style="font-size: 15px">{{ t("app.name") }} SoundBridge</strong>
+        <strong style="font-size: 15px">{{ t("app.name") }} VoiceHub</strong>
         <div class="hint" style="margin: 2px 0 0">
           {{ t("about.version") }} {{ version }} · GPL-3.0
         </div>
       </div>
-      <img src="/app-icon.png" width="44" height="44" alt="SoundBridge" style="border-radius: 11px" />
+      <img src="/app-icon.png" width="44" height="44" alt="VoiceHub" style="border-radius: 11px" />
     </section>
 
     <section class="card">

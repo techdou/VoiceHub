@@ -140,6 +140,17 @@ const MANUAL_PATCHES = [
     },
   },
   {
+    id: 'about-credits-list',
+    files: ['frontend/src/pages/About.tsx'],
+    describe: 'Open-source credits list: SayIt (upstream), whisper.cpp/GGML, Silero VAD, vibe-flow, remote-mic-app (+windows), VB-CABLE — names, roles, licenses, links (verified via gh api).',
+    verify() {
+      const about = readVendor('frontend/src/pages/About.tsx');
+      if (!about.includes('whisper.cpp')) return 'About.tsx credits lost whisper.cpp';
+      if (!about.includes('silero-vad')) return 'About.tsx credits lost Silero VAD';
+      return null;
+    },
+  },
+  {
     id: 'home-input-source-card',
     files: ['frontend/src/pages/Home.tsx'],
     describe: 'Workspace home shows a microphone-input card: remote takes priority when connected; otherwise the PTT key dictates with the configured system mic (remote is optional).',

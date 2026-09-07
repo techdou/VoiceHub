@@ -30,6 +30,8 @@ AGPL-3.0，组合应用的分发须遵守 AGPL-3.0。
 ## 依赖
 
 - [Tauri 2](https://tauri.app)（MIT/Apache-2.0）与各插件
+- [whisper.cpp / GGML](https://github.com/ggerganov/whisper.cpp)（MIT）— 本地语音识别底座
+- [Silero VAD](https://github.com/snakers4/silero-vad)（MIT）— 语音活动检测
 - [wasapi crate](https://crates.io/crates/wasapi)（MPL-2.0 / 部分 LGPL）
 - [windows crate](https://crates.io/crates/windows)（MIT/Apache-2.0）
 - Vue 3 / Vite / Vitest（MIT）
