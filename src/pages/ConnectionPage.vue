@@ -278,7 +278,9 @@ const cableCandidatePresent = computed(() =>
   endpoints.value.some((e) => e.isVirtualCableCandidate),
 );
 
-const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom", "none"] as const;
+// "仅音频（不触发工具）"（none）选项已移除：直连引擎开箱即用后无使用价值。
+// ProviderKind::None 在 Rust 侧保留仅为反序列化旧配置。
+const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as const;
 </script>
 
 <template>

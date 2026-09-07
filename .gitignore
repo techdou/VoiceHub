@@ -72,7 +72,6 @@ __pycache__/
 .ruff_cache/
 
 # Internal documentation stays local. Public usage and legal notices are retained.
-docs/
 plans/
 notes/
 PRD*
@@ -126,6 +125,7 @@ src-tauri/icons/icon.icns
 *.wav
 *.mp3
 *.pcm
+!public/*.pcm
 *.gguf
 *.ggml
 *.onnx

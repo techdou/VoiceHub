@@ -102,6 +102,26 @@ async function testVoice() {
   catch (error) { voiceError.value = String(error); voiceBusy.value = false; }
 }
 
+// 内置真实语音素材（public/test-speech-15s.pcm，16kHz mono s16le）：
+// 走与文件上传相同的 PCM 直通管线，绕开 AudioContext 解码，附带原文可核对识别准确性。
+let realSpeechCached: string | null = null;
+async function testRealSpeech() {
+  voiceBusy.value = true;
+  voiceError.value = "";
+  try {
+    if (!realSpeechCached) {
+      const bytes = new Uint8Array(await (await fetch("/test-speech-15s.pcm")).arrayBuffer());
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      realSpeechCached = btoa(binary);
+    }
+    await api.simulateVoice(undefined, realSpeechCached);
+  } catch (error) {
+    voiceError.value = String(error);
+    voiceBusy.value = false;
+  }
+}
+
 onMounted(async () => {
   unlisten = await listen<UiEvent>("bridge://event", (event) => {
     const payload = event.payload;
@@ -173,7 +193,13 @@ onBeforeUnmount(() => {
             {{ props.providerKind === 'sayit' ? t("sim.voice_hint_direct") : t("sim.voice_hint") }}
           </p>
           <input ref="fileInput" type="file" accept="audio/*" hidden @change="testAudioFile" />
-          <button class="btn" :disabled="voiceBusy" @click="fileInput?.click()">{{ t("sim.audio_file") }}</button>
+          <div class="row" style="margin-top: 10px; flex-wrap: wrap">
+            <button class="btn" :disabled="voiceBusy" @click="fileInput?.click()">{{ t("sim.audio_file") }}</button>
+            <button class="btn primary" :disabled="voiceBusy" @click="testRealSpeech">
+              {{ t("sim.real_speech") }}
+            </button>
+          </div>
+          <p class="hint" style="margin-top: 8px">{{ t("sim.real_speech_hint") }}</p>
           <p v-if="voiceError" role="alert" class="hint" style="color: var(--fail)">{{ voiceError }}</p>
         </section>
 
