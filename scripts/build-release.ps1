@@ -18,7 +18,9 @@ $out = "artifacts"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 if (-not $SkipInstaller) {
-    Get-ChildItem "$bundle/nsis/*.exe" | ForEach-Object {
+    # 只拷当前版本：nsis 目录会累积历史版本的 exe，glob 全拷会把旧安装包一起带进 release。
+    $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+    Get-ChildItem "$bundle/nsis/*.exe" | Where-Object { $_.Name -like "*_$version*" } | ForEach-Object {
         Copy-Item $_.FullName $out -Force
         $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
         "$hash  $($_.Name)" | Out-File "$out/$($_.Name).sha256" -Encoding ascii
