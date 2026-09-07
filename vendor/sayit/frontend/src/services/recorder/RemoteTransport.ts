@@ -35,22 +35,28 @@ export class RemoteTransport {
         if (ready && !this.stopped && await invoke<boolean>('remote_voice_ack', { id: packet.id })) {
           this.active = packet.id
         } else {
-          if (ready) await this.recorder.stopRemoteRecording('Remote session expired')
-          await invoke('remote_voice_reject', { id: packet.id })
+          // stop() 在 startRemoteRecording 等待期间执行时（stopped=true），
+          // recorder 已被 stop() 停掉：跳过第二次 stop，避免错误消息被
+          // 'Remote session expired' 覆盖、也不依赖 stopRemoteRecording 幂等。
+          if (ready && !this.stopped) {
+            await this.recorder.stopRemoteRecording('Remote session expired')
+          }
+          // reject 失败不再上抛：掉进外层 catch 会再触发一次 stopRemoteRecording。
+          await invoke('remote_voice_reject', { id: packet.id }).catch(() => {})
           this.active = null
         }
       } else if (packet?.type === 'audio') {
         if (packet.id !== this.active) {
-          await invoke('remote_voice_reject', { id: packet.id })
+          await invoke('remote_voice_reject', { id: packet.id }).catch(() => {})
         } else if (packet.error) {
           await this.recorder.stopRemoteRecording(packet.error)
-          await invoke('remote_voice_reject', { id: packet.id })
+          await invoke('remote_voice_reject', { id: packet.id }).catch(() => {})
           this.active = null
         } else {
           feedRemoteCapture(packet.samples)
           if (packet.ended) {
             await this.recorder.stopRemoteRecording()
-            await invoke('remote_voice_reject', { id: packet.id })
+            await invoke('remote_voice_reject', { id: packet.id }).catch(() => {})
             this.active = null
           }
         }

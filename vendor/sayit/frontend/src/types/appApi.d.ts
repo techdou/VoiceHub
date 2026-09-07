@@ -170,7 +170,6 @@ export interface AppAPI {
   onActiveAppContext: (cb: (data: ActiveAppContext | null) => void) => () => void
   onPTTDown: (cb: (data?: unknown) => void) => void
   onPTTUp: (cb: (data?: unknown) => void) => void
-  onPTTToggle: (cb: (data?: unknown) => void) => void
   onPTTTimeoutWarning: (cb: (data?: unknown) => void) => void
   onToggleHandsFree: (cb: (data?: unknown) => void) => void
   onPTTLabEvent: (cb: (data?: unknown) => void) => () => void

@@ -1,6 +1,6 @@
 import { Github } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-shell'
-import appIcon from '../../../../../src/assets/voicehub.svg'
+import appIcon from '../assets/voicehub.svg'
 
 export default function About() {
   return <div className="mx-auto max-w-4xl space-y-6">

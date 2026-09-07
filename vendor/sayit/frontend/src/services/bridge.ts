@@ -429,10 +429,7 @@ export function onPTTUp(cb: (data?: unknown) => void) {
   return () => { unlisten.then((fn) => fn()) }
 }
 
-export function onPTTToggle(cb: (data?: unknown) => void) {
-  const unlisten = listen<unknown>('ptt-toggle', (event) => cb(event.payload))
-  return () => { unlisten.then((fn) => fn()) }
-}
+// onPTTToggle 已移除：native 从不发送 ptt-toggle 事件（上游遗留死监听）。
 
 export function onPTTTimeoutWarning(cb: (data?: unknown) => void) {
   const unlisten = listen<unknown>('ptt-timeout-warning', (event) => cb(event.payload))

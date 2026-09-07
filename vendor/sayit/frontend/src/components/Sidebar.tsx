@@ -5,8 +5,6 @@ import { cn } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/tooltip'
 import { useConnectionStatus } from '@/hooks/useConnectionStatus'
 import { getModeStatus, refreshModeStatus, subscribeModeStatus } from '@/stores/modeStatus'
-import { hasPendingUpdate } from '@/features/update/autoUpdate'
-import { useUpdateState } from '@/features/update/useUpdateState'
 import { getLocale, type TranslationKey } from '@/i18n'
 import { useT } from '@/i18n/useT'
 
@@ -94,36 +92,17 @@ function IconOnlyNavItem({
 /**
  * 侧栏底部那排图标。
  *
- * 有更新待安装时**不新增图标** —— 让「关于」这一枚自己变绿闪烁，悬停提示换成
- * 「新版本已下载好」。关于页就是更新所在的地方，点它正好到达能看到版本说明和
- * 「立即安装」的位置；多一枚图标既挤又需要用户先学会它是什么意思。
- *
- * 后台下载期间**故意毫无变化**：那会儿没有任何需要用户知道的事，静默才是本意。
- *
- * ⚠ 这里用绿色不违反下面 ModeIndicator 那条"不给任何好颜色"的规矩：那条针对的是
- * 我们没验证过的事（配置填完了 ≠ 真能用）。而"包已下载完、哈希校验过、随时可装"
- * 是确定的事实。别顺手把它改回中性色。
+ * VoiceHub 衔接说明：上游的待更新高亮已随更新链整体摘除（native 侧拒绝
+ * download/install 命令，应用级更新由 VoiceHub 托管）。
  */
 function FooterIcons() {
   const t = useT()
-  const update = useUpdateState()
-  const updateReady = hasPendingUpdate(update)
-  const nextVersion = update.pending?.version || ''
 
   return (
     <div className="flex items-center gap-1">
-      {footerNavItems.map(({ to, icon, labelKey }) => {
-        const highlight = updateReady && to === '/about'
-        return (
-          <IconOnlyNavItem
-            key={to}
-            to={to}
-            icon={icon}
-            label={highlight ? t('update.aboutTooltip', { version: nextVersion }) : t(labelKey)}
-            iconClassName={highlight ? 'text-success animate-pulse' : undefined}
-          />
-        )
-      })}
+      {footerNavItems.map(({ to, icon, labelKey }) => (
+        <IconOnlyNavItem key={to} to={to} icon={icon} label={t(labelKey)} />
+      ))}
       <ModeIndicator />
     </div>
   )

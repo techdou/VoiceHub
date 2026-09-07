@@ -489,19 +489,8 @@ export class RecorderOrchestrator {
       })
     })
 
-    bridge.onPTTToggle((payload) => {
-      if (this.remoteSession) return
-      this.logPTTEvent('toggle', payload)
-      if (this.pttSuppressed || this.handsFreeMode) {
-        addRuntimeEvent('info', 'ptt', 'event:toggle ignored', {
-          ...this.getPTTEventContext(payload),
-          ignoreReason: this.pttSuppressed ? 'ptt_suppressed' : 'hands_free_mode',
-        })
-        return
-      }
-      addRuntimeEvent('info', 'ptt', 'event:toggle accepted', this.getPTTEventContext(payload))
-      this.pttToggle(false)
-    })
+    // ptt-toggle 监听已移除：native 从不发送该事件（上游遗留死监听），
+    // 免提切换走 toggle-hands-free（下方）。
 
     bridge.onToggleHandsFree((payload) => {
       if (this.remoteSession) return

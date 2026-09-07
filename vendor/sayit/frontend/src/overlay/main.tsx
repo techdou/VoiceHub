@@ -1,8 +1,6 @@
 import { startWebviewKeyboardFallback } from '../services/webviewKeyboardFallback'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { listen } from '@tauri-apps/api/event'
-import { invoke } from '@tauri-apps/api/core'
 import Overlay from './Overlay'
 import '../index.css'
 
@@ -13,12 +11,8 @@ document.head.appendChild(style)
 
 void startWebviewKeyboardFallback()
 
-// Health check: respond to ping from main process so it can detect
-// WebView2 unresponsiveness. Bug 003 diagnostic.
-void listen<number>('overlay-ping', (event) => {
-  const seq = typeof event.payload === 'number' ? event.payload : 0
-  void invoke('overlay_pong', { seq }).catch(() => {})
-})
+// overlay-ping 健康检测监听已移除：上游本就没有任何 native 侧发射端
+// （连同 overlay_pong 命令一起是未完成机制），监听只会空转。
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import * as bridge from '@/services/bridge'
 import { Minus, Square, X, Wand2 } from 'lucide-react'
-import appIcon from '../../../../../src/assets/voicehub.svg'
+import appIcon from '../assets/voicehub.svg'
 import { useAiEnabled, useAiEnabledReady } from '@/hooks/useAiEnabled'
 import { useActivePreset } from '@/hooks/useActivePreset'
 import { toggleAiEnabled } from '@/stores/aiEnabled'

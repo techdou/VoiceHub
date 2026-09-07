@@ -14,3 +14,12 @@ the server application is not bundled in the desktop executable.
 
 The combined application is subject to AGPL-3.0. Original SoundBridge modules
 retain their GPL-3.0 notices. Dependencies retain their respective licenses.
+
+## Local modification ledger
+
+All local modifications are registered in `scripts/vendor-sayit.mjs`:
+mechanical patches (namespace migration, handler.rs extraction) replay
+automatically on import; manual patches (remote PCM transport, update-chain
+removal, dead-listener cleanup, vendored assets) are hand-applied and probed
+by `node scripts/vendor-sayit.mjs --verify`. When you modify this tree by
+hand, add a patch entry with a verify() probe so the audit stays truthful.

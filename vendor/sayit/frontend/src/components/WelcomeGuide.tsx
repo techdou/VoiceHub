@@ -12,7 +12,7 @@ import {
   isSingleKeySetting,
 } from '@/lib/shortcutKeys'
 import { refreshPTTSetting } from '@/services/webviewKeyboardFallback'
-import appIcon from '../../../../../src/assets/voicehub.svg'
+import appIcon from '../assets/voicehub.svg'
 import { t, type TranslationKey } from '@/i18n'
 import { useT } from '@/i18n/useT'
 

@@ -52,17 +52,8 @@ export default function App() {
     }
   }, [])
 
-  // 自动更新安装完成后，看门人进程会带 --open-about 重新拉起本程序，
-  // Rust 端据此发出 open-about 事件，这里跳转到关于页方便用户确认更新已生效。
-  // 单独一个 effect：它的清理只是取消监听，不会断开连接，所以依赖 navigate 无副作用。
-  useEffect(() => {
-    const unlistenOpenAbout = listen('open-about', () => {
-      navigate('/about')
-    })
-    return () => {
-      void unlistenOpenAbout.then((fn) => fn())
-    }
-  }, [navigate])
+  // open-about 监听已移除：上游由 main.rs 看门人的 --open-about 重启参数触发，
+  // VoiceHub 去入口化后该事件永远不会再发。
 
   const handleWelcomeComplete = () => {
     setShowWelcome(false)
