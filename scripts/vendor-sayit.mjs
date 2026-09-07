@@ -140,6 +140,18 @@ const MANUAL_PATCHES = [
     },
   },
   {
+    id: 'settings-brand-voicehub',
+    files: ['frontend/src/i18n/locales/zh-CN.json', 'frontend/src/i18n/locales/en.json'],
+    describe: 'Client-self references renamed SayIt → 声枢 (zh) / VoiceHub (en) across settings/about/feedback/diagnostics copy; server-mode and upstream-release-log references keep the SayIt name honestly.',
+    verify() {
+      const zh = readVendor('frontend/src/i18n/locales/zh-CN.json');
+      if (zh.includes('欢迎使用 SayIt') || zh.includes('打开 SayIt')) return 'zh locale still greets as SayIt';
+      const en = readVendor('frontend/src/i18n/locales/en.json');
+      if (en.includes('Welcome to SayIt')) return 'en locale still greets as SayIt';
+      return null;
+    },
+  },
+  {
     id: 'about-credits-list',
     files: ['frontend/src/pages/About.tsx'],
     describe: 'Open-source credits list: SayIt (upstream), whisper.cpp/GGML, Silero VAD, vibe-flow, remote-mic-app (+windows), VB-CABLE — names, roles, licenses, links (verified via gh api).',
