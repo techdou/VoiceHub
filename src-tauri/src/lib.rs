@@ -1,9 +1,10 @@
-//! 声桥 SoundBridge 宿主：托盘、单实例、自启、窗口管理、命令注册。
+//! 声枢 VoiceHub 宿主：托盘、单实例、自启、窗口管理、命令注册。
 
 mod bridge;
 mod cable;
 mod commands;
 mod store;
+mod remote_voice;
 
 use std::sync::Arc;
 
@@ -24,13 +25,13 @@ pub struct TrayTexts {
 const TRAY_ZH: TrayTexts = TrayTexts {
     show: "显示设置",
     reconnect: "重连遥控器",
-    quit: "退出声桥",
+    quit: "退出声枢",
 };
 
 const TRAY_EN: TrayTexts = TrayTexts {
     show: "Show settings",
     reconnect: "Reconnect remote",
-    quit: "Quit SoundBridge",
+    quit: "Quit VoiceHub",
 };
 
 /// 设置语言 → 托盘文案（system 跟随系统 UI 语言）。
@@ -58,7 +59,8 @@ fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<ta
     let reconnect =
         tauri::menu::MenuItem::with_id(app, "reconnect", texts.reconnect, true, None::<&str>)?;
     let quit = tauri::menu::MenuItem::with_id(app, "quit", texts.quit, true, None::<&str>)?;
-    tauri::menu::Menu::with_items(app, &[&show, &reconnect, &quit])
+    let ai = tauri::menu::MenuItem::with_id(app, "toggle-ai", "AI 整理 / AI cleanup", true, None::<&str>)?;
+    tauri::menu::Menu::with_items(app, &[&show, &reconnect, &ai, &quit])
 }
 
 /// 语言变化后由 bridge 调用：重建托盘菜单。
@@ -156,7 +158,12 @@ fn init_logging(app: &tauri::AppHandle) -> Option<()> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    // A shared WebView2 environment must use one set of background timer flags.
+    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling");
+    }
+    voicehub_sayit::configure(tauri::Builder::default()
         // single-instance 必须第一个注册才能拦截二次启动。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动：唤起已有主窗口。
@@ -165,7 +172,7 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init()))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -178,6 +185,7 @@ pub fn run() {
             let store = Arc::new(Store::new(&data_dir));
             let settings = store.load_settings();
             init_logging(&app.handle());
+            voicehub_sayit::setup(app.handle())?;
 
             let bridge = Bridge::start(app.handle().clone(), store, settings);
             app.manage(bridge);
@@ -213,6 +221,7 @@ pub fn run() {
                     "quit" => {
                         app.exit(0);
                     }
+                    "toggle-ai" => { let _ = voicehub_sayit::toggle_ai(app); }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -228,8 +237,12 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+          let hardware: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
             commands::get_settings,
+            commands::remote_voice_poll,
+            commands::remote_voice_ack,
+            commands::remote_voice_reject,
             commands::save_settings,
             commands::get_ble_snapshot,
             commands::list_paired_remotes,
@@ -251,7 +264,26 @@ pub fn run() {
             commands::start_cable_install,
             commands::run_diagnostics,
             commands::open_logs_folder,
-        ])
+          ]);
+          let speech = voicehub_sayit::handler();
+          move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+            let command = invoke.message.command();
+            if voicehub_sayit::is_standalone_update_command(command) {
+                invoke.resolver.reject("Updates are managed by VoiceHub");
+                return true;
+            }
+            if matches!(command,
+                "get_settings" | "save_settings" | "get_ble_snapshot" | "list_paired_remotes" |
+                "connect_remote" | "disconnect_remote" | "reconnect_remote" | "list_audio_endpoints" |
+                "select_audio_endpoint" | "get_statistics" | "get_history" | "clear_history" |
+                "bind_process_to_profile" | "unbind_process" | "get_foreground_process" |
+                "reset_profile_to_default" | "simulate_button" | "simulate_voice" |
+                "check_virtual_cable" | "start_cable_install" | "run_diagnostics" | "open_logs_folder" |
+                "remote_voice_poll" | "remote_voice_ack" | "remote_voice_reject") {
+                hardware(invoke)
+            } else { speech(invoke) }
+          }
+        })
         .run(tauri::generate_context!())
-        .expect("error while running SoundBridge");
+        .expect("error while running VoiceHub");
 }

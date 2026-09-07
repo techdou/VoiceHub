@@ -25,7 +25,8 @@ const draft = ref<AppSettings | null>(null);
 watch(
   () => props.settings,
   (next) => {
-    draft.value = next ? structuredClone(next) : null;
+    // Settings may come back as a nested Vue proxy after saving the draft.
+    draft.value = next ? JSON.parse(JSON.stringify(next)) as AppSettings : null;
   },
   { immediate: true },
 );
@@ -47,7 +48,7 @@ async function saveAll() {
   endpointError.value = "";
   try {
     // 端点变化优先走真实打开（失败即中止，其余设置也不落盘，用户可重试）。
-    if (next.audioEndpointName !== props.settings.audioEndpointName) {
+    if (next.provider.kind !== 'sayit' && next.audioEndpointName !== props.settings.audioEndpointName) {
       const target = endpoints.value.find((e) => e.name === next.audioEndpointName);
       if (!target) {
         endpointError.value = `端点「${next.audioEndpointName}」不在列表中，请先刷新`;
@@ -83,6 +84,7 @@ async function connect(id: string, name: string) {
   busy.value = true;
   try {
     await api.connectRemote(id, name);
+    emit("update-settings", await api.getSettings());
   } finally {
     busy.value = false;
   }
@@ -127,47 +129,9 @@ function commitGain() {
   draft.value = { ...draft.value, gainDb: gainDraft.value };
 }
 
-function setLanguage(language: AppSettings["language"]) {
-  if (!draft.value) return;
-  draft.value = { ...draft.value, language };
-}
-
-function setTheme(theme: AppSettings["theme"]) {
-  if (!draft.value) return;
-  draft.value = { ...draft.value, theme };
-}
-
-function setAutostart(enabled: boolean) {
-  if (!draft.value) return;
-  draft.value = { ...draft.value, launchAtLogin: enabled };
-}
-
-function setSayItTrigger(vk: number, modifiers: number) {
-  if (!draft.value) return;
-  draft.value = {
-    ...draft.value,
-    provider: { ...draft.value.provider, sayitVk: vk, sayitModifiers: modifiers },
-  };
-}
-
-/** 下拉值编码 "vk:modifiers"（0 视为默认右 Alt 单键）。 */
-function sayItTriggerValue(): string {
-  const provider = draft.value?.provider;
-  if (!provider) return "165:0";
-  return `${provider.sayitVk || 0xa5}:${provider.sayitModifiers || 0}`;
-}
-
 function setVoiceExtend(enabled: boolean) {
   if (!draft.value) return;
   draft.value = { ...draft.value, experimentalVoiceExtend: enabled };
-}
-
-function setSayItMode(mode: "toggle" | "hold") {
-  if (!draft.value) return;
-  draft.value = {
-    ...draft.value,
-    provider: { ...draft.value.provider, customMode: mode },
-  };
 }
 
 function setCustomMode(mode: "toggle" | "hold") {
@@ -370,7 +334,7 @@ const providerOptions = [
       </div>
     </section>
 
-    <section class="card">
+    <section v-if="draft.provider.kind !== 'sayit'" class="card">
       <h3>{{ t("connection.audio.title") }}</h3>
       <p class="hint">{{ t("connection.audio.hint") }}</p>
       <p v-if="endpointError" class="hint" style="color: var(--fail)">{{ endpointError }}</p>
@@ -410,45 +374,11 @@ const providerOptions = [
           :class="{ current: draft.provider.kind === option.id }"
           @click="pickProvider(option.id)"
         >
-          <span>{{ t(`connection.provider.${option.id}` as never) }}</span>
+          <span>{{ option.id === 'sayit' ? '声枢内嵌引擎' : t(`connection.provider.${option.id}` as never) }}</span>
         </button>
       </div>
-      <p v-if="draft.provider.kind === 'sayit'" class="hint">
-        {{ t("connection.provider.sayit_hint") }}
-      </p>
       <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
-        <div class="label">{{ t("connection.provider.sayit_mode") }}</div>
-        <div class="row">
-          <button
-            class="btn"
-            :class="{ primary: draft.provider.customMode === 'toggle' }"
-            @click="setSayItMode('toggle')"
-          >
-            {{ t("connection.provider.sayit_mode.toggle") }}
-          </button>
-          <button
-            class="btn"
-            :class="{ primary: draft.provider.customMode === 'hold' }"
-            @click="setSayItMode('hold')"
-          >
-            {{ t("connection.provider.sayit_mode.hold") }}
-          </button>
-        </div>
-      </div>
-      <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
-        <div class="label">{{ t("connection.provider.sayit_key") }}</div>
-        <select
-          :value="sayItTriggerValue()"
-          @change="
-            const [vk, mods] = ($event.target as HTMLSelectElement).value.split(':').map(Number);
-            setSayItTrigger(vk, mods);
-          "
-        >
-          <option value="86:1">{{ t("connection.provider.sayit_key.combo_alt_v") }}</option>
-          <option value="72:3">{{ t("connection.provider.sayit_key.combo") }}</option>
-          <option value="165:0">{{ t("connection.provider.sayit_key.ralt") }}</option>
-          <option value="163:0">{{ t("connection.provider.sayit_key.rctrl") }}</option>
-        </select>
+        <a class="btn" href="#/voice-engine">语音引擎与模型</a>
       </div>
       <p v-if="draft.provider.kind === 'we_type'" class="hint">
         {{ t("connection.provider.we_type_hint") }}
@@ -524,33 +454,7 @@ const providerOptions = [
 
     <section class="card">
       <h3>{{ t("settings.general") }}</h3>
-      <div class="setting-row">
-        <div class="label">{{ t("settings.language") }}</div>
-        <select :value="draft.language" @change="setLanguage(($event.target as HTMLSelectElement).value as AppSettings['language'])">
-          <option value="system">{{ t("lang.system") }}</option>
-          <option value="zh_cn">{{ t("lang.zh") }}</option>
-          <option value="english">{{ t("lang.en") }}</option>
-        </select>
-      </div>
-      <div class="setting-row">
-        <div class="label">{{ t("settings.theme") }}</div>
-        <select :value="draft.theme" @change="setTheme(($event.target as HTMLSelectElement).value as AppSettings['theme'])">
-          <option value="system">{{ t("theme.system") }}</option>
-          <option value="light">{{ t("theme.light") }}</option>
-          <option value="dark">{{ t("theme.dark") }}</option>
-        </select>
-      </div>
-      <div class="setting-row">
-        <div>
-          <div class="label">{{ t("settings.autostart") }}</div>
-          <div class="desc">{{ t("settings.autostart.hint") }}</div>
-        </div>
-        <button
-          class="switch"
-          :class="{ on: draft.launchAtLogin }"
-          @click="setAutostart(!draft.launchAtLogin)"
-        ></button>
-      </div>
+      <a class="btn" href="#/settings">应用设置</a>
     </section>
   </div>
   <div v-else class="page">

@@ -15,7 +15,7 @@ function Step($name, $script) {
     }
 }
 
-Write-Host "SoundBridge preflight" -ForegroundColor Green
+Write-Host "VoiceHub preflight" -ForegroundColor Green
 
 Step "toolchain" {
     node --version
@@ -24,15 +24,15 @@ Step "toolchain" {
     cargo --version
 }
 
-Step "install" { pnpm install }
+Step "install" { pnpm install --frozen-lockfile }
 
 Step "frontend typecheck+build" { pnpm build }
 
 Step "frontend tests" { pnpm test }
 
-Step "rust tests" { cargo test --workspace }
+Step "rust tests" { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1 -Action test }
 
-Step "rust debug build" { cargo build --workspace }
+Step "rust standalone build" { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1 -Action build -Standalone }
 
 Write-Host ""
 Write-Host "ALL CHECKS PASSED" -ForegroundColor Green

@@ -12,15 +12,27 @@ use sb_core::statistics::UsageStatistics;
 use crate::bridge::Bridge;
 
 #[tauri::command]
+pub fn remote_voice_poll(bridge: State<'_, Arc<Bridge>>, client_id: String) -> Option<crate::remote_voice::Packet> {
+    bridge.remote_voice.lock().unwrap_or_else(|e| e.into_inner()).attach(&client_id);
+    bridge.poll_remote_voice()
+}
+#[tauri::command]
+pub fn remote_voice_ack(bridge: State<'_, Arc<Bridge>>, id: u64) -> bool {
+    bridge.remote_voice.lock().unwrap_or_else(|e| e.into_inner()).ack(id)
+}
+#[tauri::command]
+pub fn remote_voice_reject(bridge: State<'_, Arc<Bridge>>, id: u64) {
+    bridge.remote_voice.lock().unwrap_or_else(|e| e.into_inner()).release(id);
+}
+
+#[tauri::command]
 pub fn get_settings(bridge: State<'_, Arc<Bridge>>) -> AppSettings {
     bridge.settings()
 }
 
 #[tauri::command]
 pub fn save_settings(bridge: State<'_, Arc<Bridge>>, settings: AppSettings) -> Result<(), String> {
-    bridge.set_gain(settings.gain_db);
-    bridge.apply_settings(settings);
-    Ok(())
+    bridge.apply_settings(settings)
 }
 
 #[tauri::command]
@@ -39,7 +51,8 @@ pub fn connect_remote(bridge: State<'_, Arc<Bridge>>, device_id: String, name: S
         let mut settings = bridge.settings();
         settings.paired_device_id = Some(device_id.clone());
         settings.paired_device_name = Some(name);
-        bridge.apply_settings(settings);
+        settings.onboarding_complete = true;
+        bridge.apply_settings(settings)?;
     }
     bridge.ble.connect(device_id);
     Ok(())
@@ -69,8 +82,7 @@ pub fn select_audio_endpoint(bridge: State<'_, Arc<Bridge>>, id: String, name: S
     let mut settings = bridge.settings();
     settings.audio_endpoint_name = name;
     // 端点已真实打开：跳过 restore，避免释放-重开的互斥竞态窗口。
-    bridge.apply_settings_with(settings, false);
-    Ok(())
+    bridge.apply_settings_with(settings, false)
 }
 
 #[tauri::command]
@@ -100,8 +112,7 @@ pub fn bind_process_to_profile(
         .profiles
         .bind_process(&process, &profile_id)
         .map_err(|e| e.to_string())?;
-    bridge.apply_settings(settings);
-    Ok(())
+    bridge.apply_settings(settings)
 }
 
 #[tauri::command]
@@ -110,8 +121,7 @@ pub fn unbind_process(bridge: State<'_, Arc<Bridge>>, process: String) -> Result
     settings.profiles.rules.process_bindings.remove(
         &sb_core::profiles::normalize_process_name(&process),
     );
-    bridge.apply_settings(settings);
-    Ok(())
+    bridge.apply_settings(settings)
 }
 
 #[tauri::command]
@@ -132,8 +142,7 @@ pub fn reset_profile_to_default(bridge: State<'_, Arc<Bridge>>, profile_id: Stri
         return Err(format!("方案不存在：{profile_id}"));
     };
     profile.mapping = sb_core::mapping::default_mapping();
-    bridge.apply_settings(settings);
-    Ok(())
+    bridge.apply_settings(settings)
 }
 
 // ---------- 模拟遥控器 ----------
@@ -154,8 +163,17 @@ pub fn simulate_button(bridge: State<'_, Arc<Bridge>>, button: String, gesture: 
 }
 
 #[tauri::command]
-pub fn simulate_voice(bridge: State<'_, Arc<Bridge>>, duration_ms: Option<u64>) {
-    bridge.simulate_voice(duration_ms.unwrap_or(2000).clamp(200, 10_000));
+pub fn simulate_voice(bridge: State<'_, Arc<Bridge>>, duration_ms: Option<u64>, audio_b64: Option<String>) -> Result<(), String> {
+    use base64::Engine;
+    let pcm = if let Some(encoded) = audio_b64 {
+        if encoded.len() > 13_000_000 { return Err("Test audio must be at most five minutes".into()); }
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|e| e.to_string())?;
+        if bytes.is_empty() || bytes.len() % 2 != 0 || bytes.len() > 16_000 * 2 * 300 {
+            return Err("Expected 16 kHz PCM, at most five minutes".into());
+        }
+        Some(bytes.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]])).collect())
+    } else { None };
+    bridge.simulate_voice(duration_ms.unwrap_or(2000).clamp(200, 10_000), pcm)
 }
 
 // ---------- 诊断 ----------
@@ -243,7 +261,10 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
         let endpoint_present = endpoints.iter().any(|e| e.is_virtual_cable_candidate);
         crate::cable::status(&data_dir, endpoint_present)
     };
-    items.push(if cable_status.installed() {
+    items.push(if bridge.settings().provider.kind == sb_core::provider::ProviderKind::SayIt {
+        DiagnosticItem { id: "virtual_cable".into(), title: "音频通道".into(),
+            detail: "内嵌识别：遥控器 PCM 直接送入语音引擎".into(), status: "ok".into() }
+    } else if cable_status.installed() {
         DiagnosticItem {
             id: "virtual_cable".into(),
             title: "虚拟声卡".into(),
@@ -285,16 +306,7 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     let provider_detail = match settings.provider.kind {
         sb_core::provider::ProviderKind::WeType => "微信输入法：请在其设置中开启语音快捷键 Ctrl+Win，并把录音设备设为 CABLE Output".into(),
         sb_core::provider::ProviderKind::Doubao => "豆包输入法：按住式触发，请确认其语音快捷键与声桥配置一致".into(),
-        sb_core::provider::ProviderKind::SayIt => {
-            let (vk, modifiers) = settings.provider.shortcut();
-            if modifiers != 0 {
-                format!(
-                    "SayIt：录音设备设为 CABLE Output；触发键=组合键（vk 0x{vk:02X} + mods {modifiers}）——与 SayIt 的免提键保持一致即可被遥控器联动"
-                )
-            } else {
-                "SayIt：录音设备设为 CABLE Output；当前触发键是单键（右 Alt/右 Ctrl）——SayIt 会忽略程序注入的单键，遥控器无法触发（手动按键可用）；遥控器联动请两边都改用组合键 Ctrl+Alt+H".into()
-            }
-        }
+        sb_core::provider::ProviderKind::SayIt => "声枢内嵌 SayIt：由录音会话直接调用当前语音引擎".into(),
         sb_core::provider::ProviderKind::WinH => "Windows 听写（Win+H）：系统语音输入".into(),
         sb_core::provider::ProviderKind::Custom => "自定义语音工具".into(),
         sb_core::provider::ProviderKind::None => "未配置语音工具（仅测试音频链路）".into(),

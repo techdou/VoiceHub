@@ -1,8 +1,7 @@
 //! 语音输入 Provider（听写工具）配置与触发策略。
 //!
-//! 声桥不做语音识别：解码音频 → 播入 VB-CABLE 输入端；Provider
-//! 在 CABLE 输出端收音、转文字、写进聚焦输入框。本模块只负责
-//! “会话开始/结束时对 Provider 发什么触发键”的纯逻辑。
+//! SayIt uses embedded PCM capture. External tools retain their virtual-cable
+//! and keyboard trigger adapters for compatibility.
 
 use serde::{Deserialize, Serialize};
 
@@ -72,7 +71,7 @@ pub struct ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            kind: ProviderKind::WeType,
+            kind: ProviderKind::SayIt,
             custom_vk: 0,
             custom_modifiers: 0,
             custom_mode: TriggerMode::Toggle,
@@ -123,7 +122,7 @@ impl ProviderConfig {
             ProviderKind::WinH => Some(TriggerMode::Toggle),
             // SayIt 双模式：Toggle = 免提（HF，点一下开始/再点结束），
             // Hold = 按住说话（PTT）。跟随用户选择，默认 Toggle。
-            ProviderKind::SayIt => Some(self.custom_mode),
+            ProviderKind::SayIt => None,
             ProviderKind::Custom => Some(self.custom_mode),
             ProviderKind::None => None,
         }
@@ -160,7 +159,7 @@ impl ProviderConfig {
     /// 排空等待 = 尾音 + 管线缓冲。
     pub fn drain_ms(&self) -> u32 {
         match self.kind {
-            ProviderKind::None => 0,
+            ProviderKind::None | ProviderKind::SayIt => 0,
             _ => self.stop_delay_ms.max(120),
         }
     }
@@ -191,7 +190,7 @@ mod tests {
 
     #[test]
     fn wetype_toggle_taps_on_both_edges() {
-        let config = ProviderConfig::default();
+        let config = ProviderConfig { kind: ProviderKind::WeType, ..Default::default() };
         assert_eq!(
             config.trigger_on_stream_start(),
             ProviderTrigger::Tap { vk: vk::LWIN, modifiers: MOD_CONTROL }
@@ -227,16 +226,16 @@ mod tests {
     }
 
     #[test]
-    fn sayit_defaults_to_right_alt_and_accepts_override() {
+    fn embedded_sayit_never_injects_keys_for_either_legacy_mode() {
         let config = ProviderConfig { kind: ProviderKind::SayIt, ..Default::default() };
         // 默认免提模式（HF）：开始/结束各点一下。
         assert_eq!(
             config.trigger_on_stream_start(),
-            ProviderTrigger::Tap { vk: VK_RMENU, modifiers: 0 }
+            ProviderTrigger::None
         );
         assert_eq!(
             config.trigger_on_stream_stop(),
-            ProviderTrigger::Tap { vk: VK_RMENU, modifiers: 0 }
+            ProviderTrigger::None
         );
         // 按住说话（PTT）：按下并保持、结束时释放。
         let ptt = ProviderConfig {
@@ -246,11 +245,11 @@ mod tests {
         };
         assert_eq!(
             ptt.trigger_on_stream_start(),
-            ProviderTrigger::Press { vk: VK_RMENU, modifiers: 0 }
+            ProviderTrigger::None
         );
         assert_eq!(
             ptt.trigger_on_stream_stop(),
-            ProviderTrigger::Release { vk: VK_RMENU, modifiers: 0 }
+            ProviderTrigger::None
         );
         // 用户改键（如右 Ctrl）后生效。
         let ctrl = ProviderConfig {
@@ -260,13 +259,13 @@ mod tests {
         };
         assert_eq!(
             ctrl.trigger_on_stream_start(),
-            ProviderTrigger::Tap { vk: VK_RCONTROL, modifiers: 0 }
+            ProviderTrigger::None
         );
-        assert!(config.drain_ms() >= 120);
+        assert_eq!(config.drain_ms(), 0);
     }
 
     #[test]
-    fn sayit_combo_key_path_is_the_injectable_one() {
+    fn embedded_sayit_ignores_legacy_combo_and_loads_old_settings() {
         // 组合键（Ctrl+Alt+H）：SayIt 的 RegisterHotKey 通道不区分注入，
         // 是程序触发免提模式的唯一可行路径（2026-09-07 实测）。
         let combo = ProviderConfig {
@@ -277,7 +276,7 @@ mod tests {
         };
         assert_eq!(
             combo.trigger_on_stream_start(),
-            ProviderTrigger::Tap { vk: 0x48, modifiers: MOD_CONTROL | MOD_ALT }
+            ProviderTrigger::None
         );
         // 反序列化兼容：旧配置无 sayitModifiers 字段 → 默认 0（单键右 Alt）。
         let legacy = serde_json::from_str::<ProviderConfig>(
@@ -313,7 +312,7 @@ mod tests {
         // SayIt 无视 custom_vk：sayit_vk 未设 → 默认右 Alt。
         assert_eq!(
             sayit.trigger_on_stream_start(),
-            ProviderTrigger::Tap { vk: VK_RMENU, modifiers: 0 }
+            ProviderTrigger::None
         );
     }
 
@@ -338,7 +337,7 @@ mod tests {
 
     #[test]
     fn drain_has_minimum() {
-        let config = ProviderConfig { stop_delay_ms: 10, ..Default::default() };
+        let config = ProviderConfig { kind: ProviderKind::WeType, stop_delay_ms: 10, ..Default::default() };
         assert_eq!(config.drain_ms(), 120);
     }
 }

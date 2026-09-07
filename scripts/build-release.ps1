@@ -7,7 +7,9 @@ $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
 Write-Host "==> pnpm tauri build" -ForegroundColor Cyan
-pnpm tauri build
+$buildArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/build-native.ps1', '-Action', 'bundle')
+if ($SkipInstaller) { $buildArgs += '-SkipInstaller' }
+powershell @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
 
 $release = "target/release"
@@ -25,9 +27,16 @@ if (-not $SkipInstaller) {
     }
 }
 
-# 便携版：release exe + icons 直接可用（Tauri exe 自包含前端资源）。
-Copy-Item "$release/soundbridge-app.exe" "$out/SoundBridge-portable.exe" -Force
-$portableHash = (Get-FileHash "$out/SoundBridge-portable.exe" -Algorithm SHA256).Hash
-"$portableHash  SoundBridge-portable.exe" | Out-File "$out/SoundBridge-portable.exe.sha256" -Encoding ascii
-Write-Host "packaged: SoundBridge-portable.exe" -ForegroundColor Green
+# Keep native inference and VC runtimes beside the portable executable.
+$portable = "$out/VoiceHub-portable"
+New-Item -ItemType Directory -Force -Path $portable | Out-Null
+Copy-Item "$release/soundbridge-app.exe" "$portable/VoiceHub.exe" -Force
+Copy-Item "src-tauri/transcribe-libs/*.dll" $portable -Force
+Copy-Item "vendor/sayit/native/resources" $portable -Recurse -Force
+Copy-Item "vendor/sayit/LICENSE" "$portable/LICENSE-SayIt" -Force
+Copy-Item "THIRD_PARTY_NOTICES.md" $portable -Force
+Compress-Archive -Path "$portable/*" -DestinationPath "$out/VoiceHub-portable.zip" -Force
+$portableHash = (Get-FileHash "$out/VoiceHub-portable.zip" -Algorithm SHA256).Hash
+"$portableHash  VoiceHub-portable.zip" | Out-File "$out/VoiceHub-portable.zip.sha256" -Encoding ascii
+Write-Host "packaged: VoiceHub-portable.zip" -ForegroundColor Green
 Write-Host "sha256:   $portableHash"

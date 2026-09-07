@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
@@ -17,9 +17,13 @@ import Onboarding from "./components/Onboarding.vue";
 
 const { t } = useI18n();
 const version = __APP_VERSION__;
+const props = defineProps<{ embedded?: boolean; initialPage?: string; locale?: "zh" | "en" }>();
 
 const page = ref<"connection" | "buttons" | "stats" | "history" | "diagnostics" | "simulator" | "about">("connection");
 type PageId = (typeof page)["value"];
+watch(() => props.initialPage, (value) => {
+  if (value && ["connection", "buttons", "stats", "history", "diagnostics", "simulator", "about"].includes(value)) page.value = value as PageId;
+}, { immediate: true });
 const settings = shallowRef<AppSettings | null>(null);
 const bleSnapshot = ref<BleSnapshot | null>(null);
 const recording = ref(false);
@@ -36,8 +40,8 @@ function locale() {
 
 async function reloadSettings() {
   settings.value = await api.getSettings();
-  setLocale(resolveLocale(settings.value.language, locale()));
-  if (settings.value && !settings.value.onboardingComplete) {
+  if (!props.embedded) setLocale(resolveLocale(settings.value.language, locale()));
+  if (settings.value && !settings.value.onboardingComplete && !props.embedded) {
     showOnboarding.value = true;
   }
 }
@@ -65,7 +69,7 @@ async function persistSettings(next: AppSettings) {
 watch(
   () => settings.value?.theme,
   (theme) => {
-    if (!theme) return;
+    if (!theme || props.embedded) return;
     if (theme === "system") {
       document.documentElement.removeAttribute("data-theme");
     } else {
@@ -79,19 +83,26 @@ watch(
 watch(
   () => settings.value?.language,
   (language) => {
-    if (language) setLocale(resolveLocale(language, navigator.language || "en-US"));
+    if (language && !props.embedded) setLocale(resolveLocale(language, navigator.language || "en-US"));
   },
   { immediate: true },
 );
+
+watch(() => props.locale, (value) => {
+  if (props.embedded && value) setLocale(value);
+}, { immediate: true });
 
 async function refreshBle() {
   bleSnapshot.value = await api.getBleSnapshot();
 }
 
+let disposed = false;
+let unlisten: (() => void) | undefined;
+onBeforeUnmount(() => { disposed = true; unlisten?.(); window.clearTimeout(saveStateTimer); });
 onMounted(async () => {
   await reloadSettings();
   await refreshBle();
-  await listen<UiEvent>("bridge://event", (event) => {
+  unlisten = await listen<UiEvent>("bridge://event", (event) => {
     const payload = event.payload;
     switch (payload.type) {
       case "BleState":
@@ -123,12 +134,14 @@ onMounted(async () => {
         break;
     }
   });
+  if (disposed) unlisten();
 });
 </script>
 
 <template>
   <div class="app-shell">
     <Sidebar
+      v-if="!embedded"
       :page="page"
       :recording="recording"
       :ble-phase="bleSnapshot?.phase ?? null"

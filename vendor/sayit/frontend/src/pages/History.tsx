@@ -1,0 +1,644 @@
+import * as bridge from '@/services/bridge'
+import { cn } from '@/lib/utils'
+import { resolveAsrDisplayModel, isQwenOmniProvider, resolveQwenOmniModel } from '@/lib/asrModels'
+import { uint8ArrayToBase64 } from '@/lib/encoding'
+import { getWorkMode } from '@/services/transcription'
+import { polishWithClientAi } from '@/services/transcription/clientAiPolish'
+import { SERVER_AI_SOURCE_KEY } from '@/services/transcription/serverAiSource'
+import type { AiExecutionSource, AiExecutionStatus, WorkMode } from '@/services/transcription'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { Download, Search, Check, FolderOpen } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Tooltip } from '@/components/ui/tooltip'
+import HistoryRecordList from '@/components/history/HistoryRecordList'
+import { exportHistory } from '@/services/exports'
+import {
+  countHistory,
+  deleteHistory,
+  listHistory,
+  setHistoryFavorite,
+  updateHistoryRecord,
+  getActivePreset,
+  getSetting,
+  type HistoryRecord,
+} from '@/services/store'
+import { loadAudioAsDataUrl } from '@/services/audioFileService'
+import { useT } from '@/i18n/useT'
+import { applyTextTransforms, restoreHotwordSpacing } from '@/services/textPostProcess'
+import { buildHotwordInjectionPart } from '@/services/personalization/promptRouter'
+import {
+  BUILTIN_SET_WORDS_KEY,
+  BUILTIN_SET_ACTIVE_KEY,
+  CUSTOM_THEMES_KEY,
+  CUSTOM_THEME_ACTIVE_KEY,
+  composeHotwords,
+  normalizeBuiltinSetActive,
+  normalizeBuiltinSetWords,
+  normalizeCustomThemeActive,
+  normalizeCustomThemes,
+} from '@/services/hotwords/model'
+
+const HISTORY_PAGE_SIZE = 100
+
+interface ReprocessResult {
+  asrText: string
+  llmText: string
+  asrMs: number
+  llmMs: number
+  durationSec: number
+  asrEngine?: string
+  asrModel?: string
+  aiSource?: AiExecutionSource
+  aiStatus?: AiExecutionStatus
+  aiProvider?: string
+  aiModel?: string
+}
+
+/** 服务器模式重新识别：通过独立 WebSocket 连接，避免干扰全局连接 */
+async function reprocessViaServer(
+  chunk: ArrayBuffer,
+  hotwords: string[],
+  aiEnabled: boolean,
+  systemPrompt: string | undefined,
+  clientMeta: Awaited<ReturnType<typeof bridge.getClientRuntimeInfo>> | null,
+): Promise<ReprocessResult> {
+  const { getWSUrl } = await import('@/services/runtimeConfig')
+  const wsUrl = getWSUrl()
+  const [aiSource, rawAiMinDurationSec] = await Promise.all([
+    getSetting(SERVER_AI_SOURCE_KEY, 'managed') as Promise<string>,
+    getSetting('aiMinDurationSec', 0),
+  ])
+  const audioDurationSec = (chunk.byteLength / 2) / 16000
+  const aiMinDurationSec = Math.max(0, Number(rawAiMinDurationSec) || 0)
+  const skipAiForDuration = aiEnabled && aiMinDurationSec > 0 && audioDurationSec < aiMinDurationSec
+  const useCustomAi = aiEnabled && aiSource === 'custom'
+  const useManagedAi = aiEnabled && !useCustomAi && !skipAiForDuration
+
+  const serverResult = await new Promise<ReprocessResult>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      try { socket.close() } catch { /* ignore */ }
+      reject(new Error('Retranscription timed out'))
+    }, 30_000) // ASR 最多 30 秒
+
+    const socket = new WebSocket(wsUrl)
+    socket.binaryType = 'arraybuffer'
+
+    let resolved = false
+
+    socket.onopen = () => {
+      const startMsg: Record<string, unknown> = {
+        cmd: 'start',
+        source: 'history_reprocess',
+        disable_ai: !useManagedAi,
+      }
+      if (useManagedAi && systemPrompt) startMsg.system_prompt = systemPrompt
+      if (clientMeta) {
+        startMsg.client_meta = {
+          user_id: clientMeta.userId,
+          device_id: clientMeta.deviceId,
+          hostname: clientMeta.hostname,
+          client_version: clientMeta.clientVersion,
+          platform: clientMeta.platform,
+          os_version: clientMeta.osVersion,
+          local_ip: clientMeta.localIp,
+          system_locale: clientMeta.systemLocale,
+          cpu_cores: clientMeta.cpuCores,
+          memory_mb: clientMeta.memoryMb,
+        }
+      }
+      if (hotwords.length > 0) startMsg.hotwords = hotwords
+      socket.send(JSON.stringify(startMsg))
+
+      // 分片发送 PCM 数据
+      const CHUNK_SIZE = 32000
+      const totalBytes = chunk.byteLength
+      for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
+        const end = Math.min(offset + CHUNK_SIZE, totalBytes)
+        socket.send(chunk.slice(offset, end))
+      }
+
+      socket.send(JSON.stringify({ cmd: 'stop' }))
+    }
+
+    socket.onmessage = (ev) => {
+      if (typeof ev.data !== 'string') return
+      try {
+        const msg = JSON.parse(ev.data)
+        if (msg.type === 'final') {
+          resolved = true
+          clearTimeout(timeout)
+          socket.close()
+          resolve({
+            asrText: msg.asr_text || '',
+            llmText: msg.llm_text || '',
+            asrMs: msg.asr_ms || 0,
+            llmMs: msg.llm_ms || 0,
+            durationSec: Number(msg.duration_sec || 0),
+            asrEngine: msg.asr_engine || undefined,
+            asrModel: msg.asr_model || undefined,
+          })
+        } else if (msg.type === 'done' && !resolved) {
+          // 没有 final 就 done 了（后端判定为静音/无结果）
+          resolved = true
+          clearTimeout(timeout)
+          socket.close()
+          resolve({ asrText: '', llmText: '', asrMs: 0, llmMs: 0, durationSec: 0 })
+        } else if (msg.type === 'error') {
+          resolved = true
+          clearTimeout(timeout)
+          socket.close()
+          reject(new Error(msg.message || 'backend error'))
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    socket.onerror = () => {
+      if (!resolved) {
+        resolved = true
+        clearTimeout(timeout)
+        reject(new Error('WebSocket connection error'))
+      }
+    }
+
+    socket.onclose = (ev) => {
+      if (!resolved) {
+        resolved = true
+        clearTimeout(timeout)
+        reject(new Error(`WebSocket closed unexpectedly, code=${ev.code}`))
+      }
+    }
+  })
+
+  if (!serverResult.asrText.trim()) {
+    return {
+      ...serverResult,
+      aiSource: 'none',
+      aiStatus: 'skipped',
+      aiProvider: undefined,
+      aiModel: undefined,
+    }
+  }
+
+  if (!useCustomAi) {
+    return {
+      ...serverResult,
+      aiSource: useManagedAi ? 'server' : 'none',
+      aiStatus: useManagedAi
+        ? serverResult.llmMs > 0 ? 'applied' : 'unavailable'
+        : 'skipped',
+      aiProvider: useManagedAi ? 'server' : undefined,
+    }
+  }
+
+  const polished = await polishWithClientAi({
+    asrText: serverResult.asrText,
+    durationSec: audioDurationSec,
+    startOptions: {
+      runId: 1,
+      systemPrompt,
+      disableAi: !aiEnabled,
+      aiMinDurationSec,
+      source: 'history_reprocess',
+    },
+    logSource: 'history',
+  })
+  return polished ? { ...serverResult, ...polished } : serverResult
+}
+
+/** 云 API 模式重新识别：调用 cloud_transcribe + 可选 cloud_polish，与 CloudAPIProvider 一致 */
+async function reprocessViaCloudApi(
+  chunk: ArrayBuffer,
+  hotwords: string[],
+  aiEnabled: boolean,
+  systemPrompt: string | undefined,
+): Promise<ReprocessResult> {
+  const durationSec = (chunk.byteLength / 2) / 16000
+  const audioB64 = uint8ArrayToBase64(new Uint8Array(chunk))
+
+  const asrProvider = await getSetting('cloudAsr.provider', 'doubao') as string
+  const isQwenOmni = isQwenOmniProvider(asrProvider)
+  const asrApiKey = await getSetting('cloudAsr.apiKey', '') as string
+  const asrAppId = await getSetting('cloudAsr.appId', '') as string
+  const qwenOmniModel = resolveQwenOmniModel(asrProvider)
+
+  let omniInstructions: string | undefined
+  if (isQwenOmni) {
+    const savedPrompt = await getSetting('cloudAsr.omniSystemPrompt', '') as string
+    omniInstructions = savedPrompt || undefined
+  }
+
+  const asrConfig: Record<string, unknown> = {
+    provider: isQwenOmni ? 'qwen_omni' : asrProvider,
+    api_key: asrApiKey,
+    app_id: asrAppId,
+    ...(isQwenOmni && { extra: { model: qwenOmniModel, instructions: omniInstructions } }),
+    ...(asrProvider === 'openai_compat' && { extra: {
+      api_url: await getSetting('cloudAsr.apiUrl', ''),
+      model: await getSetting('cloudAsr.model', ''),
+    } }),
+  }
+
+  const asrStart = performance.now()
+  const asrResult = await invoke<{ text: string; elapsed_ms: number }>('cloud_transcribe', {
+    request: { audio_b64: audioB64, sample_rate: 16000, asr_config: asrConfig, hotwords },
+  })
+  // 还原被 ASR 拆开加空格的无空格热词（如豆包把 "SayIt" 识别成 "Say It"）
+  const asrText = restoreHotwordSpacing(asrResult.text, hotwords)
+  const asrMs = asrResult.elapsed_ms || Math.round(performance.now() - asrStart)
+
+  // Qwen Omni 已内置 AI，无需再校对
+  let llmText = asrText
+  let llmMs = 0
+  if (asrText.trim() && aiEnabled && !isQwenOmni) {
+    const aiProvider = await getSetting('cloudAi.provider', 'openai_compat') as string
+    const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
+    const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
+    const aiModel = await getSetting('cloudAi.model', '') as string
+    if (aiApiUrl && aiApiKey && aiModel) {
+      try {
+        const aiResult = await invoke<{ text: string; elapsed_ms: number }>('cloud_polish', {
+          request: {
+            text: asrText,
+            ai_config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
+            system_prompt: systemPrompt || null,
+          },
+        })
+        llmText = aiResult.text || asrText
+        llmMs = aiResult.elapsed_ms
+      } catch { /* AI 失败时保留 ASR 原文 */ }
+    }
+  }
+
+  return {
+    asrText,
+    llmText,
+    asrMs,
+    llmMs,
+    durationSec,
+    ...(isQwenOmni && { asrEngine: 'qwen_omni', asrModel: qwenOmniModel }),
+  }
+}
+
+/** 本地模式重新识别：调用 local_transcribe + 可选 cloud_polish，与 LocalProvider 一致 */
+async function reprocessViaLocal(
+  chunk: ArrayBuffer,
+  hotwords: string[],
+  aiEnabled: boolean,
+  systemPrompt: string | undefined,
+): Promise<ReprocessResult> {
+  const durationSec = (chunk.byteLength / 2) / 16000
+  const audioB64 = uint8ArrayToBase64(new Uint8Array(chunk))
+
+  const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
+  const language = await getSetting('localAsr.language', 'auto') as string
+  const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
+
+  // hotwords 在 GGUF 引擎上不支持（transcribe.cpp 只有 whisper 族接 initial prompt），
+  // 参数留着是为了不改调用方签名，后端会忽略。
+  void hotwords
+  const asrResult = await invoke<{ text: string; elapsed_ms: number }>('local_transcribe', {
+    audioB64, modelId, language, accelerator,
+  })
+  const asrText = asrResult.text
+  const asrMs = asrResult.elapsed_ms
+
+  let llmText = asrText
+  let llmMs = 0
+  if (asrText.trim() && aiEnabled) {
+    const aiProvider = await getSetting('cloudAi.provider', 'openai_compat') as string
+    const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
+    const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
+    const aiModel = await getSetting('cloudAi.model', '') as string
+    if (aiApiUrl && (aiApiKey || aiProvider === 'ollama')) {
+      try {
+        const aiResult = await invoke<{ text: string; elapsed_ms: number }>('cloud_polish', {
+          request: {
+            text: asrText,
+            ai_config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
+            system_prompt: systemPrompt || null,
+          },
+        })
+        llmText = aiResult.text || asrText
+        llmMs = aiResult.elapsed_ms
+      } catch { /* AI 失败时保留 ASR 原文 */ }
+    }
+  }
+
+  return { asrText, llmText, asrMs, llmMs, durationSec }
+}
+
+/** 重新识别后写回历史记录所需的供应商元数据 */
+async function buildReprocessMetadata(
+  workMode: WorkMode,
+  result: ReprocessResult,
+): Promise<{
+  asrProvider?: string
+  aiProvider?: string
+  aiModel?: string
+  aiSource?: AiExecutionSource
+  aiStatus?: AiExecutionStatus
+}> {
+  if (workMode === 'cloud_api') {
+    const asrProviderKey = await getSetting('cloudAsr.provider', '') as string
+    const aiProvider = await getSetting('cloudAi.provider', '') as string
+    const aiModel = await getSetting('cloudAi.model', '') as string
+    return {
+      asrProvider: resolveAsrDisplayModel(asrProviderKey),
+      aiProvider: aiProvider || undefined,
+      aiModel: aiModel || undefined,
+    }
+  }
+  if (workMode === 'local') {
+    const modelId = await getSetting('localAsr.modelId', '') as string
+    const aiEnabled = Boolean(await getSetting('aiEnabled', false))
+    const aiProvider = aiEnabled ? await getSetting('cloudAi.provider', '') as string : undefined
+    const aiModel = aiEnabled ? await getSetting('cloudAi.model', '') as string : undefined
+    return { asrProvider: modelId || 'local', aiProvider: aiProvider || undefined, aiModel: aiModel || undefined }
+  }
+  // server
+  return {
+    asrProvider: (result.asrModel || result.asrEngine || 'server').replace(/^.*\//, ''),
+    aiProvider: result.aiSource === 'custom'
+      ? result.aiProvider
+      : result.aiSource === 'none'
+        ? undefined
+        : 'server',
+    aiModel: result.aiModel,
+    aiSource: result.aiSource,
+    aiStatus: result.aiStatus,
+  }
+}
+
+export default function History() {
+  const t = useT()
+  const [records, setRecords] = useState<HistoryRecord[]>([])
+  const [keyword, setKeyword] = useState('')
+  const [debouncedKeyword, setDebouncedKeyword] = useState('')
+  const [favoriteOnly, setFavoriteOnly] = useState(false)
+  const [visibleCount, setVisibleCount] = useState(HISTORY_PAGE_SIZE)
+  const [totalCount, setTotalCount] = useState(0)
+  const [exportResult, setExportResult] = useState<{ filePath: string | null; canceled: boolean } | null>(null)
+
+  const loadRecords = useCallback(async (searchKeyword: string, limit: number, favOnly: boolean) => {
+    const [items, total] = await Promise.all([
+      listHistory({ keyword: searchKeyword, favoriteOnly: favOnly, limit, offset: 0 }),
+      countHistory({ keyword: searchKeyword, favoriteOnly: favOnly }),
+    ])
+    setRecords(items)
+    setTotalCount(total)
+  }, [])
+
+  useEffect(() => {
+    setVisibleCount(HISTORY_PAGE_SIZE)
+  }, [debouncedKeyword, favoriteOnly])
+
+  // 搜索防抖：输入停止 300ms 后才触发查询
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedKeyword(keyword), 300)
+    return () => clearTimeout(timer)
+  }, [keyword])
+
+  useEffect(() => {
+    void loadRecords(debouncedKeyword, visibleCount, favoriteOnly)
+  }, [debouncedKeyword, favoriteOnly, loadRecords, visibleCount])
+
+  // 监听新记录写入，自动刷新列表
+  useEffect(() => {
+    const unlisten = bridge.listen('history-updated', () => {
+      void loadRecords(debouncedKeyword, visibleCount, favoriteOnly)
+    })
+    return () => { void unlisten.then((fn) => fn()) }
+  }, [debouncedKeyword, visibleCount, favoriteOnly, loadRecords])
+
+  const handleDelete = async (id: string) => {
+    // Clean up audio file if it exists
+    const record = records.find((r) => r.id === id)
+    if (record?.audioFilePath) {
+      try { await bridge.deleteAudioFile(record.audioFilePath) } catch { /* ignore */ }
+    }
+    await deleteHistory(id)
+    void loadRecords(debouncedKeyword, visibleCount, favoriteOnly)
+  }
+
+  const handleToggleFavorite = async (id: string, nextFavorite: boolean) => {
+    await setHistoryFavorite(id, nextFavorite)
+    setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, favorite: nextFavorite } : r)))
+  }
+
+  const handleEdit = async (id: string, nextText: string) => {
+    const editedAt = Date.now()
+    const patch = {
+      llmText: nextText,
+      charCount: nextText.length,
+      isEmpty: !nextText.trim(),
+      manualEditedAt: editedAt,
+    }
+    await updateHistoryRecord(id, patch)
+    // 局部更新，避免整页刷新丢失展开态/滚动位置
+    setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  }
+
+  /**
+   * 记下「这条的 ASR 纠错已提交 / 已撤回」。
+   *
+   * 只写 asrCorrection* 三个字段，**不动 llmText / charCount / manualEditedAt** ——
+   * 纠正的是识别原文，正文和统计不该被它带着改（handleEdit 改的才是正文）。
+   */
+  const handleSaveAsrCorrection = async (id: string, patch: Partial<HistoryRecord>) => {
+    await updateHistoryRecord(id, patch)
+    setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  }
+
+  const handleExport = async () => {
+    const result = await exportHistory({ keyword: debouncedKeyword })
+    setExportResult(result)
+    if (!result.canceled) setTimeout(() => setExportResult(null), 8000)
+  }
+
+  const handleReprocess = async (record: HistoryRecord) => {
+    if (!record.audioFilePath) return
+
+    const base64 = await bridge.readAudioFile(record.audioFilePath)
+    if (!base64) return
+
+    // Decode base64 WAV → PCM
+    const binaryStr = atob(base64)
+    const bytes = new Uint8Array(binaryStr.length)
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i)
+    }
+    const pcmData = bytes.slice(44)
+    const chunk = pcmData.buffer.slice(pcmData.byteOffset, pcmData.byteOffset + pcmData.byteLength)
+
+    // Diagnostic: compute peak amplitude of the PCM data being sent
+    const pcmInt16 = new Int16Array(chunk)
+    let reprocessPeak = 0
+    for (let i = 0; i < pcmInt16.length; i++) {
+      const v = Math.abs(pcmInt16[i])
+      if (v > reprocessPeak) reprocessPeak = v
+    }
+    const reprocessPeakNorm = reprocessPeak / 32768
+    const reprocessDurSec = pcmInt16.length / 16000
+    console.log('[reprocess-diag] PCM stats', {
+      byteLength: chunk.byteLength,
+      samples: pcmInt16.length,
+      durationSec: reprocessDurSec.toFixed(2),
+      peakInt16: reprocessPeak,
+      peakNormalized: reprocessPeakNorm.toFixed(4),
+      wouldBeSilent: reprocessPeakNorm < 0.01,
+    })
+
+    const preset = await getActivePreset()
+    const aiEnabled = await getSetting('aiEnabled', false)
+
+    // 加载热词
+    let hotwords: string[] = []
+    try {
+      const [rawSetWords, rawSetActive, rawCustomThemes, rawCustomThemeActive] = await Promise.all([
+        getSetting(BUILTIN_SET_WORDS_KEY, {}),
+        getSetting(BUILTIN_SET_ACTIVE_KEY, {}),
+        getSetting(CUSTOM_THEMES_KEY, []),
+        getSetting(CUSTOM_THEME_ACTIVE_KEY, {}),
+      ])
+      const setWords = normalizeBuiltinSetWords(rawSetWords as Record<string, unknown>)
+      const setActive = normalizeBuiltinSetActive(rawSetActive as Record<string, unknown>)
+      const themes = normalizeCustomThemes(rawCustomThemes)
+      const themeActive = normalizeCustomThemeActive(rawCustomThemeActive as Record<string, unknown>, themes)
+      hotwords = composeHotwords([], setWords, setActive, themes, themeActive)
+    } catch { /* ignore */ }
+
+    const clientMeta = await bridge.getClientRuntimeInfo().catch(() => null)
+
+    // 按用户当前选择的工作模式重新识别，与实时录音保持一致
+    // （此前这里硬编码走服务器模式，导致云 API/本地模式下重新识别被错误地发回服务器）
+    const workMode = getWorkMode()
+    let systemPrompt = aiEnabled ? preset.systemPrompt : undefined
+    // 与实时一致：开启"热词注入 AI 提示词"时，重新识别也把热词表注入系统提示词
+    if (systemPrompt && (await getSetting('injectHotwordsToPrompt', false))) {
+      const part = buildHotwordInjectionPart(hotwords)
+      if (part) systemPrompt = `${systemPrompt}\n\n${part}`
+    }
+
+    let result: ReprocessResult
+    if (workMode === 'cloud_api') {
+      result = await reprocessViaCloudApi(chunk, hotwords, Boolean(aiEnabled), systemPrompt)
+    } else if (workMode === 'local') {
+      result = await reprocessViaLocal(chunk, hotwords, Boolean(aiEnabled), systemPrompt)
+    } else {
+      result = await reprocessViaServer(chunk, hotwords, Boolean(aiEnabled), systemPrompt, clientMeta)
+    }
+
+    // 新链路优先采用显式执行状态；旧的云/本地历史重跑尚未返回状态时才兼容文本比较。
+    const rawAsr = result.aiStatus
+      ? result.aiStatus !== 'applied'
+      : !result.llmText || result.llmText === result.asrText
+    const baseText = rawAsr ? result.asrText : result.llmText
+    const replacedLlm = await applyTextTransforms(baseText, { rawAsr })
+
+    const meta = await buildReprocessMetadata(workMode, result)
+
+    await updateHistoryRecord(record.id, {
+      asrText: result.asrText,
+      llmText: replacedLlm,
+      asrMs: result.asrMs,
+      llmMs: result.llmMs,
+      charCount: (result.llmText || result.asrText).length,
+      isEmpty: !(result.llmText || result.asrText).trim(),
+      workMode,
+      aiSource: meta.aiSource,
+      aiStatus: meta.aiStatus,
+      aiProvider: meta.aiProvider,
+      aiModel: meta.aiModel,
+      asrProvider: meta.asrProvider,
+    })
+
+    void loadRecords(debouncedKeyword, visibleCount, favoriteOnly)
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-bold">{t('history.title')}</h1>
+          <div className="flex gap-1 rounded-lg border border-border p-0.5">
+            <button
+              type="button"
+              onClick={() => setFavoriteOnly(false)}
+              className={cn(
+                'rounded-md px-3 py-1 text-xs transition-colors',
+                !favoriteOnly ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >{t('history.filterAll')}</button>
+            <button
+              type="button"
+              onClick={() => setFavoriteOnly(true)}
+              className={cn(
+                'rounded-md px-3 py-1 text-xs transition-colors',
+                favoriteOnly ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >{t('history.filterFavorites')}</button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder={t('history.searchPlaceholder')}
+              className="w-64 rounded-md border border-input-border bg-input-bg py-1.5 pl-8 pr-3 text-sm"
+            />
+          </div>
+          <Tooltip content={t('history.export')}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+              onClick={() => void handleExport()}
+              aria-label={t('history.export')}
+              title={t('history.export')}
+            >
+              <Download className="h-4 w-4" />
+            </Button>
+          </Tooltip>
+        </div>
+      </div>
+
+      {exportResult && !exportResult.canceled && exportResult.filePath && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-success">
+          <Check className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 truncate">{t('history.savedTo', { path: exportResult.filePath })}</span>
+          <button
+            onClick={() => void invoke('reveal_file_in_folder', { filePath: exportResult.filePath })}
+            className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+      {exportResult?.canceled && (
+        <p className="mb-3 text-xs text-muted-foreground">{t('history.exportCanceled')}</p>
+      )}
+
+      <HistoryRecordList
+        records={records}
+        onDelete={handleDelete}
+        onToggleFavorite={handleToggleFavorite}
+        onReprocess={handleReprocess}
+        onEdit={handleEdit}
+        onSaveAsrCorrection={handleSaveAsrCorrection}
+        highlight={debouncedKeyword}
+        emptyText={keyword.trim() ? t('history.emptyNoMatch') : favoriteOnly ? t('history.emptyFavorites') : t('history.empty')}
+      />
+
+      {totalCount > records.length && (
+        <div className="mt-4 flex justify-center">
+          <Button variant="outline" size="sm" onClick={() => setVisibleCount((count) => count + HISTORY_PAGE_SIZE)}>
+            {t('history.loadMore')}
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}

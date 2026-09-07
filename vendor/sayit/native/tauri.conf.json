@@ -1,0 +1,75 @@
+{
+  "productName": "SayIt",
+  "version": "0.1.9",
+  "identifier": "com.sayit.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "SayIt",
+        "width": 1120,
+        "height": 768,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "dragDropEnabled": false,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "resources": {
+      "resources/*": "resources/",
+      "transcribe-libs/*": "./"
+    },
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png"
+    ],
+    "shortDescription": "语音输入，AI 润色",
+    "longDescription": "SayIt - 随口说，出色写。用说话代替打字，AI 实时把口语变成书面表达。",
+    "copyright": "© 2026 Liu Qianglong & Claude",
+    "category": "Productivity",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "installerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "language": [
+          "zh-CN",
+          "en-US"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

@@ -21,6 +21,32 @@ const props = defineProps<{ physicalActiveButtons?: Set<string> }>();
 
 const receipts = ref<Receipt[]>([]);
 const voiceBusy = ref(false);
+const voiceError = ref("");
+const fileInput = ref<HTMLInputElement | null>(null);
+
+async function testAudioFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  voiceError.value = "";
+  voiceBusy.value = true;
+  const context = new AudioContext();
+  try {
+    const decoded = await context.decodeAudioData(await file.arrayBuffer());
+    if (decoded.duration > 300) throw new Error("测试音频不能超过五分钟");
+    const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+    const source = offline.createBufferSource(); source.buffer = decoded; source.connect(offline.destination); source.start();
+    const rendered = await offline.startRendering();
+    const samples = rendered.getChannelData(0);
+    const pcm = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768)));
+    const bytes = new Uint8Array(pcm.buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    await api.simulateVoice(undefined, btoa(binary));
+  } catch (error) { voiceError.value = String(error); voiceBusy.value = false; }
+  finally { await context.close(); input.value = ""; }
+}
 const voiceLevel = ref(0);
 const recording = ref(false);
 const gestureMode = ref<"single" | "double" | "long">("single");
@@ -60,7 +86,9 @@ const mergedActive = computed(() => {
 
 async function testVoice() {
   voiceBusy.value = true;
-  await api.simulateVoice(2000);
+  voiceError.value = "";
+  try { await api.simulateVoice(2000); }
+  catch (error) { voiceError.value = String(error); voiceBusy.value = false; }
 }
 
 onMounted(async () => {
@@ -128,6 +156,9 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <p class="hint" style="margin-top: 10px">{{ t("sim.voice_hint") }}</p>
+          <input ref="fileInput" type="file" accept="audio/*" hidden @change="testAudioFile" />
+          <button class="btn" :disabled="voiceBusy" @click="fileInput?.click()">选择音频测试转写</button>
+          <p v-if="voiceError" role="alert" class="hint" style="color: var(--fail)">{{ voiceError }}</p>
         </section>
 
         <section class="card">

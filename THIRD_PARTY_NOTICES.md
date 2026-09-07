@@ -1,6 +1,15 @@
 # 第三方声明与致谢
 
-本项目（声桥 SoundBridge）为原创实现，GPL-3.0-only 授权。
+声枢 VoiceHub 的原声桥模块保留 GPL-3.0-only 授权。整合的 SayIt 运行时遵循
+AGPL-3.0，组合应用的分发须遵守 AGPL-3.0。
+
+## SayIt 运行时
+
+- crosswk/SayIt 0.1.9，提交 fcb0cc2e9bd62143c861a685fc2fc82226f83c92。
+- 版权所有：Liu Qianglong 与 SayIt 贡献者。
+- 运行时源码保存在 `vendor/sayit/`，许可证见 `vendor/sayit/LICENSE`，修改说明见
+  `vendor/sayit/UPSTREAM.md`。包含语音工作台、识别服务、模型管理、润色、历史与备份。
+- transcribe.cpp Rust 绑定与引擎为 MIT 许可；其它依赖保留各自许可证。
 
 ## 参考项目
 

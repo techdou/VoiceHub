@@ -6,9 +6,14 @@ build/
 out/
 artifacts/
 coverage/
+output/
+.playwright-cli/
 .cache/
 .vite/
 .pnpm-store/
+.turbo/
+.parcel-cache/
+.eslintcache
 *.tsbuildinfo
 vendor/sayit/native/transcribe-libs/
 src-tauri/transcribe-libs/
@@ -16,7 +21,9 @@ src-tauri/transcribe-libs/
 # Credentials, certificates, and local environment
 .env
 .env.*
+.envrc
 *.local
+*.local.*
 .npmrc
 .pypirc
 .netrc
@@ -26,6 +33,8 @@ secrets/
 credentials/
 credentials*.json
 secrets*.json
+auth.json
+tokens.json
 *.key
 *.pem
 *.p12
@@ -42,10 +51,16 @@ id_ed25519*
 .idea/
 .vs/
 .fleet/
+.cursor/
+.windsurf/
+.kiro/
+.history/
+.vscode-test/
 .codex/
 .agents/
 .claude/
 .omx/
+.aider*
 *.code-workspace
 *.suo
 *.user
@@ -57,9 +72,11 @@ __pycache__/
 .ruff_cache/
 
 # Internal documentation stays local. Public usage and legal notices are retained.
-/docs/
-/plans/
-/notes/
+docs/
+plans/
+notes/
+PRD*
+PDD*
 *.md
 *.mdx
 *.rst
@@ -69,6 +86,8 @@ __pycache__/
 *.docx
 *.ppt
 *.pptx
+*.ipynb
+# Public usage and required third-party attribution are deliberate exceptions.
 !/README.md
 !/THIRD_PARTY_NOTICES.md
 !**/LICENSE.md
@@ -82,6 +101,11 @@ __pycache__/
 
 # Generated Tauri schemas, recordings, models, and local application data
 src-tauri/gen/schemas/
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/Square*Logo.png
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/icon.icns
 /data/
 /logs/
 /recordings/
@@ -92,12 +116,23 @@ src-tauri/gen/schemas/
 *.sqlite-wal
 *.sqlite-shm
 *.db
+*.db-wal
+*.db-shm
+*.sqlite3-wal
+*.sqlite3-shm
+/settings.json
+/statistics.json
+/history.jsonl
 *.wav
 *.mp3
 *.pcm
 *.gguf
 *.ggml
 *.onnx
+*.safetensors
+*.ckpt
+*.pth
+!vendor/sayit/native/resources/*.wav
 
 # Release binaries and temporary files
 *.exe
@@ -108,6 +143,7 @@ src-tauri/gen/schemas/
 *.7z
 *.tar
 *.tar.gz
+*.dmp
 .DS_Store
 Thumbs.db
 *.log

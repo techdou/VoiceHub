@@ -33,7 +33,7 @@ export const api = {
     invoke<void>("reset_profile_to_default", { profileId }),
   simulateButton: (button: string, gesture: string) =>
     invoke<void>("simulate_button", { button, gesture }),
-  simulateVoice: (durationMs?: number) => invoke<void>("simulate_voice", { durationMs }),
+  simulateVoice: (durationMs?: number, audioB64?: string) => invoke<void>("simulate_voice", { durationMs, audioB64 }),
   runDiagnostics: () => invoke<DiagnosticItem[]>("run_diagnostics"),
   checkVirtualCable: () => invoke<CableStatus>("check_virtual_cable"),
   startCableInstall: () => invoke<void>("start_cable_install"),
