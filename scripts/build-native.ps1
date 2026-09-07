@@ -24,9 +24,16 @@ $env:VSLANG = '1033'
 $env:CL = '/utf-8 ' + $env:CL
 # transcribe-cpp 0.1.3's temporary junction breaks CMake working directories on
 # this host. Keep the native build in Cargo's regular target directory.
-Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue
-Remove-Item Env:TEMP -ErrorAction SilentlyContinue
+# transcribe-cpp 的临时 junction 会破坏 CMake 工作目录：把 LOCALAPPDATA/TEMP
+# 重定向到项目内目录（而不是删除变量——pnpm 等前端工具没有 TEMP 会静默失败，
+# 2026-09-08 release 构建两次因此挂在 tauri 前置的 pnpm install）。
 Set-Location (Split-Path $PSScriptRoot -Parent)
+$outputDir = Join-Path (Get-Location).Path 'output'
+$redirectRoot = Join-Path $outputDir 'build-env'
+New-Item -ItemType Directory -Force -Path (Join-Path $redirectRoot 'localappdata') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $redirectRoot 'temp') | Out-Null
+$env:LOCALAPPDATA = Join-Path $redirectRoot 'localappdata'
+$env:TEMP = Join-Path $redirectRoot 'temp'
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 $ErrorActionPreference = 'Continue'
 function Invoke-VoiceHubBuild {
