@@ -91,7 +91,7 @@ impl ImaAdpcmCodec {
 
     pub fn encode(&mut self, samples: &[i16]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(samples.len().div_ceil(2));
-        let mut chunks = samples.chunks(2);
+        let chunks = samples.chunks(2);
         for pair in chunks {
             let hi = self.encode_nibble(pair[0]);
             let lo = pair.get(1).map(|&s| self.encode_nibble(s)).unwrap_or(0);
