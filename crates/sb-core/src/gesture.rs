@@ -67,18 +67,15 @@ impl GestureRecognizer {
     pub fn press(&mut self, button: RemoteButton, now_ms: u64) -> Vec<GestureEvent> {
         let mut events = Vec::new();
         let mut from_double = false;
-        match self.tracking.remove(&button) {
-            Some(ButtonTracking::WaitingSecond { released_at_ms }) => {
-                if now_ms.saturating_sub(released_at_ms) <= self.double_click_window.as_millis() as u64
-                {
-                    events.push(GestureEvent { button, gesture: Gesture::DoubleClick });
-                    from_double = true;
-                } else {
-                    // 窗口已超时：先补发单击，再按新按下处理。
-                    events.push(GestureEvent { button, gesture: Gesture::SingleClick });
-                }
+        if let Some(ButtonTracking::WaitingSecond { released_at_ms }) = self.tracking.remove(&button) {
+            if now_ms.saturating_sub(released_at_ms) <= self.double_click_window.as_millis() as u64
+            {
+                events.push(GestureEvent { button, gesture: Gesture::DoubleClick });
+                from_double = true;
+            } else {
+                // 窗口已超时：先补发单击，再按新按下处理。
+                events.push(GestureEvent { button, gesture: Gesture::SingleClick });
             }
-            _ => {}
         }
         self.tracking.insert(
             button,

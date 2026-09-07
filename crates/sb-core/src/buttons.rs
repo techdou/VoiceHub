@@ -90,7 +90,7 @@ impl RemoteButton {
 pub fn parse_usage_report(data: &[u8]) -> Option<Vec<u16>> {
     let mut bytes = data;
     // 奇数长度一律剥掉首字节 report ID（覆盖 [2,lo,hi] 与 [1,...×6]）。
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         bytes = &bytes[1..];
     }
     if bytes.is_empty() {

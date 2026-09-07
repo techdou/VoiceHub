@@ -92,13 +92,70 @@ mod tests {
         assert_ne!(TRAY_ZH.show, TRAY_EN.show);
         assert_ne!(TRAY_ZH.quit, TRAY_EN.quit);
     }
+
+    /// 路由契约：`generate_handler![...]` 注册的每个命令必须出现在 HARDWARE_COMMANDS
+    /// 里——漏加白名单的命令会被静默路由给 speech handler，返回 unknown command。
+    /// 文本级校验（解析本文件源码的宏块），与 bridge.rs 的 UiEvent 契约测试同风格。
+    #[test]
+    fn hardware_router_matches_handler_registration() {
+        let source = include_str!("lib.rs");
+        // 标记拆开定义：完整字面量出现在本测试代码里会被 include_str 命中，
+        // find 就永远定位到测试自身而不是真正的宏块。
+        let open_marker = ["tauri::generate_", "handler!["].concat();
+        let close_marker = ["]", ");"].concat();
+        let start = source
+            .find(&open_marker)
+            .expect("generate_handler macro not found");
+        let end = source[start..]
+            .find(&close_marker)
+            .map(|offset| start + offset)
+            .expect("generate_handler macro not terminated");
+        let block = &source[start..end];
+        let registered: Vec<&str> = block
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("commands::"))
+            .map(|name| name.trim_end_matches(','))
+            .collect();
+        assert!(!registered.is_empty(), "failed to parse generate_handler block");
+        for name in &registered {
+            assert!(
+                HARDWARE_COMMANDS.contains(name),
+                "command `{name}` registered in generate_handler but missing from HARDWARE_COMMANDS"
+            );
+        }
+        for name in HARDWARE_COMMANDS {
+            assert!(
+                registered.contains(name),
+                "command `{name}` in HARDWARE_COMMANDS but not registered in generate_handler"
+            );
+        }
+    }
 }
 
 /// 简单落盘 logger：无外部依赖，追加写入 app_data 下的日志文件。
 /// 没有它，全应用的 log::info!/warn!/error! 都是空操作（logger 从未注册），
-/// 真机出问题零排障证据。
+/// 真机出问题零排障证据。跨天自动切换到当日文件（托盘常驻应用生命周期
+/// 跨天很常见，否则日志一直写启动日文件，open_logs_folder 打开的当天文件
+/// 反而没有最新日志）。
 struct FileLogger {
-    file: std::sync::Mutex<std::fs::File>,
+    state: std::sync::Mutex<LoggerState>,
+}
+
+struct LoggerState {
+    dir: std::path::PathBuf,
+    day: String,
+    file: std::fs::File,
+}
+
+impl LoggerState {
+    fn open(dir: &std::path::Path, day: &str) -> Option<LoggerState> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(format!("soundbridge-{day}.log")))
+            .ok()?;
+        Some(LoggerState { dir: dir.to_path_buf(), day: day.to_string(), file })
+    }
 }
 
 impl log::Log for FileLogger {
@@ -111,10 +168,18 @@ impl log::Log for FileLogger {
             return;
         }
         use std::io::Write;
-        if let Ok(mut file) = self.file.lock() {
+        if let Ok(mut state) = self.state.lock() {
+            let today = chrono::Local::now().format("%Y%m%d").to_string();
+            if today != state.day {
+                // 跨天：切到新文件。打开失败则继续写旧文件，日志不能丢。
+                if let Some(next) = LoggerState::open(&state.dir, &today) {
+                    let _ = state.file.flush();
+                    *state = next; // 旧文件句柄随赋值 drop 关闭
+                }
+            }
             let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
             let _ = writeln!(
-                file,
+                state.file,
                 "{timestamp} {:<5} {}: {}",
                 record.level(),
                 record.target(),
@@ -125,8 +190,8 @@ impl log::Log for FileLogger {
 
     fn flush(&self) {
         use std::io::Write;
-        if let Ok(mut file) = self.file.lock() {
-            let _ = file.flush();
+        if let Ok(mut state) = self.state.lock() {
+            let _ = state.file.flush();
         }
     }
 }
@@ -137,25 +202,52 @@ fn init_logging(app: &tauri::AppHandle) -> Option<()> {
         .app_data_dir()
         .ok()?;
     let store = Store::new(&dir);
-    let target = store.log_file();
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).ok()?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(target)
-        .ok()?;
+    let logs_dir = store.log_file().parent()?.to_path_buf();
+    std::fs::create_dir_all(&logs_dir).ok()?;
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let state = LoggerState::open(&logs_dir, &today)?;
     // log crate 的 std feature 被依赖树关掉了，set_boxed_logger 不可用；
     // 用 set_logger + Box::leak（logger 生命周期 = 进程生命周期，泄漏即设计）。
     let logger: &'static FileLogger = Box::leak(Box::new(FileLogger {
-        file: std::sync::Mutex::new(file),
+        state: std::sync::Mutex::new(state),
     }));
     log::set_logger(logger).ok()?;
     log::set_max_level(log::LevelFilter::Info);
     log::info!("logging initialized");
     Some(())
 }
+
+/// hardware 命令路由白名单：命中则走主应用 handler，否则 fall through 给
+/// speech（voicehub-sayit）handler。两边各有一个 `get_settings`（payload 不同），
+/// 路由靠本清单——新增 hardware 命令必须同时加进 `generate_handler![...]` 和这里。
+/// 一致性由 `hardware_router_matches_handler_registration` 测试锁定。
+const HARDWARE_COMMANDS: &[&str] = &[
+    "get_settings",
+    "save_settings",
+    "get_ble_snapshot",
+    "list_paired_remotes",
+    "connect_remote",
+    "disconnect_remote",
+    "reconnect_remote",
+    "list_audio_endpoints",
+    "select_audio_endpoint",
+    "get_statistics",
+    "get_history",
+    "clear_history",
+    "bind_process_to_profile",
+    "unbind_process",
+    "get_foreground_process",
+    "reset_profile_to_default",
+    "simulate_button",
+    "simulate_voice",
+    "check_virtual_cable",
+    "start_cable_install",
+    "run_diagnostics",
+    "open_logs_folder",
+    "remote_voice_poll",
+    "remote_voice_ack",
+    "remote_voice_reject",
+];
 
 pub fn run() {
     // A shared WebView2 environment must use one set of background timer flags.
@@ -184,7 +276,7 @@ pub fn run() {
                 .expect("app data dir");
             let store = Arc::new(Store::new(&data_dir));
             let settings = store.load_settings();
-            init_logging(&app.handle());
+            init_logging(app.handle());
             voicehub_sayit::setup(app.handle())?;
 
             let bridge = Bridge::start(app.handle().clone(), store, settings);
@@ -201,7 +293,7 @@ pub fn run() {
             });
 
             // 托盘（菜单文案跟随设置语言）。
-            let menu = build_tray_menu(&app.handle())?;
+            let menu = build_tray_menu(app.handle())?;
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -272,14 +364,7 @@ pub fn run() {
                 invoke.resolver.reject("Updates are managed by VoiceHub");
                 return true;
             }
-            if matches!(command,
-                "get_settings" | "save_settings" | "get_ble_snapshot" | "list_paired_remotes" |
-                "connect_remote" | "disconnect_remote" | "reconnect_remote" | "list_audio_endpoints" |
-                "select_audio_endpoint" | "get_statistics" | "get_history" | "clear_history" |
-                "bind_process_to_profile" | "unbind_process" | "get_foreground_process" |
-                "reset_profile_to_default" | "simulate_button" | "simulate_voice" |
-                "check_virtual_cable" | "start_cable_install" | "run_diagnostics" | "open_logs_folder" |
-                "remote_voice_poll" | "remote_voice_ack" | "remote_voice_reject") {
+            if HARDWARE_COMMANDS.contains(&command) {
                 hardware(invoke)
             } else { speech(invoke) }
           }

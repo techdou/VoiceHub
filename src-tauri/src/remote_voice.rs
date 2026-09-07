@@ -41,15 +41,25 @@ impl RemoteVoice {
             ended: false, error: None, received: 0, samples: VecDeque::new() });
         true
     }
-    pub fn push(&mut self, id: u64, samples: &[i16]) {
-        let Some(s) = self.session.as_mut().filter(|s| s.id == id && !s.ended) else { return };
-        if s.received + samples.len() > MAX_SAMPLES {
-            s.error = Some("Remote recording exceeded five minutes".into());
-            s.ended = true;
-            return;
+    /// 推入样本。返回 false 表示会话已不存在（renderer reload / 未确认过期 / 已释放），
+    /// 调用方（bridge）据此立即收尾并报错，否则音频会静默丢进已销毁的会话。
+    /// 会话存在但已 end（正常停止后的迟到尾巴）返回 true：会话仍会被 drain，不算异常。
+    pub fn push(&mut self, id: u64, samples: &[i16]) -> bool {
+        let Some(s) = self.session.as_mut().filter(|s| s.id == id) else { return false };
+        if !s.ended {
+            if s.received + samples.len() > MAX_SAMPLES {
+                s.error = Some("Remote recording exceeded five minutes".into());
+                s.ended = true;
+            } else {
+                s.received += samples.len();
+                s.samples.extend(samples);
+            }
         }
-        s.received += samples.len();
-        s.samples.extend(samples);
+        true
+    }
+    /// 当前会话已收样本数（会话结束被 release 后归零）。
+    pub fn received(&self) -> usize {
+        self.session.as_ref().map_or(0, |s| s.received)
     }
     pub fn end(&mut self, id: u64) {
         if let Some(s) = self.session.as_mut().filter(|s| s.id == id) { s.ended = true; }
@@ -147,5 +157,24 @@ mod tests {
     fn timeout_notifies_an_acknowledged_recorder() {
         let mut r = RemoteVoice::default(); r.begin(1, 0); r.poll(1); r.ack(1);
         assert!(matches!(r.poll(360_001), Some(Packet::Audio { ended: true, error: Some(_), .. })));
+    }
+
+    #[test]
+    fn push_reports_session_survival_for_bridge_abandon_logic() {
+        let mut r = RemoteVoice::default();
+        assert!(!r.push(1, &[1]), "no session yet → bridge must abandon");
+        r.begin(1, 0);
+        assert!(r.push(1, &[1, 2]));
+        r.end(1);
+        // 正常停止后的迟到样本：会话仍在（等待 drain），不算销毁。
+        assert!(r.push(1, &[3]), "ended-but-alive session must not trigger abandon");
+        assert_eq!(r.received(), 2, "late samples after end are not accepted");
+        // 真销毁路径：renderer 换 client（reload）、显式 release、未确认过期。
+        r.attach("a"); r.attach("b");
+        assert!(!r.push(1, &[4]), "attach-cleared session → bridge must abandon");
+        r.begin(2, 0); r.release(2);
+        assert!(!r.push(2, &[5]));
+        r.begin(3, 0); r.expire(31_000);
+        assert!(!r.push(3, &[6]));
     }
 }

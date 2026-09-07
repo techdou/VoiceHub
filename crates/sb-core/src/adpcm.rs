@@ -5,6 +5,7 @@
 //! 附带编码器：单测做往返校验、模拟遥控器页合成音频时复用。
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ImaAdpcmCodec {
     predictor: i32,
     step_index: i32,
@@ -22,11 +23,6 @@ const STEP_TABLE: [i32; 89] = [
 ];
 const INDEX_TABLE: [i32; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
 
-impl Default for ImaAdpcmCodec {
-    fn default() -> Self {
-        Self { predictor: 0, step_index: 0, low_nibble_first: false }
-    }
-}
 
 impl ImaAdpcmCodec {
     pub fn new() -> Self {
@@ -96,7 +92,7 @@ impl ImaAdpcmCodec {
     pub fn encode(&mut self, samples: &[i16]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(samples.len().div_ceil(2));
         let mut chunks = samples.chunks(2);
-        while let Some(pair) = chunks.next() {
+        for pair in chunks {
             let hi = self.encode_nibble(pair[0]);
             let lo = pair.get(1).map(|&s| self.encode_nibble(s)).unwrap_or(0);
             bytes.push(if self.low_nibble_first {

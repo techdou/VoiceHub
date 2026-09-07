@@ -254,16 +254,13 @@ impl Bridge {
             InternalEvent::Ble(ble_event) => self.handle_ble(ble_event),
             InternalEvent::Power(power) => match power {
                 sb_windows::power::PowerEvent::Suspend => {
-                    let _lifecycle = lock(&self.voice_lifecycle);
-                    lock(&self.remote_voice).cancel("System suspended");
-                    self.voice_generation.fetch_add(1, Ordering::Relaxed);
-                    self.voice_active.store(false, Ordering::Relaxed);
-                    self.voice_finishing.store(false, Ordering::Relaxed);
-                    if let Some((_, provider)) = lock(&self.voice_provider).take() {
-                        self.trigger_provider(provider.trigger_on_stream_stop());
-                    }
-                    self.emit_ui(UiEvent::VoiceState { recording: false, level: 0.0 });
-                    log::info!("system suspend");
+                    let event = {
+                        let _lifecycle = lock(&self.voice_lifecycle);
+                        let event = self.reset_voice_locked("System suspended");
+                        log::info!("system suspend");
+                        event
+                    };
+                    self.emit_ui(event);
                 }
                 sb_windows::power::PowerEvent::Resume => {
                     log::info!("system resume → reconnect");
@@ -410,18 +407,16 @@ impl Bridge {
         match event {
             BleEvent::SnapshotChanged => {
                 let snapshot = self.ble.snapshot();
+                let mut events = Vec::new();
                 if snapshot.phase != sb_windows::ble::ConnectionPhase::Ready {
-                    let _lifecycle = lock(&self.voice_lifecycle);
-                    lock(&self.remote_voice).cancel("Remote disconnected");
-                    self.voice_generation.fetch_add(1, Ordering::Relaxed);
-                    self.voice_active.store(false, Ordering::Relaxed);
-                    self.voice_finishing.store(false, Ordering::Relaxed);
-                    if let Some((_, provider)) = lock(&self.voice_provider).take() {
-                        self.trigger_provider(provider.trigger_on_stream_stop());
-                    }
-                    self.emit_ui(UiEvent::VoiceState { recording: false, level: 0.0 });
+                    let event = {
+                        let _lifecycle = lock(&self.voice_lifecycle);
+                        self.reset_voice_locked("Remote disconnected")
+                    };
+                    events.push(event);
                 }
-                self.emit_ui(UiEvent::BleState { snapshot });
+                events.push(UiEvent::BleState { snapshot });
+                for event in events { self.emit_ui(event); }
             }
             BleEvent::VoiceStarted { session_id } => { self.on_voice_started(session_id); },
             BleEvent::VoiceStopped { session_id } => self.on_voice_stopped(session_id, None),
@@ -432,90 +427,182 @@ impl Bridge {
         }
     }
 
-    fn on_voice_samples(&self, samples: Vec<i16>, expected_generation: Option<u64>) {
-        let _lifecycle = lock(&self.voice_lifecycle);
-        let generation = self.voice_generation.load(Ordering::Relaxed);
-        if expected_generation.is_some_and(|expected| expected != generation) { return; }
-        if !self.voice_active.load(Ordering::Relaxed) || self.voice_finishing.load(Ordering::Relaxed) { return; }
-        let level = sb_core::pcm::measure(&samples);
-        let direct = lock(&self.voice_provider).as_ref().is_some_and(|(_, p)| p.kind == sb_core::provider::ProviderKind::SayIt);
-        if direct { lock(&self.remote_voice).push(generation, &samples); }
-        else { let _ = self.audio.enqueue_samples(generation, samples); }
-        if self.level_packet_count.fetch_add(1, Ordering::Relaxed) % 4 == 0 {
-            self.emit_ui(UiEvent::VoiceState { recording: true, level: level.rms });
+    fn on_voice_samples(self: &Arc<Self>, samples: Vec<i16>, expected_generation: Option<u64>) {
+        // 锁内只做判定与状态变更，UI 事件收集后在锁外 emit——
+        // IPC 阻塞不该放大到 lifecycle 锁（15ms tick / HID / BLE 都在等它）。
+        let mut events: Vec<UiEvent> = Vec::new();
+        {
+            let _lifecycle = lock(&self.voice_lifecycle);
+            let generation = self.voice_generation.load(Ordering::Relaxed);
+            if expected_generation.is_some_and(|expected| expected != generation) { return; }
+            if !self.voice_active.load(Ordering::Relaxed) || self.voice_finishing.load(Ordering::Relaxed) { return; }
+            let level = sb_core::pcm::measure(&samples);
+            let direct = lock(&self.voice_provider).as_ref().is_some_and(|(_, p)| p.kind == sb_core::provider::ProviderKind::SayIt);
+            if direct {
+                if !lock(&self.remote_voice).push(generation, &samples) {
+                    // 会话已销毁（renderer reload 换 client / 30s 未确认过期 / 主动拒绝）：
+                    // 不复位的话 UI 一直显示"录音中"、后续音频全部静默丢失。
+                    log::warn!("remote voice session vanished; abandoning generation={generation}");
+                    events.push(self.reset_voice_locked("Remote recorder session was reset"));
+                }
+            } else {
+                let _ = self.audio.enqueue_samples(generation, samples);
+            }
+            if self.level_packet_count.fetch_add(1, Ordering::Relaxed).is_multiple_of(4) {
+                events.push(UiEvent::VoiceState { recording: true, level: level.rms });
+            }
         }
+        for event in events { self.emit_ui(event); }
+    }
+
+    /// 复位语音会话（必须在持有 voice_lifecycle 锁时调用）。
+    /// 返回给 UI 的收尾事件，由调用方在锁外 emit。
+    fn reset_voice_locked(self: &Arc<Self>, cancel_reason: &str) -> UiEvent {
+        lock(&self.remote_voice).cancel(cancel_reason);
+        self.voice_generation.fetch_add(1, Ordering::Relaxed);
+        self.voice_active.store(false, Ordering::Relaxed);
+        self.voice_finishing.store(false, Ordering::Relaxed);
+        if let Some((_, provider)) = lock(&self.voice_provider).take() {
+            self.trigger_provider(provider.trigger_on_stream_stop());
+        }
+        UiEvent::VoiceState { recording: false, level: 0.0 }
     }
 
     fn on_voice_started(self: &Arc<Self>, session_id: u8) -> Option<u64> {
-        let _lifecycle = lock(&self.voice_lifecycle);
-        if self.voice_active.load(Ordering::Relaxed) { return None; }
-        let generation = self.voice_generation.fetch_add(1, Ordering::Relaxed) + 1;
-        self.voice_started_at_ms.store(now_ms(), Ordering::Relaxed);
-        self.voice_active.store(true, Ordering::Relaxed);
-        let provider = lock(&self.inner).settings.provider.clone();
-        *lock(&self.voice_provider) = Some((session_id, provider.clone()));
-        if provider.kind == sb_core::provider::ProviderKind::SayIt {
-            if !lock(&self.remote_voice).begin(generation, now_ms()) {
-                log::warn!("Remote recorder busy; ignored generation={generation}");
-                self.voice_active.store(false, Ordering::Relaxed);
-                *lock(&self.voice_provider) = None;
-                let _ = self.app.emit("voicehub-voice-error", "上一段录音正在处理，请稍后重试");
+        let voice_event;
+        let generation;
+        {
+            let _lifecycle = lock(&self.voice_lifecycle);
+            if self.voice_active.load(Ordering::Relaxed) && !self.voice_finishing.load(Ordering::Relaxed) {
                 return None;
             }
-        } else {
-            let _ = self.audio.begin_session(generation);
-            self.trigger_provider(provider.trigger_on_stream_start());
+            // drain 窗口内新会话：同步完成旧收尾再开新会话。sleep 中的 finisher
+            // 醒来会发现 generation 已变而自动放弃。不这样做的话，BLE 丢 start 包
+            // 走隐式补开流或用户极速重按（<drain_ms）时，第二段语音会整段丢失。
+            if self.voice_finishing.load(Ordering::Relaxed) {
+                let old_generation = self.voice_generation.load(Ordering::Relaxed);
+                let old_started_at = self.voice_started_at_ms.load(Ordering::Relaxed);
+                let old_duration_ms = now_ms().saturating_sub(old_started_at);
+                let stop_trigger = lock(&self.voice_provider).take()
+                    .map(|(_, p)| p.trigger_on_stream_stop());
+                let _ = self.audio.finish_session(old_generation);
+                self.voice_finishing.store(false, Ordering::Relaxed);
+                if let Some(trigger) = stop_trigger {
+                    self.trigger_provider(trigger);
+                }
+                self.record_voice_session_since(old_started_at, old_duration_ms, 0);
+                log::info!("voice restarted during drain; finished generation={old_generation} inline");
+            }
+            generation = self.voice_generation.fetch_add(1, Ordering::Relaxed) + 1;
+            self.voice_started_at_ms.store(now_ms(), Ordering::Relaxed);
+            self.voice_active.store(true, Ordering::Relaxed);
+            let provider = lock(&self.inner).settings.provider.clone();
+            *lock(&self.voice_provider) = Some((session_id, provider.clone()));
+            if provider.kind == sb_core::provider::ProviderKind::SayIt {
+                if !lock(&self.remote_voice).begin(generation, now_ms()) {
+                    log::warn!("Remote recorder busy; ignored generation={generation}");
+                    self.voice_active.store(false, Ordering::Relaxed);
+                    *lock(&self.voice_provider) = None;
+                    drop(_lifecycle);
+                    let _ = self.app.emit("voicehub-voice-error", "上一段录音正在处理，请稍后重试");
+                    return None;
+                }
+            } else {
+                let _ = self.audio.begin_session(generation);
+                self.trigger_provider(provider.trigger_on_stream_start());
+            }
+            log::info!("voice start session={session_id} generation={generation}");
+            voice_event = UiEvent::VoiceState { recording: true, level: 0.0 };
         }
-        log::info!("voice start session={session_id} generation={generation}");
-        self.emit_ui(UiEvent::VoiceState { recording: true, level: 0.0 });
+        self.emit_ui(voice_event);
         Some(generation)
     }
 
     fn on_voice_stopped(self: &Arc<Self>, session_id: u8, expected_generation: Option<u64>) {
-        let _lifecycle = lock(&self.voice_lifecycle);
-        if expected_generation.is_some_and(|expected| expected != self.voice_generation.load(Ordering::Relaxed)) { return; }
-        if self.voice_finishing.load(Ordering::Relaxed) { return; }
-        let provider = {
-            let current = lock(&self.voice_provider);
-            if !current.as_ref().is_some_and(|(id, _)| *id == session_id) { return; }
-            current.as_ref().unwrap().1.clone()
-        };
-        let generation = self.voice_generation.load(Ordering::Relaxed);
-        let started_at = self.voice_started_at_ms.load(Ordering::Relaxed);
-        let duration_ms = now_ms().saturating_sub(started_at);
-        if provider.kind == sb_core::provider::ProviderKind::SayIt {
-            lock(&self.remote_voice).end(generation);
-            *lock(&self.voice_provider) = None;
-            self.voice_active.store(false, Ordering::Relaxed);
-            self.record_voice_session(duration_ms);
-            self.emit_ui(UiEvent::VoiceState { recording: false, level: 0.0 });
-            return;
+        enum Stop {
+            /// 直连路径：样本已全在 RemoteVoice 缓冲，end 后 renderer drain，立即收尾。
+            DirectDone(UiEvent),
+            /// 外部 Provider：保留会话至 drain 窗口结束（把尾巴样本灌满虚拟声卡）。
+            Drain { generation: u64, started_at: u64, duration_ms: u64, provider: sb_core::provider::ProviderConfig },
         }
-        let drain_ms = provider.drain_ms();
-        // Keep the session reserved until its external hold key is released.
-        self.voice_finishing.store(true, Ordering::Relaxed);
-
-        let bridge = self.clone();
-        std::thread::Builder::new()
-            .name("sb-voice-finish".into())
-            .spawn(move || {
-                std::thread::sleep(Duration::from_millis(drain_ms as u64));
-                let _lifecycle = lock(&bridge.voice_lifecycle);
-                if bridge.voice_generation.load(Ordering::Relaxed) != generation { return; }
-                let _ = bridge.audio.finish_session(generation);
-                let trigger = provider.trigger_on_stream_stop();
-                bridge.trigger_provider(trigger);
-                *lock(&bridge.voice_provider) = None;
-                bridge.voice_active.store(false, Ordering::Relaxed);
-                bridge.voice_finishing.store(false, Ordering::Relaxed);
-                log::info!("voice stop session={session_id} duration_ms={duration_ms}");
-                bridge.record_voice_session(duration_ms);
-                bridge.emit_ui(UiEvent::VoiceState { recording: false, level: 0.0 });
-            })
-            .expect("spawn voice finisher");
+        let stop = {
+            let _lifecycle = lock(&self.voice_lifecycle);
+            if expected_generation.is_some_and(|expected| expected != self.voice_generation.load(Ordering::Relaxed)) { return; }
+            if self.voice_finishing.load(Ordering::Relaxed) { return; }
+            let provider = {
+                let current = lock(&self.voice_provider);
+                if current.as_ref().is_none_or(|(id, _)| *id != session_id) { return; }
+                current.as_ref().unwrap().1.clone()
+            };
+            let generation = self.voice_generation.load(Ordering::Relaxed);
+            let started_at = self.voice_started_at_ms.load(Ordering::Relaxed);
+            let duration_ms = now_ms().saturating_sub(started_at);
+            if provider.kind == sb_core::provider::ProviderKind::SayIt {
+                let sample_count = lock(&self.remote_voice).received() as u64;
+                lock(&self.remote_voice).end(generation);
+                *lock(&self.voice_provider) = None;
+                self.voice_active.store(false, Ordering::Relaxed);
+                log::info!("voice stop session={session_id} duration_ms={duration_ms} samples={sample_count}");
+                self.record_voice_session_since(started_at, duration_ms, sample_count);
+                Stop::DirectDone(UiEvent::VoiceState { recording: false, level: 0.0 })
+            } else {
+                self.voice_finishing.store(true, Ordering::Relaxed);
+                Stop::Drain { generation, started_at, duration_ms, provider }
+            }
+        };
+        match stop {
+            Stop::DirectDone(event) => self.emit_ui(event),
+            Stop::Drain { generation, started_at, duration_ms, provider } => {
+                let drain_ms = provider.drain_ms() as u64;
+                let bridge = self.clone();
+                let provider_for_thread = provider.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("sb-voice-finish".into())
+                    .spawn(move || {
+                        std::thread::sleep(Duration::from_millis(drain_ms));
+                        bridge.finish_drained_session(generation, session_id, &provider_for_thread, started_at, duration_ms);
+                    });
+                if spawned.is_err() {
+                    // 线程资源耗尽的极端场景：放弃等待、同步立即收尾——
+                    // 卡在 finishing 的话后续语音会被 busy 检查全部拒绝。
+                    log::error!("spawn voice finisher failed; finishing generation={generation} inline without drain");
+                    self.finish_drained_session(generation, session_id, &provider, started_at, duration_ms);
+                }
+            }
+        }
     }
 
-    fn record_voice_session(self: &Arc<Self>, duration_ms: u64) {
+    /// drain 结束（或 spawn 失败降级）后的统一收尾：完成音频会话、触发停止键、记录历史。
+    fn finish_drained_session(
+        self: &Arc<Self>,
+        generation: u64,
+        session_id: u8,
+        provider: &sb_core::provider::ProviderConfig,
+        started_at: u64,
+        duration_ms: u64,
+    ) {
+        let event = {
+            let _lifecycle = lock(&self.voice_lifecycle);
+            // drain 期间被新会话 inline 收尾（on_voice_started）或断连复位：generation
+            // 已变，本会话状态早被接管/清理，这里不再动任何共享状态。
+            if self.voice_generation.load(Ordering::Relaxed) != generation { return; }
+            let _ = self.audio.finish_session(generation);
+            let trigger = provider.trigger_on_stream_stop();
+            self.trigger_provider(trigger);
+            *lock(&self.voice_provider) = None;
+            self.voice_active.store(false, Ordering::Relaxed);
+            self.voice_finishing.store(false, Ordering::Relaxed);
+            log::info!("voice stop session={session_id} duration_ms={duration_ms}");
+            self.record_voice_session_since(started_at, duration_ms, 0);
+            UiEvent::VoiceState { recording: false, level: 0.0 }
+        };
+        self.emit_ui(event);
+    }
+
+    /// 记录一次语音会话到统计与历史。
+    /// sample_count：直连路径为 RemoteVoice 实收值；外部 Provider 路径音频直接进
+    /// 声卡、不经我们计数，记 0。
+    fn record_voice_session_since(self: &Arc<Self>, started_at: u64, duration_ms: u64, sample_count: u64) {
         let foreground = sb_windows::foreground::foreground_process_name();
         let profile_name = {
             let inner = lock(&self.inner);
@@ -534,9 +621,9 @@ impl Bridge {
             );
         }
         let record = VoiceSessionRecord {
-            started_at_ms: self.voice_started_at_ms.load(Ordering::Relaxed) as i64,
+            started_at_ms: started_at as i64,
             duration_ms,
-            sample_count: 0,
+            sample_count,
             foreground_process: foreground,
             profile_name,
         };
@@ -571,23 +658,34 @@ impl Bridge {
     /// `restore_audio=false`：调用方（select_audio_endpoint）已真实打开新端点，
     /// 不再走 restore——释放再重开会在同线 pin 互斥窗口里被外部进程抢线。
     pub fn apply_settings_with(self: &Arc<Self>, settings: AppSettings, restore_audio: bool) -> Result<(), String> {
+        let previous;
         let audio_changed;
         let autostart_changed;
         let language_changed;
         let extend_changed;
         {
             let mut inner = lock(&self.inner);
-            self.store.save_settings(&settings).map_err(|e| e.to_string())?;
+            // 锁内只 diff + 更新内存；写盘（含 sync_all）挪到锁外——锁内写盘会把
+            // 15ms tick / HID / BLE 事件分发一起阻塞在磁盘延迟上。
+            previous = inner.settings.clone();
             audio_changed = restore_audio && settings.provider.kind != sb_core::provider::ProviderKind::SayIt &&
-                (settings.audio_endpoint_name != inner.settings.audio_endpoint_name || settings.provider.kind != inner.settings.provider.kind);
-            autostart_changed = settings.launch_at_login != inner.settings.launch_at_login;
-            language_changed = settings.language != inner.settings.language;
-            extend_changed = settings.experimental_voice_extend != inner.settings.experimental_voice_extend;
-            if settings.paired_device_id != inner.settings.paired_device_id {
+                (settings.audio_endpoint_name != previous.audio_endpoint_name || settings.provider.kind != previous.provider.kind);
+            autostart_changed = settings.launch_at_login != previous.launch_at_login;
+            language_changed = settings.language != previous.language;
+            extend_changed = settings.experimental_voice_extend != previous.experimental_voice_extend;
+            if settings.paired_device_id != previous.paired_device_id {
                 inner.gesture.reset();
                 inner.usage_tracker = UsageTracker::default();
             }
             inner.settings = settings.clone();
+        }
+        if let Err(error) = self.store.save_settings(&settings) {
+            // 写盘失败：内存回滚并上抛。等值检查防止把期间另一路 apply 的新值误回滚。
+            let mut inner = lock(&self.inner);
+            if inner.settings == settings {
+                inner.settings = previous;
+            }
+            return Err(error.to_string());
         }
         self.set_gain(settings.gain_db);
         if audio_changed {
@@ -683,6 +781,9 @@ impl Bridge {
                 let sample_rate = 16_000u64;
                 let total = pcm.as_ref().map_or((sample_rate * duration_ms / 1000).max(1), |samples| samples.len() as u64);
                 let chunk = sample_rate / 10; // 100ms 一包
+                // 长音频（>4 分钟）按 10 倍速快放：实时回放 5 分钟会逼近 remote_voice
+                // 的 360s 会话超时，只剩 45s 余量；快放让模拟器能测完整长音频。
+                let pace_ms: u64 = if total > sample_rate * 240 { 10 } else { 100 };
                 let mut written = 0u64;
                 while written < total {
                     if bridge.voice_generation.load(Ordering::Relaxed) != generation || !bridge.voice_active.load(Ordering::Relaxed) { return; }
@@ -699,7 +800,7 @@ impl Bridge {
                     }
                     bridge.on_voice_samples(samples, Some(generation));
                     written += count;
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(pace_ms));
                 }
                 bridge.on_voice_stopped(0xFE, Some(generation));
             })

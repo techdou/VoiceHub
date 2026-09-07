@@ -37,7 +37,9 @@ pub struct AppSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Language {
+    #[default]
     System,
     ZhCn,
     English,
@@ -45,7 +47,9 @@ pub enum Language {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Theme {
+    #[default]
     System,
     Light,
     Dark,
@@ -71,17 +75,7 @@ impl Default for AppSettings {
     }
 }
 
-impl Default for Language {
-    fn default() -> Self {
-        Language::System
-    }
-}
 
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::System
-    }
-}
 
 impl AppSettings {
     /// 解析 + 迁移。未知字段忽略（向前兼容）；老版本逐级升到当前。
