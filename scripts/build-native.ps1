@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet('check','test','build','bundle')][string]$Action = 'check',
     [switch]$Standalone,
     [switch]$Release,
@@ -34,6 +34,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $redirectRoot 'localappdata
 New-Item -ItemType Directory -Force -Path (Join-Path $redirectRoot 'temp') | Out-Null
 $env:LOCALAPPDATA = Join-Path $redirectRoot 'localappdata'
 $env:TEMP = Join-Path $redirectRoot 'temp'
+# pnpm 在无 TTY 环境下要清空 node_modules 时会直接中止（ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY），
+# CI=true 让它免确认继续，避免 tauri 前置的 pnpm install 因 node_modules 状态错位挂死。
+$env:CI = 'true'
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 $ErrorActionPreference = 'Continue'
 function Invoke-VoiceHubBuild {
