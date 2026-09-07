@@ -12,12 +12,17 @@ use crate::buttons::RemoteButton;
 use crate::gesture::Gesture;
 
 /// 单个按键的三个动作槽。
+///
+/// `push_to_talk` 是边沿直达的第四通道：按下沿注入组合键 press、释放沿注入
+/// release，不经过单击/双击/长按判定——用于把遥控器键变成"按住说话"触发键
+/// （麦克风输入源）。绑定后该键的三槽动作被忽略。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ButtonBinding {
     pub single: ButtonAction,
     pub double: ButtonAction,
     pub long: ButtonAction,
+    pub push_to_talk: Option<crate::actions::CustomShortcut>,
 }
 
 impl Default for ButtonBinding {
@@ -26,6 +31,7 @@ impl Default for ButtonBinding {
             single: ButtonAction::Disabled,
             double: ButtonAction::Disabled,
             long: ButtonAction::Disabled,
+            push_to_talk: None,
         }
     }
 }
@@ -211,5 +217,22 @@ mod tests {
             assert!(key.contains('_') == matches!(button, RemoteButton::VolumeUp | RemoteButton::VolumeDown),
                 "非音量键应是无下划线单词：{key}");
         }
+    }
+
+    /// push_to_talk 字段向后兼容：旧配置 JSON（无该字段）反序列化为 None，
+    /// 序列化往返保持字段存在。
+    #[test]
+    fn push_to_talk_field_roundtrips_and_defaults_to_none() {
+        let legacy = serde_json::json!({ "single": { "kind": "disabled" }, "double": { "kind": "disabled" }, "long": { "kind": "disabled" } });
+        let binding: ButtonBinding = serde_json::from_value(legacy).expect("legacy binding must parse");
+        assert!(binding.push_to_talk.is_none());
+
+        let with_hold = ButtonBinding {
+            push_to_talk: Some(crate::actions::CustomShortcut::new(0x48, 3, "Ctrl+Alt+H")),
+            ..Default::default()
+        };
+        let round: ButtonBinding = serde_json::from_value(serde_json::to_value(&with_hold).unwrap()).unwrap();
+        assert_eq!(round.push_to_talk, with_hold.push_to_talk);
+        assert_eq!(round.push_to_talk.as_ref().unwrap().vk, 0x48);
     }
 }

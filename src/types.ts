@@ -46,6 +46,8 @@ export interface ButtonBinding {
   single: ButtonAction;
   double: ButtonAction;
   long: ButtonAction;
+  /** 边沿直达的按住说话触发键（Rust 端 serde default None，旧配置无此字段）。 */
+  pushToTalk?: CustomShortcut | null;
 }
 
 export interface ButtonMapping {

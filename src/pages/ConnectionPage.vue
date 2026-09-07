@@ -5,6 +5,7 @@ import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import CableInstaller from "../components/CableInstaller.vue";
+import PageSkeleton from "../components/PageSkeleton.vue";
 import SaveBadge from "../components/SaveBadge.vue";
 import type { AppSettings, AudioEndpoint, BleSnapshot, PairedRemote, UiEvent } from "../types";
 
@@ -281,6 +282,116 @@ const cableCandidatePresent = computed(() =>
 // "仅音频（不触发工具）"（none）选项已移除：直连引擎开箱即用后无使用价值。
 // ProviderKind::None 在 Rust 侧保留仅为反序列化旧配置。
 const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as const;
+
+// ---------- 语音触发（源 × 方式）----------
+// 四象限：遥控器语音键 = 固件按住语义（只能按住说话）；免提 / 按住说话可绑到
+// 其他遥控器键（注入组合键走系统麦克风）；键盘快捷键独立常驻可用。
+// 注意：SayIt 的键盘钩子忽略程序注入的单键，组合键走 RegisterHotKey 才可联动
+// ——所以"应用到遥控器"会把引擎侧快捷键一并写成组合键。
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { useKeyRecorder } from "../useKeyRecorder";
+
+const REMOTE_KEY_OPTIONS = [
+  "ok", "back", "home", "menu", "up", "down", "left", "right",
+  "power", "volume_up", "volume_down", "tv",
+] as const;
+
+const handsFreeKey = ref("Ctrl+Alt+H");
+const pttComboKey = ref("Ctrl+Alt+J");
+const handsFreeRemote = ref<string>("ok");
+const pttRemote = ref<string>("back");
+const engineHandsFree = ref<string>("");
+const enginePtt = ref<string>("");
+const triggerBusy = ref("");
+const triggerError = ref("");
+
+// sayit 引擎侧当前快捷键（显示用；单键时提示"遥控器不可联动"）。
+async function refreshEngineShortcuts() {
+  try {
+    const [hf, ptt] = await Promise.all([
+      tauriInvoke<string>("store_get", { key: "shortcutHandsFree" }),
+      tauriInvoke<string>("store_get", { key: "shortcutPTT" }),
+    ]);
+    engineHandsFree.value = typeof hf === "string" ? hf : "";
+    enginePtt.value = typeof ptt === "string" ? ptt : "";
+  } catch (error) {
+    console.error("[voicehub] read engine shortcuts failed:", error);
+  }
+}
+onMounted(() => { void refreshEngineShortcuts(); });
+
+function isCombo(value: string): boolean {
+  return value.includes("+");
+}
+
+// 录制组合键（免提 / 按住说话各一个 recorder，共用逻辑）。
+const handsFreeRecorder = useKeyRecorder((chord) => {
+  handsFreeKey.value = holdLabelOf(chord);
+});
+const pttRecorder = useKeyRecorder((chord) => {
+  pttComboKey.value = holdLabelOf(chord);
+});
+function holdLabelOf(chord: { vk: number; modifiers: number }): string {
+  return handsFreeRecorder.chordLabel(chord.vk, chord.modifiers);
+}
+
+/**
+ * 一键把链路配置好：引擎侧快捷键写成组合键（store_set + shortcuts_changed），
+ * 主应用侧把选定遥控器键映射到该组合键（免提 = 单击注入；按住 = pushToTalk 直通）。
+ */
+async function applyTrigger(mode: "handsfree" | "ptt") {
+  if (!draft.value || !props.settings || saving.value) return;
+  triggerBusy.value = mode;
+  triggerError.value = "";
+  const combo = mode === "handsfree" ? handsFreeKey.value : pttComboKey.value;
+  const remoteKey = mode === "handsfree" ? handsFreeRemote.value : pttRemote.value;
+  try {
+    if (!combo.includes("+")) {
+      triggerError.value = t("connection.trigger.needs_combo");
+      return;
+    }
+    // 1) 引擎侧：快捷键 = 组合键（RegisterHotKey 路径，程序注入可触发）。
+    await tauriInvoke("store_set", {
+      key: mode === "handsfree" ? "shortcutHandsFree" : "shortcutPTT",
+      value: combo,
+    });
+    await tauriInvoke("shortcuts_changed");
+    // 2) 主应用侧：遥控器键 → 注入该组合键。
+    const vk = combo.split("+").pop()!.trim();
+    const vkNum = /^F\d{1,2}$/.test(vk)
+      ? 0x6f + Number(vk.slice(1))
+      : vk.length === 1 ? vk.toUpperCase().charCodeAt(0) : 0;
+    if (!vkNum) {
+      triggerError.value = t("connection.trigger.bad_combo");
+      return;
+    }
+    let modBits = 0;
+    if (combo.includes("Ctrl")) modBits |= 2;
+    if (combo.includes("Shift")) modBits |= 4;
+    if (combo.includes("Alt")) modBits |= 1;
+    if (combo.includes("Win")) modBits |= 8;
+    const label = combo;
+    const profiles = JSON.parse(JSON.stringify(draft.value.profiles)) as AppSettings["profiles"];
+    const profile = profiles.profiles.find((p) => p.id === profiles.selectedProfileId);
+    if (!profile) return;
+    const binding = profile.mapping.bindings[remoteKey] ??= {
+      single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" },
+    };
+    if (mode === "handsfree") {
+      binding.single = { kind: "shortcut", vk: vkNum, modifiers: modBits, label };
+    } else {
+      binding.pushToTalk = { vk: vkNum, modifiers: modBits, label };
+      binding.single = { kind: "disabled" };
+    }
+    draft.value = { ...draft.value, profiles };
+    await saveAll();
+    await refreshEngineShortcuts();
+  } catch (error) {
+    triggerError.value = String(error);
+  } finally {
+    triggerBusy.value = "";
+  }
+}
 </script>
 
 <template>
@@ -319,6 +430,9 @@ const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as con
             "
           ></span>
           <strong>{{ phaseLabel(bleSnapshot?.phase) }}</strong>
+          <span v-if="bleSnapshot?.phase !== 'ready' && remotes.length" class="hint" style="margin: 0 0 0 4px">
+            {{ t("connection.connect_guide") }}
+          </span>
           <span v-if="bleSnapshot?.remoteName" class="badge">{{ bleSnapshot.remoteName }}</span>
           <span v-if="bleSnapshot?.remoteModel" class="badge">{{ bleSnapshot.remoteModel }}</span>
           <span v-if="bleSnapshot?.batteryPercent != null" class="badge">
@@ -385,6 +499,14 @@ const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as con
             </span>
             <span class="device-connected">{{ t("connection.connected") }}</span>
           </template>
+          <button
+            v-else
+            class="btn primary"
+            :disabled="busy"
+            @click.stop="connect(remote.id, remote.name)"
+          >
+            {{ busy && selectedRemoteId === remote.id ? t("connection.phase.connecting") : t("common.connect") }}
+          </button>
         </button>
         <div v-if="!remotes.length" class="empty">{{ t("common.empty") }}</div>
       </div>
@@ -478,6 +600,53 @@ const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as con
       </div>
     </section>
 
+    <!-- 语音触发：源（遥控器语音键 / 其他遥控器键→麦克风 / 键盘快捷键）× 方式（免提 / 按住说话）。 -->
+    <section class="card">
+      <h3>{{ t("connection.trigger.title") }}</h3>
+      <p class="hint">{{ t("connection.trigger.intro") }}</p>
+      <div class="row" style="gap: 8px; margin: 10px 0 4px; flex-wrap: wrap">
+        <span class="badge">{{ t("connection.trigger.engine_hf") }}：{{ engineHandsFree || "—" }}{{ engineHandsFree && !isCombo(engineHandsFree) ? t("connection.trigger.single_key_note") : "" }}</span>
+        <span class="badge">{{ t("connection.trigger.engine_ptt") }}：{{ enginePtt || "—" }}{{ enginePtt && !isCombo(enginePtt) ? t("connection.trigger.single_key_note") : "" }}</span>
+      </div>
+
+      <div class="setting-row" style="border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px">
+        <div>
+          <div class="label">{{ t("connection.trigger.hf_title") }}</div>
+          <div class="desc">{{ t("connection.trigger.hf_desc") }}</div>
+        </div>
+      </div>
+      <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 8px">
+        <select v-model="handsFreeRemote" style="min-width: 110px">
+          <option v-for="key in REMOTE_KEY_OPTIONS" :key="key" :value="key">{{ t(`buttons.key_names.${key}`) }}</option>
+        </select>
+        <button class="btn" @click="handsFreeRecorder.recording.value = !handsFreeRecorder.recording.value">
+          {{ handsFreeRecorder.recording.value ? t("buttons.action.recording.stop") : handsFreeKey }}
+        </button>
+        <button class="btn primary" :disabled="!!triggerBusy" @click="applyTrigger('handsfree')">
+          {{ triggerBusy === 'handsfree' ? t("common.saving") : t("connection.trigger.apply") }}
+        </button>
+      </div>
+
+      <div class="setting-row" style="border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px">
+        <div>
+          <div class="label">{{ t("connection.trigger.ptt_title") }}</div>
+          <div class="desc">{{ t("connection.trigger.ptt_desc") }}</div>
+        </div>
+      </div>
+      <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 8px">
+        <select v-model="pttRemote" style="min-width: 110px">
+          <option v-for="key in REMOTE_KEY_OPTIONS" :key="key" :value="key">{{ t(`buttons.key_names.${key}`) }}</option>
+        </select>
+        <button class="btn" @click="pttRecorder.recording.value = !pttRecorder.recording.value">
+          {{ pttRecorder.recording.value ? t("buttons.action.recording.stop") : pttComboKey }}
+        </button>
+        <button class="btn primary" :disabled="!!triggerBusy" @click="applyTrigger('ptt')">
+          {{ triggerBusy === 'ptt' ? t("common.saving") : t("connection.trigger.apply") }}
+        </button>
+      </div>
+      <p v-if="triggerError" class="hint" style="margin-top: 8px; color: var(--fail)">{{ triggerError }}</p>
+    </section>
+
     <section class="card">
       <div class="setting-row" style="padding-top: 0">
         <div>
@@ -515,9 +684,7 @@ const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as con
       <a class="btn" href="#/settings">{{ t("settings.open") }}</a>
     </section>
   </div>
-  <div v-else class="page">
-    <p class="empty">{{ t("common.loading") }}</p>
-  </div>
+  <PageSkeleton v-else :title="t('connection.title')" />
 </template>
 
 <style scoped>

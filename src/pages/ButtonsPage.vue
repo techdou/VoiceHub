@@ -2,9 +2,11 @@
 import { computed, ref, watch } from "vue";
 import { api } from "../api";
 import { useI18n } from "../i18n";
-import type { AppSettings, ButtonAction, ButtonMapping, RemoteButtonId } from "../types";
+import { useKeyRecorder } from "../useKeyRecorder";
+import type { AppSettings, ButtonAction, ButtonMapping, CustomShortcut, RemoteButtonId } from "../types";
 import ActionPicker from "../components/ActionPicker.vue";
 import MappingCanvas from "../components/MappingCanvas.vue";
+import PageSkeleton from "../components/PageSkeleton.vue";
 import SaveBadge from "../components/SaveBadge.vue";
 import { actionLabel as sharedActionLabel } from "../actionLabel";
 
@@ -60,6 +62,43 @@ function save() {
 const selectedButton = ref<RemoteButtonId | null>(null);
 const editingSlot = ref<"single" | "double" | "long">("single");
 const showPicker = ref(false);
+
+// 按住说话（push-to-talk）：边沿直达的第四通道——按下沿注入组合键、释放沿松开，
+// 让这个遥控器键变成"按住说话"的麦克风触发键。绑定后三槽手势失效（后端直通）。
+const { recording: recordingHoldKey, chordLabel: holdChordLabel } = useKeyRecorder(
+  (chord) => {
+    if (!selectedButton.value) return;
+    mutateProfiles((profiles) => {
+      const profile = profiles.profiles.find((p) => p.id === profiles.selectedProfileId);
+      if (!profile) return;
+      const binding = profile.mapping.bindings[selectedButton.value!] ??= {
+        single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" },
+      };
+      binding.pushToTalk = {
+        vk: chord.vk,
+        modifiers: chord.modifiers,
+        label: holdChordLabel(chord.vk, chord.modifiers),
+      };
+    });
+  },
+);
+
+function clearHoldKey() {
+  if (!selectedButton.value) return;
+  mutateProfiles((profiles) => {
+    const profile = profiles.profiles.find((p) => p.id === profiles.selectedProfileId);
+    if (!profile) return;
+    if (profile.mapping.bindings[selectedButton.value!]) {
+      profile.mapping.bindings[selectedButton.value!].pushToTalk = null;
+    }
+  });
+}
+
+const selectedHoldChord = computed(() => {
+  const button = selectedButton.value;
+  if (!button || !activeProfile.value) return null;
+  return activeProfile.value.mapping.bindings[button]?.pushToTalk ?? null;
+});
 const newProfileName = ref("");
 const foregroundProcess = ref<string | null>(null);
 
@@ -236,7 +275,8 @@ async function applyImport() {
 </script>
 
 <template>
-  <div class="page" v-if="settings && draft">
+  <PageSkeleton v-if="!(settings && draft)" :title="t('buttons.title')" />
+  <div class="page" v-else>
     <header class="page-head">
       <div>
         <h1>{{ t("buttons.title") }}</h1>
@@ -306,6 +346,29 @@ async function applyImport() {
         @select-button="selectButton"
         @edit-slot="editSlot"
       />
+      <!-- 按住说话：边沿直达通道，绕过单击/双击/长按判定（与三槽互斥，见 mapping.rs）。 -->
+      <div v-if="selectedButton" class="setting-row" style="margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px">
+        <div>
+          <div class="label">{{ t("buttons.hold.title") }}</div>
+          <div class="desc">
+            {{
+              selectedHoldChord
+                ? t("buttons.hold.bound", { key: selectedHoldChord.label })
+                : t("buttons.hold.empty")
+            }}
+          </div>
+          <p v-if="selectedHoldChord" class="hint" style="margin: 6px 0 0">{{ t("buttons.hold.hint") }}</p>
+        </div>
+        <div class="row">
+          <button v-if="selectedHoldChord" class="btn subtle danger" @click="clearHoldKey">
+            {{ t("buttons.action.clear") }}
+          </button>
+          <button class="btn" @click="recordingHoldKey = !recordingHoldKey">
+            {{ recordingHoldKey ? t("buttons.action.recording.stop") : t("buttons.hold.record") }}
+          </button>
+        </div>
+      </div>
+      <p v-if="recordingHoldKey" class="hint" style="margin-top: 8px">{{ t("buttons.action.recording") }}</p>
     </section>
 
     <section v-if="draft.profiles.smartEnabled" class="card">
@@ -359,9 +422,6 @@ async function applyImport() {
         </div>
       </div>
     </div>
-  </div>
-  <div v-else class="page">
-    <p class="empty">{{ t("common.loading") }}</p>
   </div>
 </template>
 

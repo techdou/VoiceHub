@@ -163,6 +163,23 @@ const MANUAL_PATCHES = [
     },
   },
   {
+    id: 'ui-polish-2026-09',
+    files: ['frontend/src/pages/Home.tsx', 'frontend/src/components/TitleBar.tsx', 'frontend/src/index.css',
+      'frontend/src/features/settings/WorkModeSection.tsx', 'frontend/src/features/settings/CloudAPISection.tsx',
+      'frontend/src/features/settings/AsrTestSection.tsx', 'frontend/src/pages/About.tsx'],
+    describe: 'UI polish round: home gains the AI-cleanup status card (4th slot), tighter transcript rows with hover/arrow; titlebar AI switch spaced from window controls; font stacks unified to the voicehub theme order; engine page billing warning, stronger selected-mode card, test placeholder; settings nav first item renamed 通用/General; About credits grouped with license tags.',
+    verify() {
+      const home = readVendor('frontend/src/pages/Home.tsx');
+      if (!home.includes('AI cleanup') && !home.includes('AI 整理')) return 'Home.tsx lost the AI card';
+      if (!home.includes('Wand2')) return 'Home.tsx AI card icon missing';
+      const titlebar = readVendor('frontend/src/components/TitleBar.tsx');
+      if (!titlebar.includes('pr-10')) return 'TitleBar switch spacing regressed';
+      const about = readVendor('frontend/src/pages/About.tsx');
+      if (!about.includes('CREDIT_GROUPS')) return 'About.tsx credits lost grouping';
+      return null;
+    },
+  },
+  {
     id: 'home-input-source-card',
     files: ['frontend/src/pages/Home.tsx'],
     describe: 'Workspace home shows a microphone-input card: remote takes priority when connected; otherwise the PTT key dictates with the configured system mic (remote is optional).',
