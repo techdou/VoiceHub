@@ -104,15 +104,22 @@ export default function Home() {
       <div className="mb-3 flex items-center justify-between"><h2 className="font-semibold">{en ? 'Recent transcripts' : '最近转写'}</h2><Link to="/history" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary">{en ? 'All history' : '全部记录'}<ArrowUpRight size={14} /></Link></div>
       {error && <p role="alert" className="py-3 text-sm text-destructive-strong">{error}</p>}
       {records.length === 0 ? <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-muted-foreground"><FileText className="h-7 w-7" /><p className="text-sm">{en ? 'No transcripts yet' : '暂无转写记录'}</p><Link to="/voice-engine" className="text-xs text-primary underline">{en ? 'Configure speech engine' : '配置语音引擎'}</Link></div> :
-        records.map(record => (
+        records.map(record => {
+          const text = record.llmText || record.asrText || record.failReason || ''
+          const failed = !record.llmText && !record.asrText && !!record.failReason
+          return (
           <Link key={record.id} to="/history" className="group flex items-start gap-3 border-b py-2.5 hover:bg-muted/40">
             <div className="min-w-0 flex-1">
-              <p className="line-clamp-1 text-sm leading-6">{record.llmText || record.asrText || record.failReason}</p>
-              <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Clock size={12} />{new Date(record.timestamp).toLocaleString(getLocale())}<span>{(record.durationSec ?? 0).toFixed(1)} s</span></p>
+              <p title={text} className={`line-clamp-1 text-sm leading-6 ${failed ? 'text-destructive-strong' : ''}`}>{text}</p>
+              <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <Clock size={12} />{new Date(record.timestamp).toLocaleString(getLocale())}<span>{(record.durationSec ?? 0).toFixed(1)} s</span>
+                {failed && <span className="rounded border border-destructive/40 px-1 font-mono text-[10px]">failed</span>}
+              </p>
             </div>
             <ArrowUpRight size={14} className="mt-2 shrink-0 text-muted-foreground group-hover:text-primary" />
           </Link>
-        ))}
+          )
+        })}
     </section>
   </div>
 }

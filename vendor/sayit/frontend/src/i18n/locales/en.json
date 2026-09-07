@@ -1309,5 +1309,16 @@
   "builtinApp.weixin": "WeChat",
   "builtinApp.qq": "QQ",
   "asr.billingNote": "Latency figures come from real recognition runs — each test is billed.",
-  "asrTest.placeholder": "After you press Start, the recognized text and latency will appear here."
+  "asrTest.placeholder": "After you press Start, the recognized text and latency will appear here.",
+  "about.creditsTitle": "Open-source credits",
+  "about.groupEngine": "Engine core",
+  "about.groupProtocol": "Protocol references",
+  "about.groupSystem": "System components",
+  "about.credit.sayit": "Voice workspace (direct upstream of the embedded engine)",
+  "about.credit.whisper": "On-device speech recognition",
+  "about.credit.silero": "Voice activity detection (auto segmentation)",
+  "about.credit.vibeFlow": "ATVV Bluetooth voice protocol reference",
+  "about.credit.remoteMic": "Bluetooth microphone protocol reference",
+  "about.credit.remoteMicWin": "Windows implementation reference",
+  "about.credit.vbcable": "Virtual audio cable (free/donationware)"
 }

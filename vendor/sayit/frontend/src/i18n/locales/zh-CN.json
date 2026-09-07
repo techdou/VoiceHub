@@ -1309,5 +1309,16 @@
   "builtinApp.weixin": "微信",
   "builtinApp.qq": "QQ",
   "asr.billingNote": "卡上耗时是真跑一次识别测出来的，会产生一次真实计费调用。",
-  "asrTest.placeholder": "点击「开始测试」后，此处会显示识别文本与耗时。"
+  "asrTest.placeholder": "点击「开始测试」后，此处会显示识别文本与耗时。",
+  "about.creditsTitle": "开源致谢",
+  "about.groupEngine": "引擎内核",
+  "about.groupProtocol": "协议参考",
+  "about.groupSystem": "系统组件",
+  "about.credit.sayit": "语音工作区（内嵌引擎的直接上游）",
+  "about.credit.whisper": "本地语音识别底座",
+  "about.credit.silero": "语音活动检测（自动断句）",
+  "about.credit.vibeFlow": "ATVV 蓝牙语音协议参考",
+  "about.credit.remoteMic": "蓝牙麦克风协议参考",
+  "about.credit.remoteMicWin": "Windows 实现参考",
+  "about.credit.vbcable": "虚拟声卡（免费/donationware）"
 }
