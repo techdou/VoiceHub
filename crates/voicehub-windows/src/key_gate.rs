@@ -143,6 +143,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             );
             if swallow {
                 if !is_up {
+                    // 吞 DOWN 即顺延武装窗口：长按语音键时键盘自动重复的 F5
+                    // 会逐个到达，一次性 250ms 窗口过期后就泄漏（免提模式压掉
+                    // 蓝牙流、无会话兜底时尤甚）——每吞一个续一窗，直至 UP。
+                    arm_grace();
                     HOLD_PAIRING.store(track_down(pairing, true), Ordering::Relaxed);
                 } else {
                     HOLD_PAIRING.store(HOLD_NONE, Ordering::Relaxed);
@@ -150,6 +154,15 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 return LRESULT(1);
             }
             if !is_up && kb.vkCode as u32 == VK_F5 {
+                // 泄漏只在配对状态转换时记一次（长按的重复 F5 不刷屏）。
+                // 竞态成因：F5 走 HID 通道，控制通知走 GATT 通道，F5 先到则
+                // 武装窗口未开——此时前台（如浏览器）会收到真实 F5（刷新）。
+                if pairing != HOLD_LEAKED {
+                    log::warn!(
+                        "[key-gate] remote F5 leaked (arrived before/without arming); \
+                         foreground may receive a refresh"
+                    );
+                }
                 HOLD_PAIRING.store(track_down(pairing, false), Ordering::Relaxed);
             }
         }

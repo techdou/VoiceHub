@@ -360,6 +360,13 @@ impl Bridge {
                     //       它是 ble 层 60s 断流续接的判定输入）；
                     // HandsFree = 蓝牙流被 ble 层压掉，按下沿事件直连引擎 toggle
                     //             系统麦克风录音（按一下开始 / 再按结束）。
+                    // 另：HID 的 F5 与 GATT 控制通知走独立蓝牙通道，控制通知缺失
+                    // 或迟到时（免提模式拒批后固件可能不再发），这里的 raw input
+                    // 按下沿（带设备来源、无竞态）补一次吞键武装，接住长按期间
+                    // 自动重复的 F5。
+                    if pressed {
+                        voicehub_windows::key_gate::arm_grace();
+                    }
                     let mode = inner.settings.voice_key_trigger_mode;
                     self.ble.set_voice_key_held(pressed);
                     if mode == VoiceKeyTriggerMode::HandsFree && pressed {
@@ -455,6 +462,30 @@ impl Bridge {
             ButtonAction::TaskView => tap(KeyChord::new(0x09, voicehub_core::actions::MOD_WIN)), // Win+Tab
             ButtonAction::AppSwitcher => tap(KeyChord::new(0x09, voicehub_core::actions::MOD_ALT)), // Alt+Tab
             ButtonAction::ClickConfirm => voicehub_windows::shell::left_click(),
+            // 删除整行：Home → Shift+End → Backspace。三连击间留 20ms（不同应用的
+            // 键盘缓冲深度不一，零间隔在部分编辑器里会被合并丢键）；独立线程执行，
+            // 避免序列 sleep 阻塞 15ms tick / HID 事件分发。
+            ButtonAction::DeleteLine => {
+                std::thread::spawn(|| {
+                    use voicehub_core::actions::MOD_SHIFT;
+                    let steps = [
+                        (0x24u16, 0u8), // Home
+                        (0x23, MOD_SHIFT), // Shift+End
+                        (0x08, 0), // Backspace
+                    ];
+                    for (index, (vk, modifiers)) in steps.iter().enumerate() {
+                        if index > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        if let Err(error) =
+                            tap(voicehub_windows::send_input::KeyChord::new(*vk, *modifiers))
+                        {
+                            log::warn!("delete-line step {index} failed: {error}");
+                        }
+                    }
+                });
+                Ok(())
+            }
             ButtonAction::OpenSettings => {
                 self.emit_ui(UiEvent::ShowSettings);
                 Ok(())
@@ -750,6 +781,7 @@ impl Bridge {
         // 免提 / 按住说话绑定，落盘与运行前统一清除，保证行为只由
         // voice_key_trigger_mode 决定。
         settings.purge_legacy_voice_triggers();
+        settings.normalize_single_profile();
         let previous;
         let audio_changed;
         let autostart_changed;
@@ -928,6 +960,7 @@ fn action_label(action: &ButtonAction) -> String {
         ButtonAction::TaskView => "任务视图".into(),
         ButtonAction::AppSwitcher => "切换应用".into(),
         ButtonAction::ClickConfirm => "点击确认".into(),
+        ButtonAction::DeleteLine => "删除整行".into(),
         ButtonAction::OpenSettings => "打开声枢".into(),
         ButtonAction::TriggerHandsFree => "免提触发".into(),
     }
