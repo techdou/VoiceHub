@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>声枢 VoiceHub — 把小米遥控器变成 Windows 无线麦克风</title>
-<meta name="description" content="声枢 VoiceHub：面向 Windows 的语音输入工作区。小米蓝牙遥控器直连本地/云端 ASR，开箱即用；免提与按住说话可绑定到任意遥控器键。" />
+<meta name="description" content="声枢 VoiceHub：面向 Windows 的语音输入工作区。小米蓝牙遥控器直连本地/云端 ASR，开箱即用；录音键一键切换免提与按住说话，长录音断点自动续接。" />
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
 <style>
   :root {
@@ -100,8 +100,8 @@
       <p>遥控器音频经蓝牙直传内置识别引擎，无需独立语音软件，也无需虚拟声卡。支持本地 GGUF 模型、OpenAI 兼容服务与多家云端供应商。</p>
     </div>
     <div class="card">
-      <h3>免提 / 按住，随键绑定</h3>
-      <p>语音键天然按住说话；免提与按住说话还可一键绑定到任意遥控器键，经系统麦克风录音并直接通知识别引擎，不占用键盘快捷键。</p>
+      <h3>免提 / 按住，录音键一键切换</h3>
+      <p>录音键默认按住说话（蓝牙直传）；切换免提后按一下开始、再按结束，经系统麦克风收音。长录音超过固件 60 秒上限自动断点续接，识别不断。</p>
     </div>
     <div class="card">
       <h3>完整的遥控器映射</h3>
@@ -131,7 +131,7 @@
     </figure>
     <figure class="shot">
       <img src="assets/connection.png" alt="设备连接页" loading="lazy" />
-      <figcaption>设备连接：蓝牙设备列表一键连接，语音触发一键绑定。</figcaption>
+      <figcaption>设备连接：蓝牙设备列表一键连接，录音键模式一键切换。</figcaption>
     </figure>
   </div>
 </section>
