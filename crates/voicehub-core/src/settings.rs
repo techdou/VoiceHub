@@ -112,7 +112,22 @@ impl AppSettings {
         // 语音触发已收敛到录音键：读取即清除其他键上的旧触发绑定，
         // 保证按键行为只由 voice_key_trigger_mode 决定（迁移幂等）。
         settings.purge_legacy_voice_triggers();
+        settings.normalize_single_profile();
         Ok(settings)
+    }
+
+    /// 按键映射页已收敛为单方案：关闭智能绑定并清空进程绑定表，让
+    /// resolve_active 恒等于手动选中的方案——"配了就生效"不再依赖前台应用。
+    /// 多套 profiles 数据保留（不破坏旧数据），仅不再提供切换与绑定入口。
+    pub fn normalize_single_profile(&mut self) {
+        self.profiles.smart_enabled = false;
+        self.profiles.rules.process_bindings.clear();
+        // smart 关闭后 resolve_active 恒等于选中方案，fallback 字段不影响行为，
+        // 不重写（保持 roundtrip 稳定）。
+        if self.profiles.selected_profile_id.is_empty() {
+            self.profiles.selected_profile_id =
+                self.profiles.profiles.first().map(|p| p.id.clone()).unwrap_or_default();
+        }
     }
 
     /// 清除所有方案里其他键的语音触发绑定（pushToTalk / 免提动作）。
@@ -273,6 +288,19 @@ mod tests {
         let again = s.clone();
         s.purge_legacy_voice_triggers();
         assert_eq!(s, again);
+    }
+
+    #[test]
+    fn normalize_collapses_to_single_profile() {
+        // 智能方案（按前台进程分方案）是"配了不生效"的一类根源：UI 已收敛为
+        // 单方案，归一必须关掉 smart 绑定并清空进程表，选中方案保留。
+        let mut s = AppSettings::default();
+        s.profiles.smart_enabled = true;
+        s.profiles.rules.process_bindings.insert("notepad.exe".into(), "p1".into());
+        s.normalize_single_profile();
+        assert!(!s.profiles.smart_enabled);
+        assert!(s.profiles.rules.process_bindings.is_empty());
+        assert_eq!(s.profiles.selected_profile_id, s.profiles.profiles[0].id);
     }
 
     #[test]

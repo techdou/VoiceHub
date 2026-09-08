@@ -25,6 +25,7 @@ export type ButtonAction =
   | { kind: "task_view" }
   | { kind: "app_switcher" }
   | { kind: "click_confirm" }
+  | { kind: "delete_line" }
   | { kind: "open_settings" }
   | { kind: "custom"; shortcut: CustomShortcut }
   /** 免提触发（事件直连引擎，不注入按键）。 */

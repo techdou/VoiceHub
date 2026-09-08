@@ -22,6 +22,7 @@ const basicPresets: Array<{ id: string; action: ButtonAction }> = [
   // 免提触发已收敛到录音键（连接页"录音键模式"），不再作为可绑定动作提供；
   // 旧配置里的 trigger_hands_free 由 Rust 侧保存时统一清除。
   { id: "escape", action: { kind: "shortcut", vk: 0x1b, modifiers: 0, label: "Esc" } },
+  { id: "delete_line", action: { kind: "delete_line" } },
   { id: "enter", action: { kind: "shortcut", vk: 0x0d, modifiers: 0, label: "Enter" } },
   { id: "ctrl_enter", action: { kind: "shortcut", vk: 0x0d, modifiers: 2, label: "Ctrl+Enter" } },
   { id: "shift_enter", action: { kind: "shortcut", vk: 0x0d, modifiers: 4, label: "Shift+Enter" } },

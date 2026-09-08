@@ -104,6 +104,9 @@ pub enum ButtonAction {
     AppSwitcher,
     /// 对话框模拟左键（供 AI 客户端“继续”按钮）。
     ClickConfirm,
+    /// 删除整行：Home → Shift+End → Backspace 序列（光标回行首、选中整行、删除）。
+    /// 适合绑双击槽（如"双击音量减 = 删掉当前行"）。
+    DeleteLine,
     /// 打开声桥设置窗。
     OpenSettings,
     /// 自定义快捷键（按键粒度引用，值存 mapping 的 shortcuts 表）。
@@ -198,7 +201,8 @@ impl ButtonAction {
             ButtonAction::Disabled
             | ButtonAction::Shortcut { .. }
             | ButtonAction::Custom { .. }
-            | ButtonAction::TriggerHandsFree => ActionCategory::BasicKeys,
+            | ButtonAction::TriggerHandsFree
+            | ButtonAction::DeleteLine => ActionCategory::BasicKeys,
             ButtonAction::MediaKey { .. }
             | ButtonAction::VolumeUp
             | ButtonAction::VolumeDown

@@ -75,7 +75,15 @@ impl RemoteButton {
     pub fn supports_secondary(self) -> bool {
         matches!(
             self,
-            RemoteButton::Home | RemoteButton::Menu | RemoteButton::Ok | RemoteButton::Tv
+            RemoteButton::Home
+                | RemoteButton::Menu
+                | RemoteButton::Ok
+                | RemoteButton::Tv
+                // 音量键放开双击/长按槽（如"音量减 = Backspace，双击删整行"）；
+                // 手势识别器本就按键无关，此前的限制只是保守白名单。
+                // 代价：这些键的单击动作要等双击窗口超时才触发（与其他双击键一致）。
+                | RemoteButton::VolumeUp
+                | RemoteButton::VolumeDown
         )
     }
 }
@@ -196,6 +204,7 @@ mod tests {
     fn secondary_buttons_subset() {
         assert!(RemoteButton::Home.supports_secondary());
         assert!(RemoteButton::Ok.supports_secondary());
+        assert!(RemoteButton::VolumeDown.supports_secondary());
         assert!(!RemoteButton::Up.supports_secondary());
     }
 }
