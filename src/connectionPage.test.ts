@@ -18,7 +18,7 @@ describe('connection settings draft', () => {
       provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
       profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
-      buttonMappingEnabled: true, experimentalVoiceExtend: false, launchAtLogin: false, language: 'system', theme: 'system',
+      buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: "ptt", launchAtLogin: false, language: 'system', theme: 'system',
     } as AppSettings)
     const errors: unknown[] = []
     const container = document.createElement('div')
@@ -48,7 +48,7 @@ describe('connection settings draft', () => {
       provider: { kind: 'we_type', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
       profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
-      buttonMappingEnabled: true, experimentalVoiceExtend: false, launchAtLogin: false, language: 'system', theme: 'system',
+      buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: "ptt", launchAtLogin: false, language: 'system', theme: 'system',
     } as AppSettings)
     const container = document.createElement('div')
     const app = createApp({ render: () => h(ConnectionPage, {
@@ -72,6 +72,47 @@ describe('connection settings draft', () => {
     await nextTick()
     await nextTick()
     expect(dirtyMark()).not.toBeNull()
+    app.unmount()
+  })
+
+  // 录音键模式切换（语音触发收敛到录音键）：进草稿、随保存提交，
+  // 不能绕过草稿直接写设置。
+  it('voice key mode switch goes through the draft and is submitted on save', async () => {
+    const settings = reactive({
+      schemaVersion: 2, onboardingComplete: true, pairedDeviceId: null,
+      pairedDeviceName: null, audioEndpointName: '', gainDb: 0,
+      provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
+        sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
+      profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
+      buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: 'ptt',
+      launchAtLogin: false, language: 'system', theme: 'system',
+    } as AppSettings)
+    const saved: AppSettings[] = []
+    const container = document.createElement('div')
+    const app = createApp({
+      render: () => h(ConnectionPage, {
+        settings, bleSnapshot: null, saveState: 'idle', saveError: '',
+        'onUpdate-settings': (next: AppSettings) => saved.push(next),
+      }),
+    })
+    app.mount(container)
+    await nextTick()
+
+    // 切到免提：未保存前原设置不变。
+    const buttons = [...container.querySelectorAll('button')] as HTMLButtonElement[]
+    const handsFree = buttons.find(b => b.textContent?.includes('免提'))
+    expect(handsFree).toBeTruthy()
+    handsFree!.click()
+    await nextTick()
+    expect(settings.voiceKeyTriggerMode).toBe('ptt')
+
+    // 保存：提交的载荷携带新模式。
+    const save = buttons.find(b => b.textContent === '保存')
+    expect(save).toBeTruthy()
+    save!.click()
+    await nextTick()
+    expect(saved).toHaveLength(1)
+    expect(saved[0].voiceKeyTriggerMode).toBe('hands_free')
     app.unmount()
   })
 })

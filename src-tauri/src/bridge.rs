@@ -19,7 +19,7 @@ use voicehub_core::actions::ButtonAction;
 use voicehub_core::buttons::RemoteButton;
 use voicehub_core::gesture::{Gesture, GestureRecognizer};
 use voicehub_core::provider::ProviderTrigger;
-use voicehub_core::settings::{AppSettings, VoiceSessionRecord};
+use voicehub_core::settings::{AppSettings, VoiceKeyTriggerMode, VoiceSessionRecord};
 use voicehub_core::statistics::{UsageEvent, UsageStatistics};
 
 use crate::store::Store;
@@ -226,6 +226,12 @@ impl Bridge {
         // The speech workspace reads and changes the shared OS autostart state.
         // Do not overwrite it with the legacy hardware preference on every launch.
         bridge.ble.set_extend_enabled(extend_enabled);
+        // 启动时同步录音键触发模式（防重连后静默回退默认 Ptt）。
+        let voice_key_mode = {
+            let inner = lock(&bridge.inner);
+            inner.settings.voice_key_trigger_mode
+        };
+        bridge.ble.set_voice_key_mode(voice_key_mode);
         bridge
     }
 
@@ -349,8 +355,22 @@ impl Bridge {
                     }
                 }
                 HidEvent::VoiceKey { pressed } => {
-                    // F5 由 ATVV 控制通道驱动语音（key_gate 负责吞键）；仅记日志。
-                    log::debug!("voice key F5 {}", if pressed { "down" } else { "up" });
+                    // 录音键（F5）触发模式分流：
+                    // Ptt = 固件蓝牙音频直传（ATVV 开流，本层只跟踪按住状态——
+                    //       它是 ble 层 60s 断流续接的判定输入）；
+                    // HandsFree = 蓝牙流被 ble 层压掉，按下沿事件直连引擎 toggle
+                    //             系统麦克风录音（按一下开始 / 再按结束）。
+                    let mode = inner.settings.voice_key_trigger_mode;
+                    self.ble.set_voice_key_held(pressed);
+                    if mode == VoiceKeyTriggerMode::HandsFree && pressed {
+                        log::info!("voice key toggled hands-free recording (mode=handsfree)");
+                        let _ = self.app.emit(
+                            "toggle-hands-free",
+                            serde_json::json!({ "source": "voicehub-remote" }),
+                        );
+                    } else {
+                        log::debug!("voice key F5 {}", if pressed { "down" } else { "up" });
+                    }
                 }
                 HidEvent::WheelClick { button } => {
                     // 滚轮 tick 直接派发，避免连续滚动被双击窗口合并。
@@ -725,12 +745,17 @@ impl Bridge {
 
     /// `restore_audio=false`：调用方（select_audio_endpoint）已真实打开新端点，
     /// 不再走 restore——释放再重开会在同线 pin 互斥窗口里被外部进程抢线。
-    pub fn apply_settings_with(self: &Arc<Self>, settings: AppSettings, restore_audio: bool) -> Result<(), String> {
+    pub fn apply_settings_with(self: &Arc<Self>, mut settings: AppSettings, restore_audio: bool) -> Result<(), String> {
+        // 语音触发已收敛到录音键：前端（尤其旧版本界面）仍可能提交其他键的
+        // 免提 / 按住说话绑定，落盘与运行前统一清除，保证行为只由
+        // voice_key_trigger_mode 决定。
+        settings.purge_legacy_voice_triggers();
         let previous;
         let audio_changed;
         let autostart_changed;
         let language_changed;
         let extend_changed;
+        let voice_mode_changed;
         {
             let mut inner = lock(&self.inner);
             // 锁内只 diff + 更新内存；写盘（含 sync_all）挪到锁外——锁内写盘会把
@@ -741,6 +766,7 @@ impl Bridge {
             autostart_changed = settings.launch_at_login != previous.launch_at_login;
             language_changed = settings.language != previous.language;
             extend_changed = settings.experimental_voice_extend != previous.experimental_voice_extend;
+            voice_mode_changed = settings.voice_key_trigger_mode != previous.voice_key_trigger_mode;
             if settings.paired_device_id != previous.paired_device_id {
                 inner.gesture.reset();
                 inner.usage_tracker = UsageTracker::default();
@@ -767,6 +793,10 @@ impl Bridge {
         }
         if extend_changed {
             self.ble.set_extend_enabled(settings.experimental_voice_extend);
+        }
+        if voice_mode_changed {
+            // 录音键触发模式热切换：ble 层立即生效（免提压流 / 按住直传）。
+            self.ble.set_voice_key_mode(settings.voice_key_trigger_mode);
         }
         Ok(())
     }

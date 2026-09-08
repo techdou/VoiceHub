@@ -25,6 +25,7 @@ use voicehub_core::adpcm::ImaAdpcmCodec;
 use voicehub_core::atvv::{AtvvCapabilities, AtvvCommand, AtvvControlEvent, AtvvUuids};
 use voicehub_core::frame::FrameAccumulator;
 use voicehub_core::pcm;
+use voicehub_core::settings::VoiceKeyTriggerMode;
 use voicehub_core::reconnect::ReconnectPolicy;
 use voicehub_core::remote_model::{is_voice_remote_name, RemoteModel};
 
@@ -96,6 +97,8 @@ enum Command {
     ReconnectNow,
     SetGain { gain_db: f64 },
     SetExtendEnabled { enabled: bool },
+    SetVoiceKeyMode { mode: VoiceKeyTriggerMode },
+    SetVoiceKeyHeld { held: bool },
     Shutdown { reply: Sender<()> },
 }
 
@@ -152,6 +155,14 @@ impl BleRuntime {
         let _ = self.sender.send(Command::SetExtendEnabled { enabled });
     }
 
+    pub fn set_voice_key_mode(&self, mode: VoiceKeyTriggerMode) {
+        let _ = self.sender.send(Command::SetVoiceKeyMode { mode });
+    }
+
+    pub fn set_voice_key_held(&self, held: bool) {
+        let _ = self.sender.send(Command::SetVoiceKeyHeld { held });
+    }
+
     pub fn list_paired(&self) -> Vec<PairedRemote> {
         let (tx, rx) = channel();
         if self.sender.send(Command::ListPaired { reply: tx }).is_ok() {
@@ -190,6 +201,10 @@ struct WorkerContext {
     gain_db: f64,
     /// 实验性续租开关（同 gain_db，跨会话保持，防重连后静默失效）。
     extend_enabled: bool,
+    /// 录音键触发模式（同上跨会话保持）：HandsFree 时压掉蓝牙流。
+    voice_key_mode: VoiceKeyTriggerMode,
+    /// HID 语音键（F5）是否按住——断流续接的判定输入。
+    voice_key_held: bool,
 }
 
 enum InboxMessage {
@@ -224,6 +239,13 @@ struct Session {
     /// 续租写失败的退避重试（防僵死链路上 100Hz 重试风暴）。
     extend_retry_at: Option<Instant>,
     extend_failures: u8,
+    /// 录音键触发模式：HandsFree 时压掉蓝牙流（音频走系统麦克风，见宿主分流）。
+    voice_key_mode: VoiceKeyTriggerMode,
+    /// HID 语音键（F5）当前是否按住——60s 断流后是否续接的判定输入。
+    voice_key_held: bool,
+    /// 断流续接：重开麦克风后的宽限截止。Some = 续接中（暂不向上层发
+    /// VoiceStopped，新流起来了就无缝继续同一逻辑会话）。
+    reconnect_deadline: Option<Instant>,
 }
 
 impl Session {
@@ -300,6 +322,8 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
         generation: 0,
         gain_db: 0.0,
         extend_enabled: false,
+        voice_key_mode: VoiceKeyTriggerMode::Ptt,
+        voice_key_held: false,
     };
 
     while ctx.should_run {
@@ -352,6 +376,18 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
                     ctx.extend_enabled = enabled;
                     if let Some(session) = ctx.session.as_mut() {
                         session.extend_enabled = enabled;
+                    }
+                }
+                Command::SetVoiceKeyMode { mode } => {
+                    ctx.voice_key_mode = mode;
+                    if let Some(session) = ctx.session.as_mut() {
+                        session.voice_key_mode = mode;
+                    }
+                }
+                Command::SetVoiceKeyHeld { held } => {
+                    ctx.voice_key_held = held;
+                    if let Some(session) = ctx.session.as_mut() {
+                        session.voice_key_held = held;
                     }
                 }
                 Command::ListPaired { reply } => {
@@ -426,6 +462,16 @@ fn worker_loop(receiver: Receiver<Command>, events: Sender<BleEvent>, state: Arc
 
         // 实验性续租：会话进行中每 40s 尝试 MIC_EXTEND（决策纯函数）。
         if let Some(session) = ctx.session.as_mut() {
+            // 断流续接兜底：宽限期内新流没起来（固件不理会 host 主动开麦）→
+            // 真正收尾，补发 VoiceStopped 让上层完成这段识别。
+            if let Some(deadline) = session.reconnect_deadline {
+                if Instant::now() >= deadline {
+                    session.reconnect_deadline = None;
+                    let session_id = session.session_id;
+                    log::info!("mic reopen grace expired; finishing voice session {session_id}");
+                    let _ = ctx.events.send(BleEvent::VoiceStopped { session_id });
+                }
+            }
             if let Some(bytes) = extend_command_if_due(session) {
                 match session.write(&bytes) {
                     Ok(()) => {
@@ -510,7 +556,15 @@ fn attempt_connect(ctx: &mut WorkerContext, device_id: &str) {
         s.last_error = None;
     });
 
-    match connect_session(device_id, ctx.inbox_sender.clone(), generation, ctx.gain_db, ctx.extend_enabled) {
+    match connect_session(
+        device_id,
+        ctx.inbox_sender.clone(),
+        generation,
+        ctx.gain_db,
+        ctx.extend_enabled,
+        ctx.voice_key_mode,
+        ctx.voice_key_held,
+    ) {
         Ok(session) => {
             let name = session.name.clone();
             let model = session.model;
@@ -555,6 +609,8 @@ fn connect_session(
     generation: u64,
     gain_db: f64,
     extend_enabled: bool,
+    voice_key_mode: VoiceKeyTriggerMode,
+    voice_key_held: bool,
 ) -> windows::core::Result<Session> {
     let device = block_on(BluetoothLEDevice::FromIdAsync(&HSTRING::from(device_id))?.into_future())?;
     let name = device.Name()?.to_string();
@@ -616,6 +672,9 @@ fn connect_session(
         last_extend_at: None,
         extend_retry_at: None,
         extend_failures: 0,
+        voice_key_mode,
+        voice_key_held,
+        reconnect_deadline: None,
     };
     if session.model.adpcm_low_nibble_first() {
         session.decoder.set_low_nibble_first(true);
@@ -771,6 +830,17 @@ fn subscribe(
 /// 续租间隔：40s（在 60s 固件租期内提前续）。
 pub const EXTEND_INTERVAL: Duration = Duration::from_secs(40);
 
+/// 断流续接宽限：重开麦克风（MIC_OPEN）后新流应在此窗口内出现
+/// （StreamStarted 或首包音频），否则判定续接失败、正常收尾当前段。
+pub const RECONNECT_GRACE: Duration = Duration::from_millis(2500);
+
+/// 纯决策：断流（StreamStopped）后是否自动重开麦克风续接（单测覆盖）。
+/// 条件：长录音开启 && 语音键仍按住（典型场景 = 60s 固件会话墙被掐断、
+/// 用户仍在说话；实测小米固件忽略 MIC_EXTEND，续租不可依赖，只能续接）。
+pub fn should_reconnect(extend_enabled: bool, voice_key_held: bool) -> bool {
+    extend_enabled && voice_key_held
+}
+
 /// 纯决策：此刻是否应发送 MIC_EXTEND（单测覆盖）。
 /// 条件：实验开启 && 流中 && 已持续 ≥40s && 距上次续租（若有）≥40s。
 pub fn should_extend(
@@ -867,6 +937,12 @@ fn handle_control(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8]
             session.capabilities = capabilities;
         }
         AtvvControlEvent::MicrophoneOpenRequested => {
+            if session.voice_key_mode == VoiceKeyTriggerMode::HandsFree {
+                // 免提模式：压掉蓝牙流——音频由系统麦克风承担（宿主在语音键
+                // 按下沿 emit toggle-hands-free），固件的推流请求不予批准。
+                log::debug!("mic open suppressed (handsfree mode)");
+                return;
+            }
             let command = AtvvCommand::MicrophoneOpen {
                 version: session.capabilities.version,
                 codec: session.capabilities.selected_codec,
@@ -898,7 +974,13 @@ fn handle_control(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8]
                 session.voice_started = Some(Instant::now());
                 session.last_extend_at = None;
                 key_gate::set_session_active(true);
-                let _ = events.send(BleEvent::VoiceStarted { session_id });
+                if session.reconnect_deadline.take().is_some() {
+                    // 断流续接成功：新流无缝续入同一逻辑会话，不重发
+                    // VoiceStarted——上层会话保持，识别不中断。
+                    log::info!("mic reopened; voice session continues (session={session_id})");
+                } else {
+                    let _ = events.send(BleEvent::VoiceStarted { session_id });
+                }
             }
         }
         AtvvControlEvent::StreamStopped => {
@@ -908,6 +990,28 @@ fn handle_control(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8]
                 session.last_extend_at = None;
                 session.microphone_opened = false;
                 key_gate::set_session_active(false);
+                // 断流续接：长录音开启且语音键仍按住（典型 = 60s 固件会话墙，
+                // 实测 MIC_EXTEND 被小米固件忽略）→ 立刻主动重开麦克风。
+                // 暂不发 VoiceStopped：新流起来了就无缝继续同一逻辑会话；
+                // 起不来由工作循环的宽限兜底补发收尾。
+                if should_reconnect(session.extend_enabled, session.voice_key_held) {
+                    let command = AtvvCommand::MicrophoneOpen {
+                        version: session.capabilities.version,
+                        codec: session.capabilities.selected_codec,
+                    };
+                    if let Some(bytes) = command.encode() {
+                        if session.write(&bytes).is_ok() {
+                            session.reconnect_deadline =
+                                Some(Instant::now() + RECONNECT_GRACE);
+                            log::info!(
+                                "stream stopped while voice key held; reopening mic (session={})",
+                                session.session_id
+                            );
+                            return;
+                        }
+                    }
+                    log::warn!("mic reopen write failed; finishing voice session");
+                }
                 let session_id = session.session_id;
                 let _ = events.send(BleEvent::VoiceStopped { session_id });
             }
@@ -925,6 +1029,10 @@ fn handle_control(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8]
 /// 处理音频通知（由工作循环直接调用）。
 fn process_audio(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8]) {
     if !session.streaming {
+        if session.voice_key_mode == VoiceKeyTriggerMode::HandsFree {
+            // 免提模式：未批准开流却推来的杂散音频，丢弃。
+            return;
+        }
         // 隐式开流竞态：0x04 晚于首包音频时按音频到达开流。
         session.accumulator.reset();
         session.decoder.reset();
@@ -932,7 +1040,12 @@ fn process_audio(session: &mut Session, events: &Sender<BleEvent>, bytes: &[u8])
         session.voice_started = Some(Instant::now());
         session.last_extend_at = None;
         key_gate::set_session_active(true);
-        let _ = events.send(BleEvent::VoiceStarted { session_id: session.session_id });
+        if session.reconnect_deadline.take().is_some() {
+            // 断流续接成功（音频先于 0x04 到达）：同上不重发 VoiceStarted。
+            log::info!("mic reopened (implicit); voice session continues");
+        } else {
+            let _ = events.send(BleEvent::VoiceStarted { session_id: session.session_id });
+        }
     }
     let frame_size = session.capabilities.frame_size;
     let frames = session.accumulator.append(bytes, frame_size);
@@ -977,6 +1090,15 @@ mod tests {
         assert!(should_extend(true, true, Some(forty * 2), Some(forty)));
         // 无时长信息（未开流）不触发。
         assert!(!should_extend(true, true, None, None));
+    }
+
+    #[test]
+    fn reconnect_requires_extend_enabled_and_key_held() {
+        // 60s 固件会话墙后的自动续接：长录音未开启或语音键已松开都不续，
+        // 正常收尾当前段；两个条件同时满足才重开麦克风。
+        assert!(!should_reconnect(true, false));
+        assert!(!should_reconnect(false, true));
+        assert!(should_reconnect(true, true));
     }
 
     #[test]

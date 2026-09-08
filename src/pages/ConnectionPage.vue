@@ -283,73 +283,14 @@ const cableCandidatePresent = computed(() =>
 // ProviderKind::None 在 Rust 侧保留仅为反序列化旧配置。
 const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as const;
 
-// ---------- 语音触发（源 × 方式）----------
-// 四象限：遥控器语音键 = 固件按住语义（只能按住说话）；免提 / 按住说话可绑到
-// 其他遥控器键（注入组合键走系统麦克风）；键盘快捷键独立常驻可用。
-// 注意：SayIt 的键盘钩子忽略程序注入的单键，组合键走 RegisterHotKey 才可联动
-// ——所以"应用到遥控器"会把引擎侧快捷键一并写成组合键。
-const REMOTE_KEY_OPTIONS = [
-  "ok", "back", "home", "menu", "up", "down", "left", "right",
-  "power", "volume_up", "volume_down", "tv",
-] as const;
-
-const handsFreeRemote = ref<string>("ok");
-const pttRemote = ref<string>("back");
-const triggerBusy = ref("");
-const triggerError = ref("");
-const appliedMode = ref("");
-
-// 回显：从当前方案已有绑定推导两个下拉的选中键（此前固定默认值，用户改过也不回显）。
-// 用户手动改动过且未应用时跳过自动回显——外部设置更新（如设备连接）触发的
-// 全量同步不应把正在进行的选键打回原形。
-const handsFreeTouched = ref(false);
-const pttTouched = ref(false);
-watch(
-  () => draft.value?.profiles,
-  (profiles) => {
-    const active = profiles?.profiles.find((p) => p.id === profiles?.selectedProfileId);
-    if (!active) return;
-    for (const [key, binding] of Object.entries(active.mapping.bindings)) {
-      if (binding.pushToTalk && !pttTouched.value) pttRemote.value = key;
-      else if (binding.single?.kind === "trigger_hands_free" && !handsFreeTouched.value) handsFreeRemote.value = key;
-    }
-  },
-  { immediate: true },
-);
-
-// 事件直连：主应用直接向引擎发 ptt-down/ptt-up/toggle-hands-free 事件，
-// 不注入按键、不改引擎快捷键配置——一键只写遥控器映射即可，无需两套配置同步。
-async function applyTrigger(mode: "handsfree" | "ptt") {
-  if (!draft.value || !props.settings || saving.value) return;
-  triggerBusy.value = mode;
-  triggerError.value = "";
-  const remoteKey = mode === "handsfree" ? handsFreeRemote.value : pttRemote.value;
-  try {
-    const profiles = JSON.parse(JSON.stringify(draft.value.profiles)) as AppSettings["profiles"];
-    const profile = profiles.profiles.find((p) => p.id === profiles.selectedProfileId);
-    if (!profile) return;
-    // 互斥只作用于目标键：同一键只保留一种模式（其余键不受影响——
-    // 免提键与按住键可以共存于不同遥控器键上）。
-    const binding = profile.mapping.bindings[remoteKey] ??= {
-      single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" },
-      pushToTalk: false,
-    };
-    if (mode === "handsfree") {
-      binding.single = { kind: "trigger_hands_free" };
-      binding.pushToTalk = false;
-    } else {
-      binding.pushToTalk = true;
-      if (binding.single?.kind === "trigger_hands_free") binding.single = { kind: "disabled" };
-    }
-    draft.value = { ...draft.value, profiles };
-    await saveAll();
-    appliedMode.value = mode;
-    window.setTimeout(() => { if (appliedMode.value === mode) appliedMode.value = ""; }, 2000);
-  } catch (error) {
-    triggerError.value = String(error);
-  } finally {
-    triggerBusy.value = "";
-  }
+// ---------- 录音键模式 ----------
+// 语音触发收敛到录音键（语音键）本身：不再绑定其他遥控器键，Rust 侧保存时会
+// 清除旧版绑在其他键上的免提 / 按住说话绑定（settings.rs purge）。
+// ptt = 按住说话（固件蓝牙音频直传，默认行为）；
+// hands_free = 按一下开始 / 再按结束（蓝牙流被压掉，经系统麦克风录音）。
+function setVoiceKeyMode(mode: "ptt" | "hands_free") {
+  if (!draft.value || draft.value.voiceKeyTriggerMode === mode) return;
+  draft.value = { ...draft.value, voiceKeyTriggerMode: mode };
 }
 </script>
 
@@ -559,41 +500,33 @@ async function applyTrigger(mode: "handsfree" | "ptt") {
       </div>
     </section>
 
-    <!-- 语音触发：源（遥控器语音键 / 其他遥控器键→麦克风 / 键盘快捷键）× 方式（免提 / 按住说话）。 -->
+    <!-- 录音键模式：语音触发只由录音键承担（ptt 蓝牙直传 / 免提系统麦克风）。 -->
     <section class="card">
       <h3>{{ t("connection.trigger.title") }}</h3>
       <p class="hint">{{ t("connection.trigger.intro") }}</p>
-
-      <div class="setting-row" style="border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px">
-        <div>
-          <div class="label">{{ t("connection.trigger.hf_title") }}</div>
-          <div class="desc">{{ t("connection.trigger.hf_desc") }}</div>
-        </div>
-      </div>
-      <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 8px">
-        <select v-model="handsFreeRemote" style="min-width: 110px" @change="handsFreeTouched = true">
-          <option v-for="key in REMOTE_KEY_OPTIONS" :key="key" :value="key">{{ t(`buttons.key_names.${key}`) }}</option>
-        </select>
-        <button class="btn primary" :disabled="!!triggerBusy" @click="applyTrigger('handsfree')">
-          {{ appliedMode === 'handsfree' ? t("connection.trigger.applied") : triggerBusy === 'handsfree' ? t("common.saving") : t("connection.trigger.apply") }}
+      <div class="row" style="gap: 8px; margin-top: 12px">
+        <button
+          class="btn"
+          :class="{ primary: draft.voiceKeyTriggerMode === 'ptt' }"
+          @click="setVoiceKeyMode('ptt')"
+        >
+          {{ t("connection.trigger.ptt_title") }}
+        </button>
+        <button
+          class="btn"
+          :class="{ primary: draft.voiceKeyTriggerMode === 'hands_free' }"
+          @click="setVoiceKeyMode('hands_free')"
+        >
+          {{ t("connection.trigger.hf_title") }}
         </button>
       </div>
-
-      <div class="setting-row" style="border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px">
-        <div>
-          <div class="label">{{ t("connection.trigger.ptt_title") }}</div>
-          <div class="desc">{{ t("connection.trigger.ptt_desc") }}</div>
-        </div>
-      </div>
-      <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 8px">
-        <select v-model="pttRemote" style="min-width: 110px" @change="pttTouched = true">
-          <option v-for="key in REMOTE_KEY_OPTIONS" :key="key" :value="key">{{ t(`buttons.key_names.${key}`) }}</option>
-        </select>
-        <button class="btn primary" :disabled="!!triggerBusy" @click="applyTrigger('ptt')">
-          {{ appliedMode === 'ptt' ? t("connection.trigger.applied") : triggerBusy === 'ptt' ? t("common.saving") : t("connection.trigger.apply") }}
-        </button>
-      </div>
-      <p v-if="triggerError" class="hint" style="margin-top: 8px; color: var(--fail)">{{ triggerError }}</p>
+      <p class="hint" style="margin-top: 8px">
+        {{
+          draft.voiceKeyTriggerMode === "hands_free"
+            ? t("connection.trigger.hf_desc")
+            : t("connection.trigger.ptt_desc")
+        }}
+      </p>
     </section>
 
     <section class="card">

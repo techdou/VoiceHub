@@ -19,7 +19,8 @@ const { t } = useI18n();
 const tab = ref<"basic" | "system" | "custom" | "apps">("basic");
 
 const basicPresets: Array<{ id: string; action: ButtonAction }> = [
-  { id: "hands_free", action: { kind: "trigger_hands_free" } },
+  // 免提触发已收敛到录音键（连接页"录音键模式"），不再作为可绑定动作提供；
+  // 旧配置里的 trigger_hands_free 由 Rust 侧保存时统一清除。
   { id: "escape", action: { kind: "shortcut", vk: 0x1b, modifiers: 0, label: "Esc" } },
   { id: "enter", action: { kind: "shortcut", vk: 0x0d, modifiers: 0, label: "Enter" } },
   { id: "ctrl_enter", action: { kind: "shortcut", vk: 0x0d, modifiers: 2, label: "Ctrl+Enter" } },

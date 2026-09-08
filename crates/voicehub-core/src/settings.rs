@@ -5,10 +5,24 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::actions::ButtonAction;
 use crate::profiles::ProfileStore;
 use crate::provider::ProviderConfig;
 
 pub const SETTINGS_VERSION: u32 = 2;
+
+/// 录音键（语音键）的触发模式。
+///
+/// Ptt：按住录音键说话（固件蓝牙音频直传，默认行为）；
+/// HandsFree：按一下开始、再按结束——蓝牙音频是固件"按住才推流"的语义，
+/// 做不到 toggle，因此免提模式压掉蓝牙流，经系统麦克风录音。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceKeyTriggerMode {
+    #[default]
+    Ptt,
+    HandsFree,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -30,6 +44,9 @@ pub struct AppSettings {
     /// 实验性：语音会话每 40s 发送 ATVV 续租（MIC_EXTEND），
     /// 尝试突破约 60s 固件会话边界。固件是否接受未真机验证。
     pub experimental_voice_extend: bool,
+    /// 录音键触发模式（免提 / 按住说话）。语音触发只由录音键承担，
+    /// 其他键的旧触发绑定由 [`AppSettings::purge_legacy_voice_triggers`] 清除。
+    pub voice_key_trigger_mode: VoiceKeyTriggerMode,
     pub launch_at_login: bool,
     pub language: Language,
     pub theme: Theme,
@@ -68,6 +85,7 @@ impl Default for AppSettings {
             profiles: ProfileStore::default(),
             button_mapping_enabled: true,
             experimental_voice_extend: false,
+            voice_key_trigger_mode: VoiceKeyTriggerMode::Ptt,
             launch_at_login: false,
             language: Language::System,
             theme: Theme::System,
@@ -91,7 +109,25 @@ impl AppSettings {
         // 兜底：增益越界 / 空语言等脏数据归一。
         settings.gain_db = settings.gain_db.clamp(-24.0, 24.0);
         settings.schema_version = SETTINGS_VERSION;
+        // 语音触发已收敛到录音键：读取即清除其他键上的旧触发绑定，
+        // 保证按键行为只由 voice_key_trigger_mode 决定（迁移幂等）。
+        settings.purge_legacy_voice_triggers();
         Ok(settings)
+    }
+
+    /// 清除所有方案里其他键的语音触发绑定（pushToTalk / 免提动作）。
+    /// 语音触发统一由录音键模式（voice_key_trigger_mode）承担。
+    pub fn purge_legacy_voice_triggers(&mut self) {
+        for profile in &mut self.profiles.profiles {
+            for binding in profile.mapping.bindings.values_mut() {
+                binding.push_to_talk = false;
+                for slot in [&mut binding.single, &mut binding.double, &mut binding.long] {
+                    if matches!(slot, ButtonAction::TriggerHandsFree) {
+                        *slot = ButtonAction::Disabled;
+                    }
+                }
+            }
+        }
     }
 
     fn migrate(value: &mut serde_json::Value) -> Result<(), SettingsError> {
@@ -192,5 +228,64 @@ mod tests {
         let s = AppSettings { gain_db: 6.0, ..Default::default() };
         let out = crate::pcm::postprocess(&[1000i16; 8], s.gain_db);
         assert!(out.iter().any(|&v| v > 1500));
+    }
+
+    #[test]
+    fn voice_key_trigger_mode_defaults_to_ptt_for_legacy_settings() {
+        // 旧 settings.json 没有该字段：读取必须落到 Ptt（按住说话），
+        // 否则升级用户语音键行为静默翻转。
+        let legacy = serde_json::json!({ "schemaVersion": 2, "onboardingComplete": true }).to_string();
+        let s = AppSettings::load(&legacy).unwrap();
+        assert_eq!(s.voice_key_trigger_mode, VoiceKeyTriggerMode::Ptt);
+    }
+
+    #[test]
+    fn purge_clears_legacy_voice_triggers_and_keeps_other_actions() {
+        use crate::mapping::{ButtonBinding, ButtonMapping};
+        use ButtonAction::{Disabled, Shortcut, TriggerHandsFree};
+
+        let shortcut = Shortcut { vk: 0x1b, modifiers: 0, label: "Esc".into() };
+        let mut s = AppSettings::default();
+        {
+            let profile = s.profiles.selected_mut();
+            profile.mapping = ButtonMapping {
+                bindings: [
+                    // ok：免提在 single 槽 + 正常动作在 double 槽 → 只清触发槽。
+                    ("ok".into(), ButtonBinding {
+                        single: TriggerHandsFree, double: shortcut.clone(), long: Disabled, push_to_talk: false,
+                    }),
+                    // back：按住说话第四通道 → 清开关。
+                    ("back".into(), ButtonBinding {
+                        single: Disabled, double: Disabled, long: Disabled, push_to_talk: true,
+                    }),
+                    // home：纯正常动作 → 原样保留。
+                    ("home".into(), ButtonBinding::single(shortcut.clone())),
+                ].into_iter().collect(),
+            };
+        }
+        s.purge_legacy_voice_triggers();
+        let bindings = &s.profiles.selected().mapping.bindings;
+        assert_eq!(bindings["ok"].single, Disabled);
+        assert_eq!(bindings["ok"].double, shortcut);
+        assert!(!bindings["back"].push_to_talk);
+        assert_eq!(bindings["home"].single, shortcut);
+        // 幂等：再清一遍无变化。
+        let again = s.clone();
+        s.purge_legacy_voice_triggers();
+        assert_eq!(s, again);
+    }
+
+    #[test]
+    fn load_purges_legacy_voice_triggers() {
+        // 老版本把免提绑在 ok 键上：读取即清除，保证行为只由录音键模式决定。
+        let mut raw = serde_json::to_value(AppSettings::default()).unwrap();
+        raw["profiles"]["profiles"][0]["mapping"]["bindings"]["ok"] = serde_json::json!({
+            "single": serde_json::to_value(ButtonAction::TriggerHandsFree).unwrap(),
+            "double": { "kind": "disabled" },
+            "long": { "kind": "disabled" },
+            "pushToTalk": false
+        });
+        let s = AppSettings::load(&raw.to_string()).unwrap();
+        assert_eq!(s.profiles.selected().mapping.bindings["ok"].single, ButtonAction::Disabled);
     }
 }

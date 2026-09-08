@@ -101,6 +101,8 @@ export interface AppSettings {
   buttonMappingEnabled: boolean;
   /** Rust 端（settings.rs）必填且总是序列化。 */
   experimentalVoiceExtend: boolean;
+  /** 录音键触发模式：ptt=按住说话（蓝牙直传）；hands_free=按一下开关录音（系统麦克风）。 */
+  voiceKeyTriggerMode: "ptt" | "hands_free";
   launchAtLogin: boolean;
   language: Language;
   theme: Theme;
