@@ -461,7 +461,7 @@ function setF5Gate(enabled: boolean) {
           :class="{ current: draft.provider.kind === option }"
           @click="pickProvider(option)"
         >
-          <span>{{ option === 'sayit' ? t("connection.provider.sayit_embedded") : t(`connection.provider.${option}` as never) }}</span>
+          <span>{{ t(`connection.provider.${option}` as never) }}</span>
         </button>
       </div>
       <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
