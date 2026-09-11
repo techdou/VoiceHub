@@ -69,7 +69,7 @@ function back() {
 
 const headline = computed(() => t(`onboarding.step${step.value}.title` as never));
 const body = computed(() => t(`onboarding.step${step.value}.body` as never));
-const providerOptions = ["sayit", "we_type", "doubao", "win_h", "none"] as const;
+const providerOptions = ["sayit", "custom", "none"] as const;
 </script>
 
 <template>

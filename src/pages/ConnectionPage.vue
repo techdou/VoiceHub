@@ -281,7 +281,7 @@ const cableCandidatePresent = computed(() =>
 
 // "仅音频（不触发工具）"（none）选项已移除：直连引擎开箱即用后无使用价值。
 // ProviderKind::None 在 Rust 侧保留仅为反序列化旧配置。
-const providerOptions = ["sayit", "we_type", "doubao", "win_h", "custom"] as const;
+const providerOptions = ["sayit", "custom"] as const;
 
 // ---------- 录音键模式 ----------
 // 语音触发收敛到录音键（语音键）本身：不再绑定其他遥控器键，Rust 侧保存时会
@@ -292,6 +292,7 @@ function setVoiceKeyMode(mode: "ptt" | "hands_free") {
   if (!draft.value || draft.value.voiceKeyTriggerMode === mode) return;
   draft.value = { ...draft.value, voiceKeyTriggerMode: mode };
 }
+
 </script>
 
 <template>
@@ -460,9 +461,6 @@ function setVoiceKeyMode(mode: "ptt" | "hands_free") {
       <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
         <a class="btn" href="#/voice-engine">{{ t("connection.open_engine_settings") }}</a>
       </div>
-      <p v-if="draft.provider.kind === 'we_type'" class="hint">
-        {{ t("connection.provider.we_type_hint") }}
-      </p>
       <div v-if="draft.provider.kind === 'custom'" class="setting-row">
         <div>
           <div class="label">{{ t("connection.provider.custom_key") }}</div>

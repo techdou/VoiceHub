@@ -45,7 +45,7 @@ describe('connection settings draft', () => {
     const settings = reactive({
       schemaVersion: 2, onboardingComplete: true, pairedDeviceId: null,
       pairedDeviceName: null, audioEndpointName: '', gainDb: 0,
-      provider: { kind: 'we_type', customVk: 0, customModifiers: 0, customMode: 'hold',
+      provider: { kind: 'custom', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
       profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
       buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: "ptt", launchAtLogin: false, language: 'system', theme: 'system',

@@ -304,11 +304,8 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
     // Provider 提示。
     let settings = bridge.settings();
     let provider_detail = match settings.provider.kind {
-        voicehub_core::provider::ProviderKind::WeType => "微信输入法：请在其设置中开启语音快捷键 Ctrl+Win，并把录音设备设为 CABLE Output".into(),
-        voicehub_core::provider::ProviderKind::Doubao => "豆包输入法：按住式触发，请确认其语音快捷键与声桥配置一致".into(),
         voicehub_core::provider::ProviderKind::SayIt => "声枢内嵌 SayIt：由录音会话直接调用当前语音引擎".into(),
-        voicehub_core::provider::ProviderKind::WinH => "Windows 听写（Win+H）：系统语音输入".into(),
-        voicehub_core::provider::ProviderKind::Custom => "自定义语音工具".into(),
+        voicehub_core::provider::ProviderKind::Custom => "自定义语音工具：触发键与模式在连接页配置（外部输入法兼容模式）".into(),
         voicehub_core::provider::ProviderKind::None => "未配置语音工具（仅测试音频链路）".into(),
     };
     items.push(DiagnosticItem {

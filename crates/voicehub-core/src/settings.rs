@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::actions::ButtonAction;
 use crate::profiles::ProfileStore;
-use crate::provider::ProviderConfig;
+use crate::provider::{legacy_shortcuts, ProviderConfig};
 
-pub const SETTINGS_VERSION: u32 = 2;
+pub const SETTINGS_VERSION: u32 = 3;
 
 /// 录音键（语音键）的触发模式。
 ///
@@ -162,7 +162,38 @@ impl AppSettings {
                     .or_insert_with(|| serde_json::json!("system"));
             }
         }
-        // 当前即 v2。
+        if version < 3 {
+            // v2 → v3：裁剪硬编码 Provider（微信输入法 / 豆包 / Win+H）。
+            // 旧 kind 改写为 custom 并预填原默认键位——升级用户的外部工具
+            // 触发行为不变；customVk 已非零（用户自己配过 Custom 键）则不覆盖。
+            if let Some(provider) = value.get_mut("provider").and_then(|p| p.as_object_mut()) {
+                let kind = provider
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let legacy = match kind.as_str() {
+                    "we_type" => Some((legacy_shortcuts::WETYPE_TOGGLE, "toggle")),
+                    "doubao" => Some((legacy_shortcuts::DOUBAO_HOLD, "hold")),
+                    "win_h" => Some((legacy_shortcuts::WIN_H, "toggle")),
+                    _ => None,
+                };
+                if let Some(((vk, modifiers), mode)) = legacy {
+                    let custom_unset = provider
+                        .get("customVk")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        == 0;
+                    provider.insert("kind".into(), serde_json::json!("custom"));
+                    if custom_unset {
+                        provider.insert("customVk".into(), serde_json::json!(vk));
+                        provider.insert("customModifiers".into(), serde_json::json!(modifiers));
+                        provider.insert("customMode".into(), serde_json::json!(mode));
+                    }
+                }
+            }
+        }
+        // 当前即 v3。
         if let Some(obj) = value.as_object_mut() {
             obj.insert("schemaVersion".into(), serde_json::json!(SETTINGS_VERSION));
         }
@@ -252,6 +283,53 @@ mod tests {
         let legacy = serde_json::json!({ "schemaVersion": 2, "onboardingComplete": true }).to_string();
         let s = AppSettings::load(&legacy).unwrap();
         assert_eq!(s.voice_key_trigger_mode, VoiceKeyTriggerMode::Ptt);
+    }
+
+
+    #[test]
+    fn migrates_legacy_provider_kinds_to_custom_with_default_shortcuts() {
+        // v2 的硬编码 Provider 已裁剪：迁移必须改写为 custom 并预填原默认键位，
+        // 否则 kind 反序列化失败 → 整个 settings 读取失败回退默认，用户配置全丢。
+        for (wire, (vk, modifiers), mode) in [
+            ("we_type", legacy_shortcuts::WETYPE_TOGGLE, "toggle"),
+            ("doubao", legacy_shortcuts::DOUBAO_HOLD, "hold"),
+            ("win_h", legacy_shortcuts::WIN_H, "toggle"),
+        ] {
+            let raw = serde_json::json!({
+                "schemaVersion": 2,
+                "provider": { "kind": wire }
+            })
+            .to_string();
+            let s = AppSettings::load(&raw).unwrap();
+            assert_eq!(s.provider.kind, crate::provider::ProviderKind::Custom, "{wire}");
+            assert_eq!(s.provider.custom_vk, vk, "{wire}");
+            assert_eq!(s.provider.custom_modifiers, modifiers, "{wire}");
+            assert_eq!(
+                s.provider.custom_mode,
+                if mode == "toggle" {
+                    crate::provider::TriggerMode::Toggle
+                } else {
+                    crate::provider::TriggerMode::Hold
+                },
+                "{wire}"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_keeps_user_configured_custom_shortcut() {
+        // 用户曾配过 Custom 键又切回 we_type：customVk 非零，迁移只改 kind、
+        // 不覆盖用户键位。
+        let raw = serde_json::json!({
+            "schemaVersion": 2,
+            "provider": { "kind": "we_type", "customVk": 0x4B, "customModifiers": 2, "customMode": "hold" }
+        })
+        .to_string();
+        let s = AppSettings::load(&raw).unwrap();
+        assert_eq!(s.provider.kind, crate::provider::ProviderKind::Custom);
+        assert_eq!(s.provider.custom_vk, 0x4B);
+        assert_eq!(s.provider.custom_modifiers, 2);
+        assert_eq!(s.provider.custom_mode, crate::provider::TriggerMode::Hold);
     }
 
     #[test]

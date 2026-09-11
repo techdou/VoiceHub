@@ -1,16 +1,22 @@
 //! 语音输入 Provider（听写工具）配置与触发策略。
 //!
 //! SayIt uses embedded PCM capture. External tools retain their virtual-cable
-//! and keyboard trigger adapters for compatibility.
+//! and keyboard trigger adapters via the Custom kind (free shortcut + mode).
 
 use serde::{Deserialize, Serialize};
 
-use crate::actions::vk;
+/// 旧版硬编码 Provider（微信输入法 Ctrl+Win / 豆包左 Ctrl hold / Win+H）
+/// 的默认键位：settings.rs v2→v3 迁移把旧 kind 改写为 Custom 时预填，
+/// 保证升级用户的外部工具触发行为不变。
+pub mod legacy_shortcuts {
+    /// 微信输入法语音开关：Ctrl+Win（v1.0.3 实测基线）。
+    pub const WETYPE_TOGGLE: (u16, u8) = (crate::actions::vk::LWIN, crate::actions::MOD_CONTROL);
+    /// 豆包输入法按住式默认占位键：左 Ctrl。
+    pub const DOUBAO_HOLD: (u16, u8) = (crate::actions::vk::LCONTROL, 0);
+    /// Windows 听写：Win+H。
+    pub const WIN_H: (u16, u8) = (crate::actions::vk::H, crate::actions::MOD_WIN);
+}
 
-/// 微信输入法默认语音开关：Ctrl+Win（v1.0.3 实测基线）。
-pub const WETYPE_TOGGLE: (u16, u8) = (vk::LWIN, crate::actions::MOD_CONTROL);
-/// Win+H：Windows 内置听写。
-pub const WIN_H: (u16, u8) = (vk::H, crate::actions::MOD_WIN);
 /// 右 Ctrl（SayIt 按住说话默认推荐键）。
 pub const VK_RCONTROL: u16 = 0xA3;
 /// 右 Alt（SayIt 可选触发键；若 SayIt 的 HF 功能占用右 Alt 需先挪走）。
@@ -19,19 +25,13 @@ pub const VK_RMENU: u16 = 0xA5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
-    /// 微信输入法：toggle 触发，开麦时触发一次，松开后延迟再触发一次收尾。
-    WeType,
-    /// 豆包输入法：按住式（hold）——开麦时按下快捷键，结束时释放。
-    Doubao,
-    /// Windows 听写 Win+H。
-    WinH,
     /// SayIt（本地 Whisper 转写）：按住式注入右 Ctrl，
     /// SayIt 录音设备设为 CABLE Output，转写文本落光标处。
     /// 显式 rename："SayIt" 的 snake_case 会得到 "say_it"，与前端字面量 "sayit"
     /// 不一致，曾导致 kind=sayit 的 save_settings 反序列化失败、设置静默不落盘。
     #[serde(rename = "sayit")]
     SayIt,
-    /// 自定义快捷键 + 触发模式。
+    /// 自定义快捷键 + 触发模式（外部输入法 / 听写工具的统一接入点）。
     Custom,
     /// 仅输出音频，不触发任何 Provider（自证音频链路用）。
     None,
@@ -100,9 +100,6 @@ impl ProviderConfig {
     /// 当前生效的 (vk, modifiers)（诊断页也用它展示）。
     pub fn shortcut(&self) -> (u16, u8) {
         match self.kind {
-            ProviderKind::WeType => WETYPE_TOGGLE,
-            ProviderKind::Doubao => (vk::LCONTROL, 0), // 默认占位：豆包按住式默认键可在 UI 改
-            ProviderKind::WinH => WIN_H,
             // 默认右 Alt（与作者实际 SayIt 配置对齐）；用户可在 UI 换右 Ctrl
             // 或组合键。避免右 Shift——长按 8s 触发筛选键会让录音停不下来。
             // 注意：单键（modifiers=0）注入会被 SayIt 的钩子注入过滤丢弃，
@@ -117,9 +114,6 @@ impl ProviderConfig {
 
     fn mode(&self) -> Option<TriggerMode> {
         match self.kind {
-            ProviderKind::WeType => Some(TriggerMode::Toggle),
-            ProviderKind::Doubao => Some(TriggerMode::Hold),
-            ProviderKind::WinH => Some(TriggerMode::Toggle),
             // SayIt 双模式：Toggle = 免提（HF，点一下开始/再点结束），
             // Hold = 按住说话（PTT）。跟随用户选择，默认 Toggle。
             ProviderKind::SayIt => None,
@@ -175,9 +169,6 @@ mod tests {
         // 前端 types.ts 的字面量联合；内嵌大写缩写（SayIt）经 snake_case 会变成
         // "say_it" 与前端 "sayit" 脱节，曾致 save_settings 反序列化静默失败。
         let expected = [
-            (ProviderKind::WeType, "we_type"),
-            (ProviderKind::Doubao, "doubao"),
-            (ProviderKind::WinH, "win_h"),
             (ProviderKind::SayIt, "sayit"),
             (ProviderKind::Custom, "custom"),
             (ProviderKind::None, "none"),
@@ -189,32 +180,22 @@ mod tests {
     }
 
     #[test]
-    fn wetype_toggle_taps_on_both_edges() {
-        let config = ProviderConfig { kind: ProviderKind::WeType, ..Default::default() };
-        assert_eq!(
-            config.trigger_on_stream_start(),
-            ProviderTrigger::Tap { vk: vk::LWIN, modifiers: MOD_CONTROL }
-        );
-        assert_eq!(
-            config.trigger_on_stream_stop(),
-            ProviderTrigger::Tap { vk: vk::LWIN, modifiers: MOD_CONTROL }
-        );
+    fn legacy_provider_kinds_fail_deserialization() {
+        // we_type / doubao / win_h 已裁剪：新配置不可能再写出这些 kind，
+        // 反序列化必须失败（旧值由 settings.rs v2→v3 迁移改写为 custom），
+        // 而不是静默落进错误分支。
+        for wire in ["we_type", "doubao", "win_h"] {
+            assert!(serde_json::from_str::<ProviderKind>(&format!("\"{wire}\"")).is_err());
+        }
     }
 
     #[test]
-    fn doubao_hold_presses_then_releases() {
-        let config = ProviderConfig { kind: ProviderKind::Doubao, ..Default::default() };
-        assert!(matches!(config.trigger_on_stream_start(), ProviderTrigger::Press { .. }));
-        assert!(matches!(config.trigger_on_stream_stop(), ProviderTrigger::Release { .. }));
-    }
-
-    #[test]
-    fn win_h_taps() {
-        let config = ProviderConfig { kind: ProviderKind::WinH, ..Default::default() };
-        assert_eq!(
-            config.trigger_on_stream_start(),
-            ProviderTrigger::Tap { vk: vk::H, modifiers: crate::actions::MOD_WIN }
-        );
+    fn legacy_shortcuts_match_removed_providers_defaults() {
+        // 迁移预填值的锚点：与被删 Provider 的原默认键位一致，
+        // 升级用户的触发行为不因裁剪改变。
+        assert_eq!(legacy_shortcuts::WETYPE_TOGGLE, (crate::actions::vk::LWIN, MOD_CONTROL));
+        assert_eq!(legacy_shortcuts::DOUBAO_HOLD, (crate::actions::vk::LCONTROL, 0));
+        assert_eq!(legacy_shortcuts::WIN_H, (crate::actions::vk::H, crate::actions::MOD_WIN));
     }
 
     #[test]
@@ -337,7 +318,7 @@ mod tests {
 
     #[test]
     fn drain_has_minimum() {
-        let config = ProviderConfig { kind: ProviderKind::WeType, stop_delay_ms: 10, ..Default::default() };
+        let config = ProviderConfig { kind: ProviderKind::Custom, stop_delay_ms: 10, ..Default::default() };
         assert_eq!(config.drain_ms(), 120);
     }
 }
