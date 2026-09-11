@@ -104,6 +104,8 @@ export interface AppSettings {
   experimentalVoiceExtend: boolean;
   /** 录音键触发模式：ptt=按住说话（蓝牙直传）；hands_free=按一下开关录音（系统麦克风）。 */
   voiceKeyTriggerMode: "ptt" | "hands_free";
+  /** F5 拦截总开关：遥控器在线期间吞掉全部 F5（含真键盘），防止语音键泄漏刷新前台页面。 */
+  f5GateEnabled: boolean;
   launchAtLogin: boolean;
   language: Language;
   theme: Theme;

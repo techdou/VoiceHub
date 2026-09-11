@@ -47,6 +47,9 @@ pub struct AppSettings {
     /// 录音键触发模式（免提 / 按住说话）。语音触发只由录音键承担，
     /// 其他键的旧触发绑定由 [`AppSettings::purge_legacy_voice_triggers`] 清除。
     pub voice_key_trigger_mode: VoiceKeyTriggerMode,
+    /// F5 拦截总开关：遥控器在线期间吞掉全部 F5（含真键盘），防止语音键
+    /// 泄漏刷新前台页面。关闭后退回纯时序兜底（GATT 武装窗口 + 会话）。
+    pub f5_gate_enabled: bool,
     pub launch_at_login: bool,
     pub language: Language,
     pub theme: Theme,
@@ -86,6 +89,7 @@ impl Default for AppSettings {
             button_mapping_enabled: true,
             experimental_voice_extend: false,
             voice_key_trigger_mode: VoiceKeyTriggerMode::Ptt,
+            f5_gate_enabled: true,
             launch_at_login: false,
             language: Language::System,
             theme: Theme::System,
@@ -285,6 +289,14 @@ mod tests {
         assert_eq!(s.voice_key_trigger_mode, VoiceKeyTriggerMode::Ptt);
     }
 
+    #[test]
+    fn f5_gate_defaults_on_for_legacy_settings() {
+        // 旧 settings.json 没有该字段：读取必须落到 true（默认拦截），
+        // 升级用户立即获得"遥控器在线吞 F5"保护。
+        let legacy = serde_json::json!({ "schemaVersion": 2, "onboardingComplete": true }).to_string();
+        let s = AppSettings::load(&legacy).unwrap();
+        assert!(s.f5_gate_enabled);
+    }
 
     #[test]
     fn migrates_legacy_provider_kinds_to_custom_with_default_shortcuts() {

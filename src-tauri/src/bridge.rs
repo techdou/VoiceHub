@@ -72,6 +72,8 @@ pub struct Bridge {
     voice_finishing: AtomicBool,
     voice_lifecycle: Mutex<()>,
     level_packet_count: AtomicU64,
+    /// key-gate 自愈计数（每 64 tick ≈ 1s 自检一次钩子存活）。
+    gate_check_tick: AtomicU64,
     pub remote_voice: Mutex<crate::remote_voice::RemoteVoice>,
     voice_provider: Mutex<Option<(u8, voicehub_core::provider::ProviderConfig)>>,
 }
@@ -119,6 +121,7 @@ impl Bridge {
             voice_finishing: AtomicBool::new(false),
             voice_lifecycle: Mutex::new(()),
             level_packet_count: AtomicU64::new(0),
+            gate_check_tick: AtomicU64::new(0),
             remote_voice: Mutex::new(Default::default()),
             voice_provider: Mutex::new(None),
         });
@@ -232,6 +235,12 @@ impl Bridge {
             inner.settings.voice_key_trigger_mode
         };
         bridge.ble.set_voice_key_mode(voice_key_mode);
+        // F5 拦截总开关（遥控器在线期间的常驻武装）。
+        let f5_gate = {
+            let inner = lock(&bridge.inner);
+            inner.settings.f5_gate_enabled
+        };
+        key_gate::set_gate_enabled(f5_gate);
         bridge
     }
 
@@ -254,6 +263,15 @@ impl Bridge {
     fn handle(self: &Arc<Self>, event: InternalEvent) {
         match event {
             InternalEvent::Tick => {
+                // key-gate 自愈：钩子线程 panic / 消息泵停转后 HOOK 标志已被
+                // 清掉（key_gate::install 的退出路径），每 ~1s 自检重装一次，
+                // 避免 F5 保护静默失效到下次重启。
+                if self.gate_check_tick.fetch_add(1, Ordering::Relaxed).is_multiple_of(64)
+                    && !key_gate::is_installed()
+                {
+                    log::warn!("[key-gate] hook lost; reinstalling");
+                    key_gate::install();
+                }
                 let events = lock(&self.inner).gesture.tick(now_ms());
                 for gesture_event in events {
                     self.dispatch_gesture(gesture_event.button, gesture_event.gesture);
@@ -513,6 +531,11 @@ impl Bridge {
         match event {
             BleEvent::SnapshotChanged => {
                 let snapshot = self.ble.snapshot();
+                // 遥控器在线 = 常驻武装 F5 吞键（GATT 时序兜底的根治层）；
+                // 断开即解除，真键盘 F5 恢复。
+                key_gate::set_remote_connected(
+                    snapshot.phase == voicehub_windows::ble::ConnectionPhase::Ready,
+                );
                 let mut events = Vec::new();
                 if snapshot.phase != voicehub_windows::ble::ConnectionPhase::Ready {
                     let event = {
@@ -788,6 +811,7 @@ impl Bridge {
         let language_changed;
         let extend_changed;
         let voice_mode_changed;
+        let f5_gate_changed;
         {
             let mut inner = lock(&self.inner);
             // 锁内只 diff + 更新内存；写盘（含 sync_all）挪到锁外——锁内写盘会把
@@ -799,6 +823,7 @@ impl Bridge {
             language_changed = settings.language != previous.language;
             extend_changed = settings.experimental_voice_extend != previous.experimental_voice_extend;
             voice_mode_changed = settings.voice_key_trigger_mode != previous.voice_key_trigger_mode;
+            f5_gate_changed = settings.f5_gate_enabled != previous.f5_gate_enabled;
             if settings.paired_device_id != previous.paired_device_id {
                 inner.gesture.reset();
                 inner.usage_tracker = UsageTracker::default();
@@ -829,6 +854,9 @@ impl Bridge {
         if voice_mode_changed {
             // 录音键触发模式热切换：ble 层立即生效（免提压流 / 按住直传）。
             self.ble.set_voice_key_mode(settings.voice_key_trigger_mode);
+        }
+        if f5_gate_changed {
+            key_gate::set_gate_enabled(settings.f5_gate_enabled);
         }
         Ok(())
     }

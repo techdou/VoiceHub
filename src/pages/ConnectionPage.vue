@@ -293,6 +293,12 @@ function setVoiceKeyMode(mode: "ptt" | "hands_free") {
   draft.value = { ...draft.value, voiceKeyTriggerMode: mode };
 }
 
+// F5 拦截：遥控器在线期间吞掉全部 F5（含真键盘），防止语音键泄漏刷新
+// 前台页面（网页表单内容丢失的根源）。关闭后退回纯时序兜底。
+function setF5Gate(enabled: boolean) {
+  if (!draft.value || draft.value.f5GateEnabled === enabled) return;
+  draft.value = { ...draft.value, f5GateEnabled: enabled };
+}
 </script>
 
 <template>
@@ -525,6 +531,17 @@ function setVoiceKeyMode(mode: "ptt" | "hands_free") {
             : t("connection.trigger.ptt_desc")
         }}
       </p>
+      <div class="setting-row" style="padding-top: 0">
+        <div>
+          <div class="label">{{ t("connection.f5_gate.title") }}</div>
+          <div class="desc">{{ t("connection.f5_gate.hint") }}</div>
+        </div>
+        <button
+          class="switch"
+          :class="{ on: draft.f5GateEnabled }"
+          @click="setF5Gate(!draft.f5GateEnabled)"
+        ></button>
+      </div>
     </section>
 
     <section class="card">
