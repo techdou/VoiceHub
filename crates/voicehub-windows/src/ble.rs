@@ -621,10 +621,10 @@ fn connect_session(
         .or_else(|| read_remote_model(&device))
         .unwrap_or(RemoteModel::Unknown);
 
-    let service = find_service(&device, &AtvvUuids::SERVICE)?;
-    let transmit = find_characteristic(&service, &AtvvUuids::TRANSMIT)?;
-    let audio = find_characteristic(&service, &AtvvUuids::AUDIO)?;
-    let control = find_characteristic(&service, &AtvvUuids::CONTROL)?;
+    let service = find_service(&device, AtvvUuids::SERVICE)?;
+    let transmit = find_characteristic(&service, AtvvUuids::TRANSMIT)?;
+    let audio = find_characteristic(&service, AtvvUuids::AUDIO)?;
+    let control = find_characteristic(&service, AtvvUuids::CONTROL)?;
 
     // 订阅 audio + control（token 分别保存，Drop 时各自注销）。
     let audio_token = subscribe(&audio, inbox.clone(), generation, false)?;

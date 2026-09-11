@@ -102,6 +102,12 @@ pub struct AudioRuntime {
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
+impl Default for AudioRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioRuntime {
     pub fn new() -> Self {
         let (sender, receiver) = sync_channel(MESSAGE_QUEUE_CAPACITY);
@@ -282,9 +288,9 @@ fn worker_loop(receiver: Receiver<AudioMessage>, state: Arc<Mutex<AudioSnapshot>
             }
             Ok(AudioMessage::Shutdown { reply }) => {
                 if let Some(s) = sink.as_mut() {
-                    let _ = s.stop();
+                    s.stop();
                 }
-                let _ = wasapi::deinitialize();
+                wasapi::deinitialize();
                 let _ = reply.send(());
                 return;
             }
@@ -306,7 +312,7 @@ fn worker_loop(receiver: Receiver<AudioMessage>, state: Arc<Mutex<AudioSnapshot>
             }
         }
     }
-    let _ = wasapi::deinitialize();
+    wasapi::deinitialize();
 }
 
 fn pump(sink: &mut AudioSink, queue: &mut VecDeque<i16>, draining: bool) -> Result<usize> {
@@ -355,7 +361,7 @@ fn drain(
                     .map(|padding| padding == 0)
                     .unwrap_or(true);
             if drained {
-                let _ = s.stop();
+                s.stop();
                 return Ok(set_phase(state, AudioPhase::Idle, generation));
             }
         } else {
@@ -366,7 +372,7 @@ fn drain(
     }
     // 超时：硬停并清队列（防粘流）。
     if let Some(s) = sink {
-        let _ = s.stop();
+        s.stop();
     }
     queue.clear();
     Ok(set_phase(state, AudioPhase::Idle, generation))

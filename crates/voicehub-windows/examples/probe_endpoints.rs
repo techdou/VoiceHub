@@ -87,7 +87,7 @@ fn main() {
         println!("  {name}");
         println!("         id={id}");
     }
-    let _ = wasapi::deinitialize();
+    wasapi::deinitialize();
 }
 
 fn candidate_mark(candidate: bool) -> &'static str {

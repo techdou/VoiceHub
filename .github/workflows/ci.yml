@@ -53,5 +53,5 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Run workspace tests
         run: cargo test --workspace --lib
-      - name: Clippy (warnings only, non-blocking report)
-        run: cargo clippy --workspace --lib || true
+      - name: Clippy (deny-level lints block; style warnings tolerated)
+        run: cargo clippy --workspace --all-targets

@@ -92,7 +92,7 @@ fn main() {
             }
         }
     }
-    let _ = wasapi::deinitialize();
+    wasapi::deinitialize();
 }
 
 fn verdict<T>(result: &Result<T, String>) -> String {

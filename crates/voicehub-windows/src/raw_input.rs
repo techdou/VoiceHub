@@ -328,15 +328,11 @@ fn parse_raw_input(raw: &RAWINPUT, wparam: WPARAM) -> Vec<HidEvent> {
 }
 
 /// usage 集合流 → 按键沿（宿主侧调用；也可在监控线程内做）。
+#[derive(Default)]
 pub struct UsageTracker {
     previous: Vec<u16>,
 }
 
-impl Default for UsageTracker {
-    fn default() -> Self {
-        Self { previous: Vec::new() }
-    }
-}
 
 impl UsageTracker {
     /// usage 集合 → 按键沿（按时间顺序：先释放后按下）。

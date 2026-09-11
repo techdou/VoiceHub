@@ -79,19 +79,18 @@ pub fn list_downloaded_models() -> Vec<LocalModelInfo> {
                         && model_path.join("tokens.txt").exists();
                 }
             }
-        } else {
-            for source in &model.sources {
-                for file in &source.files {
-                    let file_path = model_path.join(&file.name);
-                    if file_path.exists() {
-                        actual_size += std::fs::metadata(&file_path)
-                            .map(|m| m.len())
-                            .unwrap_or(0);
-                    } else {
-                        complete = false;
-                    }
+        } else if let Some(source) = model.sources.first() {
+            // 与上游行为等价：原外层循环体末尾无条件 break（只检查第一个 source），
+            // 直写 first() 消除"从不循环"的 deny 级 clippy 告警。
+            for file in &source.files {
+                let file_path = model_path.join(&file.name);
+                if file_path.exists() {
+                    actual_size += std::fs::metadata(&file_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                } else {
+                    complete = false;
                 }
-                break; // 只检查第一个 source
             }
         }
 

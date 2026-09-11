@@ -86,6 +86,17 @@ const MECHANICAL_PATCHES = [
 // ---------------------------------------------------------------------------
 const MANUAL_PATCHES = [
   {
+    id: 'registry-first-source-loop',
+    files: ['native/src/models/registry.rs'],
+    describe: 'Local-model completeness scan unrolls the outer loop that upstream broke out of unconditionally (only the first source was ever checked); behavior is identical, the never-loops clippy denial is gone.',
+    verify() {
+      const code = readVendor('native/src/models/registry.rs');
+      if (!code.includes('model.sources.first()')) return 'registry.rs lost the first() unroll';
+      if (code.includes('break; // 只检查第一个 source')) return 'registry.rs still has the never-looping outer for';
+      return null;
+    },
+  },
+  {
     id: 'remote-transport-embed',
     files: ['frontend/src/services/recorder/RemoteTransport.ts', 'frontend/src/services/recorder/RecorderOrchestrator.ts',
       'frontend/src/services/remoteCapture.ts', 'frontend/src/RemoteWorkspace.tsx'],
