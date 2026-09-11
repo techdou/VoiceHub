@@ -7,6 +7,7 @@ import MappingCanvas from "../components/MappingCanvas.vue";
 import PageSkeleton from "../components/PageSkeleton.vue";
 import SaveBadge from "../components/SaveBadge.vue";
 import { actionLabel as sharedActionLabel } from "../actionLabel";
+import { absentButtonsForModel } from "../canvasLayout";
 
 const props = defineProps<{
   settings: AppSettings | null;
@@ -14,6 +15,8 @@ const props = defineProps<{
   saveError: string;
   activeButtons?: Set<string>;
   voiceActive?: boolean;
+  /** BLE 2A24 型号串（RC003 等）；null = 未连接。 */
+  remoteModel?: string | null;
 }>();
 
 const emit = defineEmits<{ "update-settings": [settings: AppSettings] }>();
@@ -49,6 +52,8 @@ const showPicker = ref(false);
 
 // 支持双击/长按槽的键（与 Rust supports_secondary 保持一致）。
 const SECONDARY_BUTTONS = new Set(["home", "menu", "ok", "tv", "volume_up", "volume_down"]);
+// 此型号机身上不存在的键：卡片置灰 + 槽禁用（语义见 canvasLayout.ts 同名函数）。
+const ABSENT_BUTTONS = absentButtonsForModel(props.remoteModel);
 
 function selectButton(button: string) {
   selectedButton.value = button as RemoteButtonId;
@@ -130,6 +135,7 @@ function toggleMapping(enabled: boolean) {
         :active-buttons="activeButtons ?? new Set()"
         :voice-active="voiceActive ?? false"
         :secondary-buttons="SECONDARY_BUTTONS"
+        :absent-buttons="ABSENT_BUTTONS"
         @select-button="selectButton"
         @edit-slot="editSlot"
       />

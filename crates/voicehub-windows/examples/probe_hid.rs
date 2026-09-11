@@ -5,7 +5,7 @@
 //! 1. 系统里所有 Xiaomi (VID 0x2717) 原始输入设备及类型；
 //! 2. 每次 WM_INPUT 的原始报文（hex）、当前解析器 parse_usage_report 的结果、
 //!    usage→RemoteButton 映射结果。
-//! 运行：cargo run -p sb-windows --example probe_hid，然后按遥控器按键。
+//! 运行：cargo run -p voicehub-windows --example probe_hid，然后按遥控器按键。
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::{

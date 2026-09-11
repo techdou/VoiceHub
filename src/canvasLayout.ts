@@ -18,6 +18,18 @@ export type CanvasButtonId =
   | "menu"
   | "tv";
 
+/// 型号 → 机身上不存在的物理键（映射页置灰标注，避免"配了白配"）。
+/// 语义权威在 Rust 侧 remote_model.rs 的 RemoteModel::absent_buttons（含单测）；
+/// 此处是展示层的同步副本——改其一须同步另一处。
+/// RC003 实测基线（PID 0x5070）：无电源 / 返回 / TV 键。
+export function absentButtonsForModel(model: string | null | undefined): Set<CanvasButtonId> {
+  const upper = (model ?? "").trim().toUpperCase();
+  if (upper.includes("RC003") || upper.includes("MI RC")) {
+    return new Set<CanvasButtonId>(["power", "back", "tv"]);
+  }
+  return new Set<CanvasButtonId>();
+}
+
 export const CANVAS = {
   width: 780,
   height: 700,

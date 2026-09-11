@@ -24,6 +24,8 @@ const props = defineProps<{
   voiceActive: boolean;
   /** 不支持双击/长按的按键（二级槽禁用置灰）。 */
   secondaryButtons: Set<string>;
+  /** 当前型号机身上不存在的键（整卡置灰 + 角标"此型号无此键"）。 */
+  absentButtons: Set<string>;
 }>();
 
 const emit = defineEmits<{
@@ -65,6 +67,7 @@ function slotAction(button: string, slot: Slot): ButtonAction {
 }
 
 function slotEnabled(button: string, slot: Slot): boolean {
+  if (isAbsent(button)) return false; // 此型号无此物理键：配了也不会触发
   if (isPushToTalk(button)) return false; // 按住说话直通键：三槽挂起（后端已互斥）
   return slot === "single" || props.secondaryButtons.has(button);
 }
@@ -73,10 +76,15 @@ function isPushToTalk(button: string): boolean {
   return props.bindings[button]?.pushToTalk ?? false;
 }
 
+function isAbsent(button: string): boolean {
+  return props.absentButtons.has(button);
+}
+
 function linkState(button: string) {
   return {
     selected: props.selected === button,
     active: props.activeButtons.has(button),
+    absent: isAbsent(button),
   };
 }
 
@@ -138,6 +146,7 @@ onBeforeUnmount(() => observer?.disconnect());
                     : 'rgba(128, 128, 128, 0.4)'
               "
               :stroke-width="linkState(link.button).selected ? 1.8 : 1"
+              :opacity="linkState(link.button).absent ? 0.25 : undefined"
               stroke-linecap="round"
             />
             <polygon
@@ -178,6 +187,7 @@ onBeforeUnmount(() => observer?.disconnect());
           :class="{
             selected: selected === card.button,
             active: activeButtons.has(card.button),
+            absent: isAbsent(card.button),
           }"
           :style="{ left: `${card.x}px`, top: `${card.y}px`, width: `${card.width}px` }"
           @click="emit('selectButton', card.button)"
@@ -187,7 +197,8 @@ onBeforeUnmount(() => observer?.disconnect());
               <span class="mc-key-icon">{{ buttonIcons[card.button] ?? "" }}</span>
               <strong>{{ buttonName(card.button) }}</strong>
             </span>
-            <span v-if="isPushToTalk(card.button)" class="mc-ptt-badge">PTT</span>
+            <span v-if="isAbsent(card.button)" class="mc-absent-badge">{{ t("buttons.absent_key") }}</span>
+            <span v-else-if="isPushToTalk(card.button)" class="mc-ptt-badge">PTT</span>
           </div>
           <div class="mc-slots">
             <button
@@ -384,6 +395,26 @@ onBeforeUnmount(() => observer?.disconnect());
   border-radius: 4px;
   padding: 0 4px;
   line-height: 14px;
+}
+
+.mc-absent-badge {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+  border: 1px solid var(--text-secondary);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.mc-card.absent {
+  opacity: 0.5;
+  filter: saturate(0.35);
+}
+.mc-card.absent .mc-card-head {
+  cursor: default;
 }
 
 .mc-slot.disabled {
