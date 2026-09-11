@@ -196,6 +196,7 @@ onMounted(async () => {
         v-else-if="page === 'simulator'"
         :physical-active-buttons="activeButtons"
         :provider-kind="settings?.provider.kind"
+        :remote-model="bleSnapshot?.remoteModel ?? null"
       />
       <AboutPage v-else-if="page === 'about'" :version="version" @open="openUrl" />
     </main>

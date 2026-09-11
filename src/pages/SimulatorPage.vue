@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { useI18n } from "../i18n";
+import { absentButtonsForModel } from "../canvasLayout";
 import type { UiEvent } from "../types";
 import RemoteCanvas from "../components/RemoteCanvas.vue";
 
@@ -17,7 +18,10 @@ interface Receipt {
   at: string;
 }
 
-const props = defineProps<{ physicalActiveButtons?: Set<string>; providerKind?: string }>();
+const props = defineProps<{ physicalActiveButtons?: Set<string>; providerKind?: string; remoteModel?: string | null }>();
+
+// 此型号机身上不存在的键：淡显提示（语义权威见 canvasLayout.ts）。
+const absentButtons = computed(() => absentButtonsForModel(props.remoteModel));
 
 const receipts = ref<Receipt[]>([]);
 const voiceBusy = ref(false);
@@ -162,8 +166,10 @@ onBeforeUnmount(() => {
           :selected="selected"
           :active-buttons="mergedActive"
           :voice-active="recording"
+          :absent-buttons="absentButtons"
           @select="press"
         />
+
         <div class="row" style="justify-content: center; margin-top: 12px">
           <button
             v-for="mode in ['single', 'double', 'long'] as const"
