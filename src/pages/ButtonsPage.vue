@@ -53,13 +53,18 @@ const showPicker = ref(false);
 // 支持双击/长按槽的键（与 Rust supports_secondary 保持一致）。
 const SECONDARY_BUTTONS = new Set(["home", "menu", "ok", "tv", "volume_up", "volume_down"]);
 // 此型号机身上不存在的键：卡片置灰 + 槽禁用（语义见 canvasLayout.ts 同名函数）。
-const ABSENT_BUTTONS = absentButtonsForModel(props.remoteModel);
+// 必须是 computed——启动时 bleSnapshot 异步未回（remoteModel=null 算出空集），
+// 遥控器后连上要能重新求值，常量一次求值会让置灰永不出现。
+const ABSENT_BUTTONS = computed(() => absentButtonsForModel(props.remoteModel));
 
 function selectButton(button: string) {
+  // 此型号无此键：不可选中（编辑区随选中出现，放行会让 PTT 开关可配）。
+  if (ABSENT_BUTTONS.value.has(button as RemoteButtonId)) return;
   selectedButton.value = button as RemoteButtonId;
 }
 
 function editSlot(button: string, slot: "single" | "double" | "long") {
+  if (ABSENT_BUTTONS.value.has(button as RemoteButtonId)) return;
   selectedButton.value = button as RemoteButtonId;
   editingSlot.value = slot;
   showPicker.value = true;
@@ -81,8 +86,15 @@ function applyAction(action: ButtonAction) {
 // 按住说话（push-to-talk）：边沿直达的第四通道——按下沿发 ptt-down、释放沿发
 // ptt-up（事件直连引擎），让这个遥控器键变成"按住说话"的麦克风触发键。
 // 开关式绑定，无需组合键；与三槽手势后端互斥忽略。
+// 选中键动态判缺席：模型识别可能在选中之后才到达（Unknown → RC003），
+// 已选中的键会"变缺席"，编辑区与 PTT 开关都要跟着收起。
+const selectedAbsent = computed(() => {
+  const button = selectedButton.value;
+  return !!button && ABSENT_BUTTONS.value.has(button);
+});
+
 function toggleHoldKey() {
-  if (!selectedButton.value) return;
+  if (!selectedButton.value || selectedAbsent.value) return;
   const button = selectedButton.value;
   const next = !selectedHoldEnabled.value;
   commit((settings) => {
@@ -140,7 +152,7 @@ function toggleMapping(enabled: boolean) {
         @edit-slot="editSlot"
       />
       <!-- 按住说话：边沿直达通道，绕过单击/双击/长按判定（与三槽互斥，见 mapping.rs）。 -->
-      <div v-if="selectedButton" class="setting-row" style="margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px">
+      <div v-if="selectedButton && !selectedAbsent" class="setting-row" style="margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px">
         <div>
           <div class="label">{{ t("buttons.hold.title") }}</div>
           <div class="desc">
@@ -157,7 +169,7 @@ function toggleMapping(enabled: boolean) {
     </section>
 
     <ActionPicker
-      v-if="showPicker && selectedButton"
+      v-if="showPicker && selectedButton && !selectedAbsent"
       :button-id="selectedButton"
       :slot="editingSlot"
       :current="bindingFor(selectedButton)[editingSlot]"

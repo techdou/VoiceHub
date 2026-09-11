@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createApp, h, nextTick } from 'vue'
+import { createApp, h, nextTick, ref } from 'vue'
 import ButtonsPage from './pages/ButtonsPage.vue'
 import type { AppSettings } from './types'
 
@@ -26,7 +26,7 @@ function settingsFixture(): AppSettings {
       rules: { processBindings: {}, fallbackProfileId: 'p1' },
     },
     buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: 'ptt',
-    launchAtLogin: false, language: 'system', theme: 'system',
+    f5GateEnabled: true, launchAtLogin: false, language: 'system', theme: 'system',
   } as AppSettings
 }
 
@@ -80,6 +80,52 @@ describe('buttons page instant-save UX', () => {
     expect(binding.double).toEqual({ kind: 'delete_line' })
     // 原设置对象不被就地污染（写穿走 emit，由宿主乐观更新）。
     expect(settings.profiles.profiles[0].mapping.bindings.volume_down).toBeUndefined()
+    app.unmount()
+  })
+
+  // 回归：ABSENT_BUTTONS 必须是响应式的——启动时 bleSnapshot 未回（remoteModel=null
+  // 算出空集），遥控器后连上（RC003）置灰要随之出现；absent 键不可选中编辑。
+  it('absent markers appear reactively after the remote connects and block editing', async () => {
+    const settings = settingsFixture()
+    const emitted: AppSettings[] = []
+    const model = ref<string | null>(null)
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const app = createApp({
+      render: () => h(ButtonsPage, {
+        settings,
+        remoteModel: model.value,
+        saveState: 'idle', saveError: '',
+        'onUpdate-settings': (next: AppSettings) => emitted.push(next),
+      }),
+    })
+    app.mount(container)
+    await nextTick()
+
+    const powerCard = () => [...container.querySelectorAll('.mc-card')]
+      .find(el => el.textContent?.includes('电源键'))!
+    // 未连接（型号未知）：宁可多显示，不置灰。
+    expect(powerCard()).toBeTruthy()
+    expect(powerCard().classList.contains('absent')).toBe(false)
+
+    // 遥控器连上、识别为 RC003：电源/返回/TV 置灰，且点击不再进入编辑态。
+    model.value = 'Mi Remote Control 2 Pro RC003'
+    await nextTick()
+    await nextTick()
+    expect(powerCard().classList.contains('absent')).toBe(true)
+    powerCard().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    // 编辑区（按住说话行）只对已选中的非缺席键渲染。
+    const holdRow = container.querySelector('.setting-row .label')
+    expect(holdRow?.textContent).not.toBe('按住说话')
+
+    // 可用键（音量减）不受影响：仍可选中并出现编辑区。
+    const volumeCard = [...container.querySelectorAll('.mc-card')]
+      .find(el => el.textContent?.includes('音量减键'))!
+    volumeCard.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    const labels = [...container.querySelectorAll('.setting-row .label')].map(el => el.textContent)
+    expect(labels).toContain('按住说话')
     app.unmount()
   })
 
