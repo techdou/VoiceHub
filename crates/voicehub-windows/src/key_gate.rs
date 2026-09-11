@@ -36,6 +36,9 @@ static HOOK: AtomicI64 = AtomicI64::new(0);
 static GATE_ENABLED: AtomicBool = AtomicBool::new(true);
 /// 遥控器 BLE 连接状态（Ready 时常驻武装，断开即解除）。
 static REMOTE_CONNECTED: AtomicBool = AtomicBool::new(false);
+/// 安装权互斥：覆盖 spawn → HOOK.store 的窗口，防止自愈重装与初始
+/// 安装并发时双线程双钩子（双钩子吞键无害，但退出只卸一个会泄漏到进程结束）。
+static INSTALL_LOCK: AtomicBool = AtomicBool::new(false);
 
 pub const HOLD_NONE: u32 = 0;
 pub const HOLD_SWALLOWED_ALL: u32 = 1;
@@ -106,6 +109,11 @@ fn persistent_armed() -> bool {
     GATE_ENABLED.load(Ordering::Relaxed) && REMOTE_CONNECTED.load(Ordering::Relaxed)
 }
 
+/// 诊断用：常驻武装当前是否激活（遥控器在线且开关开启）。
+pub fn is_persistent_armed() -> bool {
+    persistent_armed()
+}
+
 fn armed() -> bool {
     let until = ARMED_UNTIL_MS.load(Ordering::Relaxed);
     until != 0 && now_ms() < until
@@ -118,8 +126,14 @@ pub fn install() -> bool {
     if HOOK.load(Ordering::Relaxed) != 0 {
         return true;
     }
+    if INSTALL_LOCK
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return true; // 另一线程正在安装。
+    }
     MASTER.store(true, Ordering::Relaxed);
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("vh-key-gate".into())
         .spawn(|| {
             let pumped = std::panic::catch_unwind(|| unsafe {
@@ -129,9 +143,12 @@ pub fn install() -> bool {
                     }
                     Err(error) => {
                         log::error!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {error}");
+                        INSTALL_LOCK.store(false, Ordering::Relaxed);
                         return;
                     }
                 }
+                // 安装已生效，释放安装权（后续丢失可重装）。
+                INSTALL_LOCK.store(false, Ordering::Relaxed);
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                     DispatchMessageW(&msg);
@@ -147,10 +164,16 @@ pub fn install() -> bool {
                 // panic 路径兜底清标志（swap 卸载可能没跑到），
                 // 留着旧值会让 is_installed() 误报、自检永不重装。
                 HOOK.store(0, Ordering::Relaxed);
+                INSTALL_LOCK.store(false, Ordering::Relaxed);
                 log::error!("[key-gate] hook thread panicked; flag cleared for self-heal");
             }
         })
-        .is_ok()
+        .is_ok();
+    if !spawned {
+        // 线程都没起来：释放安装权，下次自检可重试。
+        INSTALL_LOCK.store(false, Ordering::Relaxed);
+    }
+    spawned
 }
 
 /// 钩子是否已安装（诊断用）。
@@ -180,7 +203,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let is_up = !(wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN);
             let pairing = HOLD_PAIRING.load(Ordering::Relaxed);
             let swallow = decide(
-                kb.vkCode as u32,
+                kb.vkCode,
                 is_up,
                 SESSION_ACTIVE.load(Ordering::Relaxed),
                 armed(),
@@ -199,7 +222,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 }
                 return LRESULT(1);
             }
-            if !is_up && kb.vkCode as u32 == VK_F5 {
+            if !is_up && kb.vkCode == VK_F5 {
                 // 泄漏只在配对状态转换时记一次（长按的重复 F5 不刷屏）。
                 // 竞态成因：F5 走 HID 通道，控制通知走 GATT 通道，F5 先到则
                 // 武装窗口未开——此时前台（如浏览器）会收到真实 F5（刷新）。

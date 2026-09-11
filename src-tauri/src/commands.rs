@@ -284,19 +284,28 @@ pub fn run_diagnostics(bridge: State<'_, Arc<Bridge>>, app: tauri::AppHandle) ->
         }
     });
 
-    // F5 吞键闸。
+    // F5 吞键闸（三态：未安装 / 常驻拦截中 / 时序兜底）。
     items.push(if voicehub_windows::key_gate::is_installed() {
-        DiagnosticItem {
-            id: "key_gate".into(),
-            title: "语音键拦截".into(),
-            detail: "F5 吞键闸已安装".into(),
-            status: "ok".into(),
+        if voicehub_windows::key_gate::is_persistent_armed() {
+            DiagnosticItem {
+                id: "key_gate".into(),
+                title: "语音键拦截".into(),
+                detail: "已安装；遥控器在线，F5 常驻拦截中（含键盘 F5，刷新请用 Ctrl+R）".into(),
+                status: "ok".into(),
+            }
+        } else {
+            DiagnosticItem {
+                id: "key_gate".into(),
+                title: "语音键拦截".into(),
+                detail: "已安装；当前为时序兜底模式（遥控器离线或拦截开关已关闭），语音键漏出仍可能刷新前台页面".into(),
+                status: "info".into(),
+            }
         }
     } else {
         DiagnosticItem {
             id: "key_gate".into(),
             title: "语音键拦截".into(),
-            detail: "F5 吞键闸未生效".into(),
+            detail: "F5 吞键闸未生效（约 1 秒后自动重装；若持续未生效请重启声枢）".into(),
             status: "warn".into(),
         }
     });
