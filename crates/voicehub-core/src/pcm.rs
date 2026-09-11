@@ -102,7 +102,9 @@ mod tests {
     fn gain_clamps_and_saturates() {
         let input = [30000i16; 8];
         let out = postprocess(&input, 24.0);
-        assert!(out.iter().all(|&s| s <= i16::MAX));
+        // 30000 × 24dB ≈ 475k，远超 i16 上限——必须逐样本饱和到 MAX，
+        // 而非 wrapping 回绕成负值/小数字（回绕是能听出来的爆音）。
+        assert!(out.iter().all(|&s| s == i16::MAX));
         let out2 = postprocess(&input, f64::NAN);
         assert!((out2[3] - 30000).abs() < 4);
     }
