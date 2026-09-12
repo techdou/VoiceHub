@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::actions::ButtonAction;
 use crate::mapping::ButtonMapping;
 use crate::provider::{legacy_shortcuts, ProviderConfig};
 
