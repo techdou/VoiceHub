@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn purge_clears_legacy_voice_triggers_and_keeps_other_actions() {
         use crate::mapping::{ButtonBinding, ButtonMapping};
-        use ButtonAction::{Disabled, Shortcut};
+        use crate::actions::ButtonAction::{Disabled, Shortcut};
 
         let shortcut = Shortcut { vk: 0x1b, modifiers: 0, label: "Esc".into() };
         let mut s = AppSettings::default();
