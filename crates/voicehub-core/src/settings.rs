@@ -42,9 +42,6 @@ pub struct AppSettings {
     pub mapping: ButtonMapping,
     /// 按键自定义映射总开关（关闭 = 遥控器按键直通系统）。
     pub button_mapping_enabled: bool,
-    /// 实验性：语音会话每 40s 发送 ATVV 续租（MIC_EXTEND），
-    /// 尝试突破约 60s 固件会话边界。固件是否接受未真机验证。
-    pub experimental_voice_extend: bool,
     /// 录音键触发模式（免提 / 按住说话）。语音触发只由录音键承担，
     /// 其他键的旧触发绑定由 [`AppSettings::purge_legacy_voice_triggers`] 清除。
     pub voice_key_trigger_mode: VoiceKeyTriggerMode,
@@ -88,7 +85,6 @@ impl Default for AppSettings {
             provider: ProviderConfig::default(),
             mapping: crate::mapping::default_mapping(),
             button_mapping_enabled: true,
-            experimental_voice_extend: false,
             voice_key_trigger_mode: VoiceKeyTriggerMode::Ptt,
             f5_gate_enabled: true,
             launch_at_login: false,

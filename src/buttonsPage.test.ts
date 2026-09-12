@@ -21,7 +21,7 @@ function settingsFixture(): AppSettings {
     provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
       sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
     mapping: { bindings: {} },
-    buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: 'ptt',
+    buttonMappingEnabled: true, voiceKeyTriggerMode: 'ptt',
     f5GateEnabled: true, launchAtLogin: false, language: 'system', theme: 'system',
   } as AppSettings
 }

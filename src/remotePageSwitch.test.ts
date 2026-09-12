@@ -16,7 +16,7 @@ vi.mock('./api', () => ({
       provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
       mapping: { bindings: {} },
-      buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: "ptt", launchAtLogin: false, language: 'system', theme: 'system',
+      buttonMappingEnabled: true, voiceKeyTriggerMode: "ptt", launchAtLogin: false, language: 'system', theme: 'system',
     }),
     getBleSnapshot: async () => ({ phase: 'idle' }),
     getStatistics: async () => ({ days: {} }),

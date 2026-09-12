@@ -221,14 +221,8 @@ impl Bridge {
                 bridge.ble.connect(device_id);
             }
         }
-        // 启动时按设置同步一次开机自启与实验性续租。
-        let extend_enabled = {
-            let inner = lock(&bridge.inner);
-            inner.settings.experimental_voice_extend
-        };
         // The speech workspace reads and changes the shared OS autostart state.
         // Do not overwrite it with the legacy hardware preference on every launch.
-        bridge.ble.set_extend_enabled(extend_enabled);
         // 启动时同步录音键触发模式（防重连后静默回退默认 Ptt）。
         let voice_key_mode = {
             let inner = lock(&bridge.inner);
@@ -772,7 +766,6 @@ impl Bridge {
         let audio_changed;
         let autostart_changed;
         let language_changed;
-        let extend_changed;
         let voice_mode_changed;
         let f5_gate_changed;
         {
@@ -784,7 +777,6 @@ impl Bridge {
                 (settings.audio_endpoint_name != previous.audio_endpoint_name || settings.provider.kind != previous.provider.kind);
             autostart_changed = settings.launch_at_login != previous.launch_at_login;
             language_changed = settings.language != previous.language;
-            extend_changed = settings.experimental_voice_extend != previous.experimental_voice_extend;
             voice_mode_changed = settings.voice_key_trigger_mode != previous.voice_key_trigger_mode;
             f5_gate_changed = settings.f5_gate_enabled != previous.f5_gate_enabled;
             if settings.paired_device_id != previous.paired_device_id {
@@ -810,9 +802,6 @@ impl Bridge {
         }
         if language_changed {
             crate::refresh_tray_menu(&self.app);
-        }
-        if extend_changed {
-            self.ble.set_extend_enabled(settings.experimental_voice_extend);
         }
         if voice_mode_changed {
             // 录音键触发模式热切换：ble 层立即生效（免提压流 / 按住直传）。

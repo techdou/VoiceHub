@@ -173,11 +173,6 @@ function commitGain() {
   draft.value = { ...draft.value, gainDb: gainDraft.value };
 }
 
-function setVoiceExtend(enabled: boolean) {
-  if (!draft.value) return;
-  draft.value = { ...draft.value, experimentalVoiceExtend: enabled };
-}
-
 function setCustomMode(mode: "toggle" | "hold") {
   if (!draft.value) return;
   draft.value = {
@@ -545,17 +540,6 @@ function setF5Gate(enabled: boolean) {
     </section>
 
     <section class="card">
-      <div class="setting-row" style="padding-top: 0">
-        <div>
-          <div class="label">{{ t("voice.extend.title") }}</div>
-          <div class="desc">{{ t("voice.extend.hint") }}</div>
-        </div>
-        <button
-          class="switch"
-          :class="{ on: draft.experimentalVoiceExtend }"
-          @click="setVoiceExtend(!draft.experimentalVoiceExtend)"
-        ></button>
-      </div>
     </section>
 
     <section class="card">
