@@ -117,22 +117,9 @@ pub fn default_mapping() -> ButtonMapping {
         ButtonBinding::single(shortcut(vk::DOWN, 0, "↓")),
     );
     mapping.set(
-        RemoteButton::Left,
-        ButtonBinding::single(shortcut(vk::LEFT, 0, "←")),
-    );
-    mapping.set(
-        RemoteButton::Right,
-        ButtonBinding::single(shortcut(vk::RIGHT, 0, "→")),
-    );
-    mapping.set(
         RemoteButton::Ok,
         ButtonBinding::single(shortcut(vk::RETURN, 0, "Enter")),
     );
-    mapping.set(
-        RemoteButton::Back,
-        ButtonBinding::single(shortcut(vk::BROWSER_BACK, 0, "Back")),
-    );
-    mapping.set(RemoteButton::Home, ButtonBinding::default());
     mapping.set(RemoteButton::VolumeUp, ButtonBinding::single(ButtonAction::VolumeUp));
     mapping.set(RemoteButton::VolumeDown, ButtonBinding::single(ButtonAction::VolumeDown));
     mapping

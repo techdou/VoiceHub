@@ -185,7 +185,6 @@ onMounted(async () => {
         :save-error="saveError"
         :active-buttons="activeButtons"
         :voice-active="recording"
-        :remote-model="bleSnapshot?.remoteModel ?? null"
         @update-settings="persistSettings"
       />
       <StatsPage v-else-if="page === 'stats'" />

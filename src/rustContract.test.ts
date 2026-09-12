@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { absentButtonsForModel } from "./canvasLayout"
+import type { RemoteButtonId } from "./types"
 
 /// 前后端契约对照：前端展示副本 vs Rust 语义权威，两边源码经 ?raw 读取
 /// （与 appApiContract/uiEventContract 同路数）。改任一侧而忘同步另一侧时，
@@ -23,19 +23,22 @@ function readSource(map: Record<string, string>, suffix: string): string {
   return hit![1]
 }
 
-/** PascalCase 枚举名 → 前端 button id（缺席集成员恰为全小写单词）。 */
-function toButtonId(variant: string): string {
-  return variant.toLowerCase()
+/** 从 buttons.rs 的 RemoteButton 枚举提取 wire 名（snake_case）。 */
+function rustRemoteButtonWires(): string[] {
+  const code = readSource(rustSources, "buttons.rs")
+  const block = code.match(/pub enum RemoteButton \{([\s\S]*?)\n\}/)
+  expect(block, "RemoteButton enum not found").toBeTruthy()
+  return [...block![1].matchAll(/^\s*(\w+),?$/gm)].map((m) =>
+    m[1].replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase(),
+  ).sort()
 }
 
-/** 从 remote_model.rs 的 absent_buttons 提取 Rc003 缺席键（PascalCase 列表）。 */
-function rustRc003Absent(): string[] {
-  const code = readSource(rustSources, "remote_model.rs")
-  const block = code.match(
-    /pub fn absent_buttons\([\s\S]*?RemoteModel::Rc003 => \{([\s\S]*?)\}/,
-  )
-  expect(block, "RemoteModel::absent_buttons Rc003 arm not found").toBeTruthy()
-  return [...block![1].matchAll(/RemoteButton::(\w+)/g)].map((m) => m[1])
+/** 从 types.ts 提取 RemoteButtonId 联合。 */
+function frontendRemoteButtonIds(): string[] {
+  const code = readSource(frontendSources, "types.ts")
+  const m = code.match(/export type RemoteButtonId[^=]*=([\s\S]*?);/)
+  expect(m, "frontend RemoteButtonId union not found").toBeTruthy()
+  return [...m![1].matchAll(/"([^"]+)"/g)].map((x) => x[1]).sort()
 }
 
 /** 从 provider.rs 枚举声明提取 wire 名（含 #[serde(rename)] 覆盖）。 */
@@ -71,18 +74,12 @@ function frontendProviderLiterals(): string[] {
 }
 
 describe("rust ↔ frontend contract", () => {
-  it("absent-button set matches RemoteModel::absent_buttons (RC003)", () => {
-    const rust = rustRc003Absent().map(toButtonId).sort()
-    const frontend = [...absentButtonsForModel("Mi Remote Control 2 Pro RC003")].sort()
-    expect(frontend).toEqual(rust)
-    // 权威侧声明的缺失键非空（防止解析失配后两边同时为空还绿）。
-    expect(rust.length).toBeGreaterThanOrEqual(3)
-  })
-
-  it("frontend absent set stays empty for unmeasured models", () => {
-    expect(absentButtonsForModel(null).size).toBe(0)
-    expect(absentButtonsForModel("Mi Remote Control 2 RC001").size).toBe(0)
-    expect(absentButtonsForModel("whatever").size).toBe(0)
+  it("RemoteButtonId matches the Rust RemoteButton wire names", () => {
+    expect(frontendRemoteButtonIds()).toEqual(rustRemoteButtonWires())
+    // 7 键模型锚点（RC003 真机定案）：防止两侧同时漂移回 12 键。
+    expect(rustRemoteButtonWires()).toEqual([
+      "down", "home", "menu", "ok", "up", "volume_down", "volume_up",
+    ])
   })
 
   it("ProviderKind literals match the Rust enum wire names", () => {

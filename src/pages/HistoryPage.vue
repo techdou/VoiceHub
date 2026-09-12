@@ -65,7 +65,6 @@ async function clearAll() {
             <span v-if="record.foregroundProcess">
               {{ t("history.app") }}：{{ record.foregroundProcess }}
             </span>
-            <span>{{ t("history.profile") }}：{{ record.profileName }}</span>
           </span>
         </div>
       </div>

@@ -13,15 +13,12 @@ const props = withDefaults(
     activeButtons?: Set<string>;
     voiceActive?: boolean;
     clickable?: boolean;
-    /** 此型号机身上不存在的键：热区淡显 + title 提示（仍可点——模拟器语义是测映射逻辑）。 */
-    absentButtons?: Set<string>;
   }>(),
   {
     selected: null,
     activeButtons: () => new Set<string>(),
     voiceActive: false,
     clickable: true,
-    absentButtons: () => new Set<string>(),
   },
 );
 
@@ -70,9 +67,6 @@ function isActive(id: string) {
   return props.activeButtons.has(id);
 }
 
-function isAbsent(id: string) {
-  return props.absentButtons.has(id);
-}
 </script>
 
 <template>
@@ -88,11 +82,9 @@ function isAbsent(id: string) {
       :class="{
         selected: selected === key.id,
         active: isActive(key.id),
-        absent: isAbsent(key.id),
       }"
       :style="style(key)"
       :disabled="!clickable"
-      :title="isAbsent(key.id) ? t('buttons.absent_key') : undefined"
       :aria-label="t(`buttons.key_names.${key.id}` as never)"
       @click="emit('select', key.id)"
     ></button>
@@ -189,9 +181,5 @@ function isAbsent(id: string) {
   }
 }
 
-.rc-key.absent {
-  opacity: 0.35;
-  filter: saturate(0.3);
-}
 
 </style>

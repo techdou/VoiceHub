@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::buttons::RemoteButton;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteModel {
@@ -47,20 +45,6 @@ impl RemoteModel {
             RemoteModel::Unknown => "未识别型号",
         }
     }
-
-    /// 该型号机身上不存在的物理键（映射页据此置灰，避免"配了白配"）。
-    /// 实测基线（RC003，PID 0x5070）：五接口 HID 地图里无电源 / 返回 /
-    /// TV 报文——触摸板导航（Up/Down/Ok）、音量键（consumer 页）与语音键
-    /// （键盘页 F5）实测可用；Home / 菜单的通道待采集（probe_hid）。
-    /// 未实测型号返回空集：宁可多显示，不臆断缺失。
-    pub fn absent_buttons(self) -> &'static [RemoteButton] {
-        match self {
-            RemoteModel::Rc003 => {
-                &[RemoteButton::Power, RemoteButton::Back, RemoteButton::Tv]
-            }
-            RemoteModel::Rc001 | RemoteModel::Arn9 | RemoteModel::Unknown => &[],
-        }
-    }
 }
 
 /// 设备名匹配（扫描广告时用）：小米遥控器的广播名。
@@ -93,25 +77,6 @@ mod tests {
         assert!(!RemoteModel::Rc003.adpcm_low_nibble_first());
     }
 
-    #[test]
-    fn rc003_marks_unimplemented_physical_buttons_absent() {
-        let absent = RemoteModel::Rc003.absent_buttons();
-        assert!(absent.contains(&RemoteButton::Power));
-        assert!(absent.contains(&RemoteButton::Back));
-        assert!(absent.contains(&RemoteButton::Tv));
-        // 实测可用的键不在缺失集。
-        for present in [RemoteButton::Ok, RemoteButton::Up, RemoteButton::Down, RemoteButton::VolumeUp, RemoteButton::VolumeDown] {
-            assert!(!absent.contains(&present));
-        }
-    }
-
-    #[test]
-    fn unmeasured_models_claim_no_absent_buttons() {
-        // RC001 / ARN9 未做键位实测：必须返回空集（宁可多显示不臆断）。
-        assert!(RemoteModel::Rc001.absent_buttons().is_empty());
-        assert!(RemoteModel::Arn9.absent_buttons().is_empty());
-        assert!(RemoteModel::Unknown.absent_buttons().is_empty());
-    }
 
     #[test]
     fn matches_advertised_names() {

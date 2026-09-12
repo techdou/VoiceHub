@@ -15,55 +15,43 @@ fn usage_map() -> &'static HashMap<u16, RemoteButton> {
     })
 }
 
-/// 12 个可映射按键 + 语音键。`hid_usage` 为遥控器 HID 报文里的 usage 值
-/// （usage 数组报文，2 字节小端；语音键走键盘页 F5 单独处理）。
+/// RC003 实有按键（2026-09-13 真机采集定案）+ 语音键。
+/// 12 键模型是 RC001 布局的遗产：电源/返回/TV 三轮采集零报文（机身无键），
+/// 左右键在 RC003 触摸板上不存在（水平滑动=光标移动，产品决策不拦截），
+/// 全部拔除。`hid_usage` 为遥控器 HID 报文里的 usage 值（usage 数组报文，
+/// 2 字节小端；语音键走键盘页 F5，Home/菜单走经典蓝牙键盘页 VK，单独处理）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteButton {
-    Power,
     Up,
-    Left,
     Ok,
-    Right,
     Down,
-    Back,
     VolumeUp,
     Home,
     VolumeDown,
     Menu,
-    Tv,
 }
 
 impl RemoteButton {
-    pub const ALL: [RemoteButton; 12] = [
-        RemoteButton::Power,
+    pub const ALL: [RemoteButton; 7] = [
         RemoteButton::Up,
-        RemoteButton::Left,
         RemoteButton::Ok,
-        RemoteButton::Right,
         RemoteButton::Down,
-        RemoteButton::Back,
         RemoteButton::VolumeUp,
         RemoteButton::Home,
         RemoteButton::VolumeDown,
         RemoteButton::Menu,
-        RemoteButton::Tv,
     ];
 
     pub fn hid_usage(self) -> u16 {
         match self {
-            RemoteButton::Power => 0x66,
             RemoteButton::Up => 0x52,
-            RemoteButton::Left => 0x50,
             RemoteButton::Ok => 0x28,
-            RemoteButton::Right => 0x4F,
             RemoteButton::Down => 0x51,
-            RemoteButton::Back => 0xF1,
             RemoteButton::VolumeUp => 0x80,
             RemoteButton::Home => 0x4A,
             RemoteButton::VolumeDown => 0x81,
             RemoteButton::Menu => 0x65,
-            RemoteButton::Tv => 0x35,
         }
     }
 
@@ -78,7 +66,6 @@ impl RemoteButton {
             RemoteButton::Home
                 | RemoteButton::Menu
                 | RemoteButton::Ok
-                | RemoteButton::Tv
                 // 音量键放开双击/长按槽（如"音量减 = Backspace，双击删整行"）；
                 // 手势识别器本就按键无关，此前的限制只是保守白名单。
                 // 代价：这些键的单击动作要等双击窗口超时才触发（与其他双击键一致）。

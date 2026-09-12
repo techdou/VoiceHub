@@ -3,32 +3,10 @@
 /// （黑色键面连通域分析：顶部 左电源/右语音、中部圆盘、左列 返回/主页/菜单、
 /// 右列 音量±/TV），与 src/assets/rc003-remote.webp 像素级对齐。
 
-export type Side = "left" | "right";
-export type CanvasButtonId =
-  | "power"
-  | "up"
-  | "left"
-  | "ok"
-  | "right"
-  | "down"
-  | "back"
-  | "volume_up"
-  | "home"
-  | "volume_down"
-  | "menu"
-  | "tv";
+import type { RemoteButtonId } from "./types";
 
-/// 型号 → 机身上不存在的物理键（映射页置灰标注，避免"配了白配"）。
-/// 语义权威在 Rust 侧 remote_model.rs 的 RemoteModel::absent_buttons（含单测）；
-/// 此处是展示层的同步副本——改其一须同步另一处。
-/// RC003 实测基线（PID 0x5070）：无电源 / 返回 / TV 键。
-export function absentButtonsForModel(model: string | null | undefined): Set<CanvasButtonId> {
-  const upper = (model ?? "").trim().toUpperCase();
-  if (upper.includes("RC003") || upper.includes("MI RC")) {
-    return new Set<CanvasButtonId>(["power", "back", "tv"]);
-  }
-  return new Set<CanvasButtonId>();
-}
+export type Side = "left" | "right";
+export type CanvasButtonId = RemoteButtonId;
 
 export const CANVAS = {
   width: 780,
@@ -51,18 +29,13 @@ interface Placement {
 }
 
 export const PLACEMENTS: Placement[] = [
-  { button: "power", side: "left", anchor: { x: 0.242, y: 0.064 }, targetY: 0.1 },
   { button: "up", side: "left", anchor: { x: 0.502, y: 0.136 }, targetY: 0.22 },
-  { button: "left", side: "left", anchor: { x: 0.198, y: 0.211 }, targetY: 0.34 },
-  { button: "back", side: "left", anchor: { x: 0.294, y: 0.36 }, targetY: 0.46 },
-  { button: "home", side: "left", anchor: { x: 0.294, y: 0.453 }, targetY: 0.58 },
+  { button: "home", side: "left", anchor: { x: 0.294, y: 0.453 }, targetY: 0.46 },
   { button: "menu", side: "left", anchor: { x: 0.295, y: 0.546 }, targetY: 0.7 },
-  { button: "right", side: "right", anchor: { x: 0.806, y: 0.211 }, targetY: 0.22 },
   { button: "ok", side: "right", anchor: { x: 0.502, y: 0.211 }, targetY: 0.34 },
   { button: "down", side: "right", anchor: { x: 0.502, y: 0.286 }, targetY: 0.46 },
   { button: "volume_up", side: "right", anchor: { x: 0.703, y: 0.363 }, targetY: 0.58 },
   { button: "volume_down", side: "right", anchor: { x: 0.703, y: 0.45 }, targetY: 0.7 },
-  { button: "tv", side: "right", anchor: { x: 0.703, y: 0.547 }, targetY: 0.82 },
 ];
 
 export const VOICE_ANCHOR = { x: 0.759, y: 0.064 };

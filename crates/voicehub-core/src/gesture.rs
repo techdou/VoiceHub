@@ -223,16 +223,16 @@ mod tests {
     #[test]
     fn long_hold_fires_long_press_not_single() {
         let mut r = GestureRecognizer::new();
-        let events = fire(&mut r, &[(100, Tv, true), (800, Tv, false)]);
-        assert_eq!(events, vec![GestureEvent { button: Tv, gesture: Gesture::LongPress }]);
+        let events = fire(&mut r, &[(100, Menu, true), (800, Menu, false)]);
+        assert_eq!(events, vec![GestureEvent { button: Menu, gesture: Gesture::LongPress }]);
     }
 
     #[test]
     fn hold_below_threshold_is_single_click() {
         let mut r = GestureRecognizer::new();
-        let events = fire(&mut r, &[(100, Tv, true), (600, Tv, false)]);
+        let events = fire(&mut r, &[(100, Menu, true), (600, Menu, false)]);
         // 500ms < 550ms 阈值 → 单击。
-        assert_eq!(events, vec![GestureEvent { button: Tv, gesture: Gesture::SingleClick }]);
+        assert_eq!(events, vec![GestureEvent { button: Menu, gesture: Gesture::SingleClick }]);
     }
 
     #[test]
@@ -240,10 +240,10 @@ mod tests {
         let mut r = GestureRecognizer::new();
         let events = fire(
             &mut r,
-            &[(100, Left, true), (120, Right, true), (160, Right, false), (170, Left, false)],
+            &[(100, Ok, true), (120, Menu, true), (160, Menu, false), (170, Ok, false)],
         );
-        assert!(events.contains(&GestureEvent { button: Left, gesture: Gesture::SingleClick }));
-        assert!(events.contains(&GestureEvent { button: Right, gesture: Gesture::SingleClick }));
+        assert!(events.contains(&GestureEvent { button: Ok, gesture: Gesture::SingleClick }));
+        assert!(events.contains(&GestureEvent { button: Menu, gesture: Gesture::SingleClick }));
     }
 
     #[test]
