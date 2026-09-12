@@ -305,6 +305,28 @@ fn parse_raw_input(raw: &RAWINPUT, wparam: WPARAM) -> Vec<HidEvent> {
             if kb.VKey == 0x74 {
                 return vec![HidEvent::VoiceKey { pressed }];
             }
+            // 2026-09-13 真机采集（probe_hid）：RC003 的 Home / 菜单键走
+            // 经典蓝牙 HID 键盘页（设备路径 PID&32b8——同一遥控器的经典蓝牙
+            // 接口，BLE GATT 是 5070），Windows 翻译成 VK_HOME(0x24) /
+            // VK_APPS(0x5D)。合成 consumer usage 集合，复用 UsageTracker
+            // 差分与手势状态机（Home/菜单支持双击/长按）。
+            match kb.VKey {
+                0x24 => {
+                    return vec![HidEvent::UsageSet(if pressed {
+                        vec![RemoteButton::Home.hid_usage()]
+                    } else {
+                        Vec::new()
+                    })]
+                }
+                0x5D => {
+                    return vec![HidEvent::UsageSet(if pressed {
+                        vec![RemoteButton::Menu.hid_usage()]
+                    } else {
+                        Vec::new()
+                    })]
+                }
+                _ => {}
+            }
             return vec![HidEvent::Activity];
         }
         if raw.header.dwType == RIM_TYPEMOUSE.0 {
@@ -385,6 +407,41 @@ mod tests {
             };
             assert!(input.into_events_for(Some(SELECTED_REMOTE)).is_empty());
         }
+    }
+
+    fn raw_input_vkey(vkey: u32, message: u32) -> Vec<HidEvent> {
+        use windows::Win32::Foundation::WPARAM;
+        use windows::Win32::UI::Input::{RAWINPUT, RAWINPUTHEADER, RIM_TYPEKEYBOARD};
+        let mut raw = RAWINPUT::default();
+        raw.header = RAWINPUTHEADER {
+            dwType: RIM_TYPEKEYBOARD.0,
+            dwSize: (std::mem::size_of::<RAWINPUT>() + 16) as u32,
+            hDevice: Default::default(),
+            wParam: WPARAM(0),
+        };
+        raw.data.keyboard.VKey = vkey as u16;
+        raw.data.keyboard.Message = message;
+        parse_raw_input(&raw, WPARAM(0)) // 0 = RIM_INPUT（前台）
+    }
+
+    #[test]
+    fn home_and_menu_vkeys_translate_to_usage_sets() {
+        // 真机采集结论：Home=VK_HOME(0x24)、菜单=VK_APPS(0x5D)，
+        // 按沿合成 usage 集合（手势状态机的上游），释放合成空集合。
+        let down = raw_input_vkey(0x24, 0x100);
+        assert_eq!(
+            down,
+            vec![HidEvent::UsageSet(vec![RemoteButton::Home.hid_usage()])]
+        );
+        let up = raw_input_vkey(0x24, 0x101);
+        assert_eq!(up, vec![HidEvent::UsageSet(Vec::new())]);
+        let menu_down = raw_input_vkey(0x5D, 0x100);
+        assert_eq!(
+            menu_down,
+            vec![HidEvent::UsageSet(vec![RemoteButton::Menu.hid_usage()])]
+        );
+        // 其他 vkey 不是按键事件。
+        assert_eq!(raw_input_vkey(0x41, 0x100), vec![HidEvent::Activity]);
     }
 
     #[test]
