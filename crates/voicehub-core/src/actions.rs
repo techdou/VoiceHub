@@ -58,24 +58,7 @@ pub const MOD_WIN: u8 = 0x08;
 pub enum ActionCategory {
     BasicKeys,
     SystemAndMedia,
-    Custom,
     Applications,
-}
-
-/// 自定义快捷键（录制自真实键盘）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CustomShortcut {
-    pub vk: u16,
-    pub modifiers: u8,
-    /// 展示名，如 "Ctrl+Shift+K"。
-    pub label: String,
-}
-
-impl CustomShortcut {
-    pub fn new(vk: u16, modifiers: u8, label: impl Into<String>) -> Self {
-        Self { vk, modifiers, label: label.into() }
-    }
 }
 
 /// 可绑定到遥控器按键的动作。
@@ -90,29 +73,13 @@ pub enum ButtonAction {
     VolumeUp,
     VolumeDown,
     VolumeMute,
-    /// 打开（或切换到）已装应用：可执行路径或 URI scheme。
+    /// 打开（或切换到）已装应用：可执行路径或 URI scheme（https:// 开头即开网页）。
     OpenApp { target: String, label: String },
-    /// 打开 HTTPS 网页（默认浏览器）。
-    OpenUrl { url: String },
-    /// 截图（全屏到剪贴板 / Win+Shift+S 区域截图）。
-    Screenshot { region: bool },
     /// 显示桌面（Win+D）。
     ShowDesktop,
-    /// 任务视图（Win+Tab）。
-    TaskView,
-    /// 切窗口（Alt+Tab 单步）。
-    AppSwitcher,
-    /// 对话框模拟左键（供 AI 客户端“继续”按钮）。
-    ClickConfirm,
     /// 删除整行：Home → Shift+End → Backspace 序列（光标回行首、选中整行、删除）。
     /// 适合绑双击槽（如"双击音量减 = 删掉当前行"）。
     DeleteLine,
-    /// 打开声桥设置窗。
-    OpenSettings,
-    /// 自定义快捷键（按键粒度引用，值存 mapping 的 shortcuts 表）。
-    Custom { shortcut: CustomShortcut },
-    /// 免提触发（事件直连引擎 toggle-hands-free，不注入按键、不依赖引擎快捷键配置）。
-    TriggerHandsFree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,12 +140,6 @@ pub fn preset_actions() -> Vec<PresetAction> {
         PresetAction { id: "next", category: SystemAndMedia, label_zh: "下一曲", label_en: "Next", action: ButtonAction::MediaKey { code: MediaKeyCode::Next } },
         PresetAction { id: "previous", category: SystemAndMedia, label_zh: "上一曲", label_en: "Previous", action: ButtonAction::MediaKey { code: MediaKeyCode::Previous } },
         PresetAction { id: "show_desktop", category: SystemAndMedia, label_zh: "显示桌面", label_en: "Show Desktop", action: ButtonAction::ShowDesktop },
-        PresetAction { id: "task_view", category: SystemAndMedia, label_zh: "任务视图", label_en: "Task View", action: ButtonAction::TaskView },
-        PresetAction { id: "app_switcher", category: SystemAndMedia, label_zh: "切换应用", label_en: "Switch App", action: ButtonAction::AppSwitcher },
-        PresetAction { id: "screenshot_full", category: SystemAndMedia, label_zh: "截图（全屏）", label_en: "Screenshot (Full)", action: ButtonAction::Screenshot { region: false } },
-        PresetAction { id: "screenshot_region", category: SystemAndMedia, label_zh: "截图（区域）", label_en: "Screenshot (Region)", action: ButtonAction::Screenshot { region: true } },
-        PresetAction { id: "click_confirm", category: SystemAndMedia, label_zh: "点击确认按钮", label_en: "Click Confirm", action: ButtonAction::ClickConfirm },
-        PresetAction { id: "open_settings", category: Custom, label_zh: "打开声桥设置", label_en: "Open SoundBridge", action: ButtonAction::OpenSettings },
     ]
 }
 
@@ -200,22 +161,13 @@ impl ButtonAction {
         match self {
             ButtonAction::Disabled
             | ButtonAction::Shortcut { .. }
-            | ButtonAction::Custom { .. }
-            | ButtonAction::TriggerHandsFree
             | ButtonAction::DeleteLine => ActionCategory::BasicKeys,
             ButtonAction::MediaKey { .. }
             | ButtonAction::VolumeUp
             | ButtonAction::VolumeDown
             | ButtonAction::VolumeMute
-            | ButtonAction::ShowDesktop
-            | ButtonAction::TaskView
-            | ButtonAction::AppSwitcher
-            | ButtonAction::Screenshot { .. }
-            | ButtonAction::ClickConfirm => ActionCategory::SystemAndMedia,
-            ButtonAction::OpenApp { .. } | ButtonAction::OpenUrl { .. } => {
-                ActionCategory::Applications
-            }
-            ButtonAction::OpenSettings => ActionCategory::Custom,
+            | ButtonAction::ShowDesktop => ActionCategory::SystemAndMedia,
+            ButtonAction::OpenApp { .. } => ActionCategory::Applications,
         }
     }
 }

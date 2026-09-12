@@ -5,12 +5,6 @@ export type Theme = "system" | "light" | "dark";
 export type ProviderKind = "sayit" | "custom" | "none";
 export type TriggerMode = "toggle" | "hold";
 
-export interface CustomShortcut {
-  vk: number;
-  modifiers: number;
-  label: string;
-}
-
 export type ButtonAction =
   | { kind: "disabled" }
   | { kind: "shortcut"; vk: number; modifiers: number; label: string }
@@ -18,18 +12,10 @@ export type ButtonAction =
   | { kind: "volume_up" }
   | { kind: "volume_down" }
   | { kind: "volume_mute" }
+  /** 打开（或切换到）已装应用：可执行路径或 URI scheme（https:// 即开网页）。 */
   | { kind: "open_app"; target: string; label: string }
-  | { kind: "open_url"; url: string }
-  | { kind: "screenshot"; region: boolean }
   | { kind: "show_desktop" }
-  | { kind: "task_view" }
-  | { kind: "app_switcher" }
-  | { kind: "click_confirm" }
-  | { kind: "delete_line" }
-  | { kind: "open_settings" }
-  | { kind: "custom"; shortcut: CustomShortcut }
-  /** 免提触发（事件直连引擎，不注入按键）。 */
-  | { kind: "trigger_hands_free" };
+  | { kind: "delete_line" };
 
 export type RemoteButtonId =
   | "power"

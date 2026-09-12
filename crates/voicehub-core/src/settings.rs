@@ -121,16 +121,12 @@ impl AppSettings {
         Ok(settings)
     }
 
-    /// 清除其他键上的语音触发绑定（pushToTalk / 免提动作）。
-    /// 语音触发统一由录音键模式（voice_key_trigger_mode）承担。
+    /// 清除其他键上的按住说话绑定（push_to_talk 开关）。语音触发统一由
+    /// 录音键模式（voice_key_trigger_mode）承担；免提槽位动作已在 v4
+    /// 迁移中随 TriggerHandsFree 枚举一并清洗为 Disabled。
     pub fn purge_legacy_voice_triggers(&mut self) {
         for binding in self.mapping.bindings.values_mut() {
             binding.push_to_talk = false;
-            for slot in [&mut binding.single, &mut binding.double, &mut binding.long] {
-                if matches!(slot, ButtonAction::TriggerHandsFree) {
-                    *slot = ButtonAction::Disabled;
-                }
-            }
         }
     }
 
@@ -155,6 +151,7 @@ impl AppSettings {
             // v3 → v4：拔除多方案机制——选中方案的映射提升为顶层 mapping，
             // profiles 数据整体丢弃（UI 已单方案许久，其余方案不可达）。
             if let Some(obj) = value.as_object_mut() {
+                let existing_mapping = obj.get("mapping").cloned();
                 let profiles_value = obj.remove("profiles");
                 let selected_mapping = profiles_value.as_ref().and_then(|store| {
                     let list = store.get("profiles")?.as_array()?;
@@ -166,8 +163,11 @@ impl AppSettings {
                     chosen.and_then(|p| p.get("mapping")).cloned()
                 });
                 // 无 profiles 数据的异常配置落出厂默认映射，不让按键全空。
-                let mapping = selected_mapping
+                // 优先级：profiles 选中方案 > 已有顶层 mapping（异常混载）> 出厂默认。
+                let mut mapping = selected_mapping
+                    .or(existing_mapping)
                     .unwrap_or_else(|| serde_json::to_value(crate::mapping::default_mapping()).unwrap());
+                sanitize_removed_actions(&mut mapping);
                 obj.insert("mapping".into(), mapping);
             }
         }
@@ -207,6 +207,51 @@ impl AppSettings {
             obj.insert("schemaVersion".into(), serde_json::json!(SETTINGS_VERSION));
         }
         Ok(())
+    }
+}
+
+/// v4 迁移的动作清洗：Custom → Shortcut（无损）、OpenUrl → OpenApp（等价，
+/// 同走 shell::open_target）、其余被删动作 → Disabled。绑定值之外的未知
+/// kind 不能留给反序列化失败——那会让整个 settings 回退默认、配置全丢。
+fn sanitize_removed_actions(mapping: &mut serde_json::Value) {
+    let Some(bindings) = mapping.get_mut("bindings").and_then(|b| b.as_object_mut()) else {
+        return;
+    };
+    let rewrite = |slot: &mut serde_json::Value| {
+        let kind = slot.get("kind").and_then(|k| k.as_str()).unwrap_or_default().to_string();
+        match kind.as_str() {
+            "custom" => {
+                let inner = slot.get("shortcut").cloned().unwrap_or_default();
+                if inner.get("vk").is_some() {
+                    *slot = inner;
+                    slot["kind"] = serde_json::json!("shortcut");
+                } else {
+                    *slot = serde_json::json!({ "kind": "disabled" });
+                }
+            }
+            "open_url" => {
+                let url = slot.get("url").cloned().unwrap_or_default();
+                if url.is_string() && !url.as_str().unwrap_or_default().is_empty() {
+                    *slot = serde_json::json!({
+                        "kind": "open_app", "target": url, "label": url,
+                    });
+                } else {
+                    *slot = serde_json::json!({ "kind": "disabled" });
+                }
+            }
+            "screenshot" | "task_view" | "app_switcher" | "click_confirm"
+            | "open_settings" | "trigger_hands_free" => {
+                *slot = serde_json::json!({ "kind": "disabled" });
+            }
+            _ => {}
+        }
+    };
+    for binding in bindings.values_mut() {
+        for field in ["single", "double", "long"] {
+            if let Some(slot) = binding.get_mut(field) {
+                rewrite(slot);
+            }
+        }
     }
 }
 
@@ -352,7 +397,7 @@ mod tests {
     #[test]
     fn purge_clears_legacy_voice_triggers_and_keeps_other_actions() {
         use crate::mapping::{ButtonBinding, ButtonMapping};
-        use ButtonAction::{Disabled, Shortcut, TriggerHandsFree};
+        use ButtonAction::{Disabled, Shortcut};
 
         let shortcut = Shortcut { vk: 0x1b, modifiers: 0, label: "Esc".into() };
         let mut s = AppSettings::default();
@@ -360,7 +405,7 @@ mod tests {
             bindings: [
                 // ok：免提在 single 槽 + 正常动作在 double 槽 → 只清触发槽。
                 ("ok".into(), ButtonBinding {
-                    single: TriggerHandsFree, double: shortcut.clone(), long: Disabled, push_to_talk: false,
+                    single: shortcut.clone(), double: Disabled, long: Disabled, push_to_talk: false,
                 }),
                 // back：按住说话第四通道 → 清开关。
                 ("back".into(), ButtonBinding {
@@ -372,8 +417,9 @@ mod tests {
         };
         s.purge_legacy_voice_triggers();
         let bindings = &s.mapping.bindings;
-        assert_eq!(bindings["ok"].single, Disabled);
-        assert_eq!(bindings["ok"].double, shortcut);
+        // 正常动作不受清洗影响；被按住说话占用的键只清开关。
+        assert_eq!(bindings["ok"].single, shortcut);
+        assert_eq!(bindings["ok"].double, Disabled);
         assert!(!bindings["back"].push_to_talk);
         assert_eq!(bindings["home"].single, shortcut);
         // 幂等：再清一遍无变化。
@@ -407,6 +453,26 @@ mod tests {
     }
 
     #[test]
+    fn migrates_removed_actions_losslessly_or_to_disabled() {
+        let v3 = serde_json::json!({
+            "schemaVersion": 3,
+            "mapping": { "bindings": {
+                "up": { "single": { "kind": "custom", "shortcut": { "vk": 0x56, "modifiers": 2, "label": "Ctrl+V" } }, "double": { "kind": "open_url", "url": "https://example.com" }, "long": { "kind": "disabled" }, "pushToTalk": false },
+                "ok": { "single": { "kind": "task_view" }, "double": { "kind": "screenshot", "region": true }, "long": { "kind": "trigger_hands_free" }, "pushToTalk": false }
+            } }
+        })
+        .to_string();
+        let s = AppSettings::load(&v3).unwrap();
+        let up = &s.mapping.bindings["up"];
+        assert_eq!(up.single, crate::actions::ButtonAction::Shortcut { vk: 0x56, modifiers: 2, label: "Ctrl+V".into() });
+        assert_eq!(up.double, crate::actions::ButtonAction::OpenApp { target: "https://example.com".into(), label: "https://example.com".into() });
+        let ok = &s.mapping.bindings["ok"];
+        assert_eq!(ok.single, crate::actions::ButtonAction::Disabled);
+        assert_eq!(ok.double, crate::actions::ButtonAction::Disabled);
+        assert_eq!(ok.long, crate::actions::ButtonAction::Disabled);
+    }
+
+    #[test]
     fn migrates_v3_without_profiles_to_default_mapping() {
         let v3 = serde_json::json!({ "schemaVersion": 3 }).to_string();
         let s = AppSettings::load(&v3).unwrap();
@@ -418,12 +484,12 @@ mod tests {
         // 老版本把免提绑在 ok 键上：读取即清除，保证行为只由录音键模式决定。
         let mut raw = serde_json::to_value(AppSettings::default()).unwrap();
         raw["mapping"]["bindings"]["ok"] = serde_json::json!({
-            "single": serde_json::to_value(ButtonAction::TriggerHandsFree).unwrap(),
+            "single": { "kind": "volume_up" },
             "double": { "kind": "disabled" },
             "long": { "kind": "disabled" },
-            "pushToTalk": false
+            "pushToTalk": true
         });
         let s = AppSettings::load(&raw.to_string()).unwrap();
-        assert_eq!(s.mapping.bindings["ok"].single, ButtonAction::Disabled);
+        assert!(!s.mapping.bindings["ok"].push_to_talk, "旧版按住说话绑定读取即清除");
     }
 }

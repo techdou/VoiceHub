@@ -26,25 +26,9 @@ export function actionLabel(action: ButtonAction, t: T): string {
       return t("action.volume_mute");
     case "open_app":
       return `${t("buttons.action.tab.apps")}: ${action.label}`;
-    case "open_url":
-      return `${t("buttons.action.tab.apps")}: ${action.url}`;
-    case "screenshot":
-      return action.region ? t("action.screenshot_region") : t("action.screenshot_full");
     case "show_desktop":
       return t("action.show_desktop");
-    case "task_view":
-      return t("action.task_view");
-    case "app_switcher":
-      return t("action.app_switcher");
-    case "click_confirm":
-      return t("action.click_confirm");
-    case "open_settings":
-      return t("action.open_settings");
     case "delete_line":
       return t("buttons.action.delete_line");
-    case "trigger_hands_free":
-      return t("buttons.action.hands_free");
-    case "custom":
-      return action.shortcut.label;
   }
 }

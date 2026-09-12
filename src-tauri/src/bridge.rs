@@ -458,19 +458,12 @@ impl Bridge {
         let result = match action {
             ButtonAction::Disabled => Ok(()),
             ButtonAction::Shortcut { vk, modifiers, .. } => tap(KeyChord::new(*vk, *modifiers)),
-            ButtonAction::Custom { shortcut } => tap(KeyChord::new(shortcut.vk, shortcut.modifiers)),
             ButtonAction::MediaKey { code } => media(*code),
             ButtonAction::VolumeUp => volume(false),
             ButtonAction::VolumeDown => volume(true),
             ButtonAction::VolumeMute => volume_mute(),
-            ButtonAction::OpenApp { target, .. } | ButtonAction::OpenUrl { url: target } => {
-                voicehub_windows::shell::open_target(target)
-            }
-            ButtonAction::Screenshot { region } => voicehub_windows::shell::screenshot(*region),
+            ButtonAction::OpenApp { target, .. } => voicehub_windows::shell::open_target(target),
             ButtonAction::ShowDesktop => tap(KeyChord::new(0x44, voicehub_core::actions::MOD_WIN)), // Win+D
-            ButtonAction::TaskView => tap(KeyChord::new(0x09, voicehub_core::actions::MOD_WIN)), // Win+Tab
-            ButtonAction::AppSwitcher => tap(KeyChord::new(0x09, voicehub_core::actions::MOD_ALT)), // Alt+Tab
-            ButtonAction::ClickConfirm => voicehub_windows::shell::left_click(),
             // 删除整行：Home → Shift+End → Backspace。三连击间留 20ms（不同应用的
             // 键盘缓冲深度不一，零间隔在部分编辑器里会被合并丢键）；独立线程执行，
             // 避免序列 sleep 阻塞 15ms tick / HID 事件分发。
@@ -493,19 +486,6 @@ impl Bridge {
                         }
                     }
                 });
-                Ok(())
-            }
-            ButtonAction::OpenSettings => {
-                self.emit_ui(UiEvent::ShowSettings);
-                Ok(())
-            }
-            // 免提触发：事件直连引擎（前端监听 toggle-hands-free），不注入按键——
-            // 注入的单键会被引擎键盘钩子过滤，组合键又要用户额外配置系统热键。
-            ButtonAction::TriggerHandsFree => {
-                let _ = self.app.emit(
-                    "toggle-hands-free",
-                    serde_json::json!({ "source": "voicehub-remote" }),
-                );
                 Ok(())
             }
         };
@@ -958,22 +938,13 @@ fn action_label(action: &ButtonAction) -> String {
     match action {
         ButtonAction::Disabled => "未绑定".into(),
         ButtonAction::Shortcut { label, .. } => label.clone(),
-        ButtonAction::Custom { shortcut } => shortcut.label.clone(),
         ButtonAction::MediaKey { code } => format!("{code:?}"),
         ButtonAction::VolumeUp => "音量+".into(),
         ButtonAction::VolumeDown => "音量−".into(),
         ButtonAction::VolumeMute => "静音".into(),
         ButtonAction::OpenApp { label, .. } => format!("打开 {label}"),
-        ButtonAction::OpenUrl { url } => format!("打开 {url}"),
-        ButtonAction::Screenshot { region: true } => "区域截图".into(),
-        ButtonAction::Screenshot { region: false } => "全屏截图".into(),
         ButtonAction::ShowDesktop => "显示桌面".into(),
-        ButtonAction::TaskView => "任务视图".into(),
-        ButtonAction::AppSwitcher => "切换应用".into(),
-        ButtonAction::ClickConfirm => "点击确认".into(),
         ButtonAction::DeleteLine => "删除整行".into(),
-        ButtonAction::OpenSettings => "打开声枢".into(),
-        ButtonAction::TriggerHandsFree => "免提触发".into(),
     }
 }
 

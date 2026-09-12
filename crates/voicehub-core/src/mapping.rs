@@ -141,12 +141,10 @@ pub fn default_mapping() -> ButtonMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{ButtonAction, CustomShortcut, MOD_CONTROL};
+    use crate::actions::{ButtonAction, MOD_CONTROL};
 
     fn paste() -> ButtonAction {
-        ButtonAction::Custom {
-            shortcut: CustomShortcut::new(0x56, MOD_CONTROL, "Ctrl+V"),
-        }
+        ButtonAction::Shortcut { vk: 0x56, modifiers: MOD_CONTROL, label: "Ctrl+V".into() }
     }
 
     #[test]

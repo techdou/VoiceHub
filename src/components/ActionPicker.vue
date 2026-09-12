@@ -55,12 +55,6 @@ const systemPresets: Array<{ id: string; action: ButtonAction }> = [
   { id: "next", action: { kind: "media_key", code: "next" } },
   { id: "previous", action: { kind: "media_key", code: "previous" } },
   { id: "show_desktop", action: { kind: "show_desktop" } },
-  { id: "task_view", action: { kind: "task_view" } },
-  { id: "app_switcher", action: { kind: "app_switcher" } },
-  { id: "screenshot_region", action: { kind: "screenshot", region: true } },
-  { id: "screenshot_full", action: { kind: "screenshot", region: false } },
-  { id: "click_confirm", action: { kind: "click_confirm" } },
-  { id: "open_settings", action: { kind: "open_settings" } },
 ];
 
 // 录制快捷键（WebView 内键盘事件 → Windows VK 对齐）。
@@ -132,18 +126,11 @@ function confirmCustomShortcut() {
 
 const appPath = ref("");
 const appName = ref("");
-const url = ref("");
 
 function confirmApp() {
   const target = appPath.value.trim();
   if (!target || !appName.value.trim()) return;
   emit("pick", { kind: "open_app", target, label: appName.value.trim() });
-}
-
-function confirmUrl() {
-  const value = url.value.trim();
-  if (!value) return;
-  emit("pick", { kind: "open_url", url: value.startsWith("https://") ? value : `https://${value}` });
 }
 
 const isCurrent = computed(
@@ -230,13 +217,7 @@ const isCurrent = computed(
             <button class="btn" @click="confirmApp">{{ t("common.confirm") }}</button>
           </div>
         </div>
-        <div>
-          <div class="label" style="font-size: 13px; margin-bottom: 4px">{{ t("buttons.action.apps.open_url") }}</div>
-          <div class="row">
-            <input v-model="url" type="text" placeholder="example.com" style="flex: 1" />
-            <button class="btn" @click="confirmUrl">{{ t("common.confirm") }}</button>
-          </div>
-        </div>
+        <!-- 打开网页并入 open_app：URI scheme（https://…）走同一条 shell::open_target 路径。 -->
       </div>
     </div>
   </div>
