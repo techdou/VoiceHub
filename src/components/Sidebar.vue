@@ -17,7 +17,6 @@ const items = [
   { id: "stats", icon: "▤" },
   { id: "history", icon: "◷" },
   { id: "diagnostics", icon: "⚙" },
-  { id: "simulator", icon: "▶" },
   { id: "about", icon: "ⓘ" },
 ] as const;
 </script>

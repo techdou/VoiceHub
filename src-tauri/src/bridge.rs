@@ -876,12 +876,8 @@ impl Bridge {
         }
     }
 
-    /// 模拟遥控器页：直接喂入手势（与真实 HID 同一条分发路径）。
-    pub fn simulate_gesture(self: &Arc<Self>, button: RemoteButton, gesture: Gesture) {
-        self.dispatch_gesture(button, gesture);
-    }
 
-    /// 模拟遥控器页：合成一段语音（440→880Hz 扫频，走真实音频管线到端点）。
+    /// 连接页"测试音频链路"：合成一段语音（或喂入 PCM），走真实音频管线。
     pub fn simulate_voice(self: &Arc<Self>, duration_ms: u64, pcm: Option<Vec<i16>>) -> Result<(), String> {
         let generation = self.on_voice_started(0xFE).ok_or("Recorder is busy or previous recording is still processing")?;
         let bridge = self.clone();
@@ -891,8 +887,6 @@ impl Bridge {
                 let sample_rate = 16_000u64;
                 let total = pcm.as_ref().map_or((sample_rate * duration_ms / 1000).max(1), |samples| samples.len() as u64);
                 let chunk = sample_rate / 10; // 100ms 一包
-                // 长音频（>4 分钟）按 10 倍速快放：实时回放 5 分钟会逼近 remote_voice
-                // 的 360s 会话超时，只剩 45s 余量；快放让模拟器能测完整长音频。
                 let pace_ms: u64 = if total > sample_rate * 240 { 10 } else { 100 };
                 let mut written = 0u64;
                 while written < total {

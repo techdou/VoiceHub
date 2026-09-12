@@ -86,6 +86,17 @@ const MECHANICAL_PATCHES = [
 // ---------------------------------------------------------------------------
 const MANUAL_PATCHES = [
   {
+    id: 'simulator-nav-removed',
+    files: ['frontend/src/components/Sidebar.tsx'],
+    describe: 'The simulator nav entry is removed from the remote workspace sidebar: the simulator page itself was cut from the hardware app, so the link 404s.',
+    verify() {
+      const code = readVendor('frontend/src/components/Sidebar.tsx');
+      if (code.includes('/remote/simulator')) return 'Sidebar still links /remote/simulator';
+      if (!code.includes('/remote/buttons')) return 'Sidebar lost the buttons nav (probe anchor)';
+      return null;
+    },
+  },
+  {
     id: 'registry-first-source-loop',
     files: ['native/src/models/registry.rs'],
     describe: 'Local-model completeness scan unrolls the outer loop that upstream broke out of unconditionally (only the first source was ever checked); behavior is identical, the never-loops clippy denial is gone.',

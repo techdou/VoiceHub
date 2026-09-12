@@ -102,6 +102,18 @@ pub fn clear_history(bridge: State<'_, Arc<Bridge>>) -> Result<(), String> {
 
 /// 绑定前台进程 → Profile（Smart Profiles）。
 #[tauri::command]
+pub fn simulate_voice(bridge: State<'_, Arc<Bridge>>, duration_ms: u64, audio_b64: Option<String>) -> Result<(), String> {
+    let pcm = audio_b64.map(|b64| {
+        use base64::Engine as _;
+        let raw = base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default();
+        raw.chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect::<Vec<i16>>()
+    });
+    bridge.simulate_voice(duration_ms, pcm)
+}
+
+#[tauri::command]
 pub fn get_foreground_process() -> Option<String> {
     voicehub_windows::foreground::foreground_process_name()
 }
@@ -112,37 +124,6 @@ pub fn reset_mapping_to_default(bridge: State<'_, Arc<Bridge>>) -> Result<(), St
     let mut settings = bridge.settings();
     settings.mapping = voicehub_core::mapping::default_mapping();
     bridge.apply_settings(settings)
-}
-
-// ---------- 模拟遥控器 ----------
-
-#[tauri::command]
-pub fn simulate_button(bridge: State<'_, Arc<Bridge>>, button: String, gesture: String) -> Result<(), String> {
-    let button = serde_json::from_value::<RemoteButton>(serde_json::Value::String(button))
-        .map_err(|e| e.to_string())?;
-    let gesture = match gesture.as_str() {
-        "single" => Gesture::SingleClick,
-        "double" => Gesture::DoubleClick,
-        "long" => Gesture::LongPress,
-        "repeat" => Gesture::Repeat,
-        _ => return Err(format!("未知手势：{gesture}")),
-    };
-    bridge.simulate_gesture(button, gesture);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn simulate_voice(bridge: State<'_, Arc<Bridge>>, duration_ms: Option<u64>, audio_b64: Option<String>) -> Result<(), String> {
-    use base64::Engine;
-    let pcm = if let Some(encoded) = audio_b64 {
-        if encoded.len() > 13_000_000 { return Err("Test audio must be at most five minutes".into()); }
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|e| e.to_string())?;
-        if bytes.is_empty() || bytes.len() % 2 != 0 || bytes.len() > 16_000 * 2 * 300 {
-            return Err("Expected 16 kHz PCM, at most five minutes".into());
-        }
-        Some(bytes.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]])).collect())
-    } else { None };
-    bridge.simulate_voice(duration_ms.unwrap_or(2000).clamp(200, 10_000), pcm)
 }
 
 // ---------- 诊断 ----------

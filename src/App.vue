@@ -11,7 +11,6 @@ import ButtonsPage from "./pages/ButtonsPage.vue";
 import StatsPage from "./pages/StatsPage.vue";
 import HistoryPage from "./pages/HistoryPage.vue";
 import DiagnosticsPage from "./pages/DiagnosticsPage.vue";
-import SimulatorPage from "./pages/SimulatorPage.vue";
 import AboutPage from "./pages/AboutPage.vue";
 import Onboarding from "./components/Onboarding.vue";
 
@@ -19,10 +18,10 @@ const { t } = useI18n();
 const version = __APP_VERSION__;
 const props = defineProps<{ embedded?: boolean; initialPage?: string; locale?: "zh" | "en" }>();
 
-const page = ref<"connection" | "buttons" | "stats" | "history" | "diagnostics" | "simulator" | "about">("connection");
+const page = ref<"connection" | "buttons" | "stats" | "history" | "diagnostics" | "about">("connection");
 type PageId = (typeof page)["value"];
 watch(() => props.initialPage, (value) => {
-  if (value && ["connection", "buttons", "stats", "history", "diagnostics", "simulator", "about"].includes(value)) page.value = value as PageId;
+  if (value && ["connection", "buttons", "stats", "history", "diagnostics", "about"].includes(value)) page.value = value as PageId;
 }, { immediate: true });
 const settings = shallowRef<AppSettings | null>(null);
 const bleSnapshot = ref<BleSnapshot | null>(null);
@@ -192,12 +191,6 @@ onMounted(async () => {
       <StatsPage v-else-if="page === 'stats'" />
       <HistoryPage v-else-if="page === 'history'" />
       <DiagnosticsPage v-else-if="page === 'diagnostics'" />
-      <SimulatorPage
-        v-else-if="page === 'simulator'"
-        :physical-active-buttons="activeButtons"
-        :provider-kind="settings?.provider.kind"
-        :remote-model="bleSnapshot?.remoteModel ?? null"
-      />
       <AboutPage v-else-if="page === 'about'" :version="version" @open="openUrl" />
     </main>
     <Onboarding
@@ -206,7 +199,7 @@ onMounted(async () => {
       @update-settings="persistSettings"
       @finish="
         showOnboarding = false;
-        page = 'simulator';
+        page = 'connection';
       "
     />
   </div>

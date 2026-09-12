@@ -190,7 +190,6 @@ export default function Sidebar() {
         <NavItem to="/remote/stats" icon={Activity} label={getLocale() === 'en' ? 'Statistics' : '使用统计'} />
         <NavItem to="/remote/history" icon={Clock} label={getLocale() === 'en' ? 'Sessions' : '语音会话'} />
         <NavItem to="/remote/diagnostics" icon={Wrench} label={getLocale() === 'en' ? 'Diagnostics' : '设备自检'} />
-        <NavItem to="/remote/simulator" icon={Gamepad2} label={getLocale() === 'en' ? 'Simulator' : '模拟遥控器'} />
       </div>
 
       <div className="space-y-3 px-3 pt-4">

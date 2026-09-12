@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import typesSource from "./types.ts?raw";
 import appVueSource from "./App.vue?raw";
 import connectionPageSource from "./pages/ConnectionPage.vue?raw";
-import simulatorPageSource from "./pages/SimulatorPage.vue?raw";
 import statsPageSource from "./pages/StatsPage.vue?raw";
 import historyPageSource from "./pages/HistoryPage.vue?raw";
 
@@ -34,7 +33,6 @@ describe("UiEvent 前后端契约", () => {
     const consumers: Record<string, string> = {
       "src/App.vue": appVueSource,
       "src/pages/ConnectionPage.vue": connectionPageSource,
-      "src/pages/SimulatorPage.vue": simulatorPageSource,
       "src/pages/StatsPage.vue": statsPageSource,
       "src/pages/HistoryPage.vue": historyPageSource,
     };
