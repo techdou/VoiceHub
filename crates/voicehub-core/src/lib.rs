@@ -6,7 +6,6 @@ pub mod buttons;
 pub mod gesture;
 pub mod actions;
 pub mod mapping;
-pub mod profiles;
 pub mod settings;
 pub mod statistics;
 pub mod remote_model;

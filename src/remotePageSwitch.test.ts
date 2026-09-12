@@ -15,7 +15,7 @@ vi.mock('./api', () => ({
       pairedDeviceName: null, audioEndpointName: '', gainDb: 0,
       provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
-      profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
+      mapping: { bindings: {} },
       buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: "ptt", launchAtLogin: false, language: 'system', theme: 'system',
     }),
     getBleSnapshot: async () => ({ phase: 'idle' }),
@@ -26,6 +26,14 @@ vi.mock('./api', () => ({
   },
 }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }))
+
+// 单方案化后映射画布恒渲染；jsdom 无 ResizeObserver，挂载前补桩（同 buttonsPage.test）。
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.ResizeObserver = (globalThis.ResizeObserver ?? ResizeObserverStub) as typeof ResizeObserver
 
 import RemoteWorkspace from '../vendor/sayit/frontend/src/RemoteWorkspace'
 

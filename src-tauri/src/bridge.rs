@@ -328,11 +328,8 @@ impl Bridge {
                             ptt_events.push("ptt-up");
                             continue;
                         }
-                        let foreground = voicehub_windows::foreground::foreground_process_name();
                         let is_ptt = inner
                             .settings
-                            .profiles
-                            .resolve_active(foreground.as_deref())
                             .mapping
                             .bindings
                             .get(&voicehub_core::mapping::ButtonMapping::key(edge.button))
@@ -432,18 +429,12 @@ impl Bridge {
     }
 
     fn dispatch_gesture(self: &Arc<Self>, button: RemoteButton, gesture: Gesture) {
-        let foreground = voicehub_windows::foreground::foreground_process_name();
         let action = {
             let inner = lock(&self.inner);
             if !inner.settings.button_mapping_enabled {
                 return;
             }
-            inner
-                .settings
-                .profiles
-                .resolve_active(foreground.as_deref())
-                .mapping
-                .resolve(button, gesture)
+            inner.settings.mapping.resolve(button, gesture)
         };
         let Some(action) = action else { return };
         let ok = self.execute_action(&action);
@@ -746,15 +737,8 @@ impl Bridge {
     /// 声卡、不经我们计数，记 0。
     fn record_voice_session_since(self: &Arc<Self>, started_at: u64, duration_ms: u64, sample_count: u64) {
         let foreground = voicehub_windows::foreground::foreground_process_name();
-        let profile_name = {
-            let inner = lock(&self.inner);
-            inner
-                .settings
-                .profiles
-                .resolve_active(foreground.as_deref())
-                .name
-                .clone()
-        };
+        // 多方案机制已拔除：历史记录的方案名列固定值，字段保留兼容旧数据。
+        let profile_name = "default".to_string();
         {
             let mut inner = lock(&self.inner);
             inner.statistics.apply(
@@ -804,7 +788,6 @@ impl Bridge {
         // 免提 / 按住说话绑定，落盘与运行前统一清除，保证行为只由
         // voice_key_trigger_mode 决定。
         settings.purge_legacy_voice_triggers();
-        settings.normalize_single_profile();
         let previous;
         let audio_changed;
         let autostart_changed;

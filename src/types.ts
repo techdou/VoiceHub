@@ -57,25 +57,6 @@ export interface ButtonMapping {
   bindings: Record<string, ButtonBinding>;
 }
 
-export interface ButtonProfile {
-  id: string;
-  name: string;
-  icon: string;
-  mapping: ButtonMapping;
-}
-
-export interface ProfileRules {
-  processBindings: Record<string, string>;
-  fallbackProfileId: string;
-}
-
-export interface ProfileStore {
-  profiles: ButtonProfile[];
-  selectedProfileId: string;
-  smartEnabled: boolean;
-  rules: ProfileRules;
-}
-
 export interface ProviderConfig {
   kind: ProviderKind;
   customVk: number;
@@ -98,7 +79,7 @@ export interface AppSettings {
   audioEndpointName: string;
   gainDb: number;
   provider: ProviderConfig;
-  profiles: ProfileStore;
+  mapping: ButtonMapping;
   buttonMappingEnabled: boolean;
   /** Rust 端（settings.rs）必填且总是序列化。 */
   experimentalVoiceExtend: boolean;

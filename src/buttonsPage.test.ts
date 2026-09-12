@@ -20,11 +20,7 @@ function settingsFixture(): AppSettings {
     pairedDeviceName: null, audioEndpointName: '', gainDb: 0,
     provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
       sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
-    profiles: {
-      profiles: [{ id: 'p1', name: '默认', icon: '', mapping: { bindings: {} } }],
-      selectedProfileId: 'p1', smartEnabled: false,
-      rules: { processBindings: {}, fallbackProfileId: 'p1' },
-    },
+    mapping: { bindings: {} },
     buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: 'ptt',
     f5GateEnabled: true, launchAtLogin: false, language: 'system', theme: 'system',
   } as AppSettings
@@ -76,10 +72,10 @@ describe('buttons page instant-save UX', () => {
 
     // 即时保存：emit 一次，载荷里 volume_down 双击槽 = delete_line。
     expect(emitted).toHaveLength(1)
-    const binding = emitted[0].profiles.profiles[0].mapping.bindings.volume_down
+    const binding = emitted[0].mapping.bindings.volume_down
     expect(binding.double).toEqual({ kind: 'delete_line' })
     // 原设置对象不被就地污染（写穿走 emit，由宿主乐观更新）。
-    expect(settings.profiles.profiles[0].mapping.bindings.volume_down).toBeUndefined()
+    expect(settings.mapping.bindings.volume_down).toBeUndefined()
     app.unmount()
   })
 

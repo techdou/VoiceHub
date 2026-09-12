@@ -25,12 +25,8 @@ export const api = {
   getStatistics: () => invoke<UsageStatistics>("get_statistics"),
   getHistory: (limit?: number) => invoke<VoiceSessionRecord[]>("get_history", { limit }),
   clearHistory: () => invoke<void>("clear_history"),
-  bindProcessToProfile: (process: string, profileId: string) =>
-    invoke<void>("bind_process_to_profile", { process, profileId }),
-  unbindProcess: (process: string) => invoke<void>("unbind_process", { process }),
   getForegroundProcess: () => invoke<string | null>("get_foreground_process"),
-  resetProfileToDefault: (profileId: string) =>
-    invoke<void>("reset_profile_to_default", { profileId }),
+  resetMappingToDefault: () => invoke<void>("reset_mapping_to_default"),
   simulateButton: (button: string, gesture: string) =>
     invoke<void>("simulate_button", { button, gesture }),
   simulateVoice: (durationMs?: number, audioB64?: string) => invoke<void>("simulate_voice", { durationMs, audioB64 }),

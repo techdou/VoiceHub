@@ -32,14 +32,8 @@ function commit(mutator: (settings: AppSettings) => void) {
   emit("update-settings", next);
 }
 
-const activeProfileId = computed(() => props.settings?.profiles.selectedProfileId ?? "");
-
-const activeProfile = computed(
-  () => props.settings?.profiles.profiles.find((p) => p.id === activeProfileId.value) ?? null,
-);
-
 function bindingFor(button: RemoteButtonId) {
-  return activeProfile.value?.mapping.bindings[button] ?? { single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" } };
+  return props.settings?.mapping.bindings[button] ?? { single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" } };
 }
 
 function actionLabel(action: ButtonAction): string {
@@ -72,11 +66,9 @@ function editSlot(button: string, slot: "single" | "double" | "long") {
 
 function applyAction(action: ButtonAction) {
   const button = selectedButton.value;
-  if (!button || !activeProfileId.value) return;
+  if (!button || !props.settings) return;
   commit((settings) => {
-    const profile = settings.profiles.profiles.find((p) => p.id === activeProfileId.value);
-    if (!profile) return;
-    const bindings = profile.mapping.bindings;
+    const bindings = settings.mapping.bindings;
     if (!bindings[button]) bindings[button] = { single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" }, pushToTalk: false };
     bindings[button][editingSlot.value] = action;
   });
@@ -98,9 +90,7 @@ function toggleHoldKey() {
   const button = selectedButton.value;
   const next = !selectedHoldEnabled.value;
   commit((settings) => {
-    const profile = settings.profiles.profiles.find((p) => p.id === settings.profiles.selectedProfileId);
-    if (!profile) return;
-    const binding = profile.mapping.bindings[button] ??= {
+    const binding = settings.mapping.bindings[button] ??= {
       single: { kind: "disabled" }, double: { kind: "disabled" }, long: { kind: "disabled" }, pushToTalk: false,
     };
     binding.pushToTalk = next;
@@ -109,8 +99,8 @@ function toggleHoldKey() {
 
 const selectedHoldEnabled = computed(() => {
   const button = selectedButton.value;
-  if (!button || !activeProfile.value) return false;
-  return activeProfile.value.mapping.bindings[button]?.pushToTalk ?? false;
+  if (!button || !props.settings) return false;
+  return props.settings.mapping.bindings[button]?.pushToTalk ?? false;
 });
 
 function toggleMapping(enabled: boolean) {
@@ -140,9 +130,9 @@ function toggleMapping(enabled: boolean) {
       </div>
     </header>
 
-    <section v-if="activeProfile" class="card">
+    <section v-if="settings" class="card">
       <MappingCanvas
-        :bindings="activeProfile.mapping.bindings"
+        :bindings="settings.mapping.bindings"
         :selected="selectedButton"
         :active-buttons="activeButtons ?? new Set()"
         :voice-active="voiceActive ?? false"

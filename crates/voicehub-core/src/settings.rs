@@ -6,10 +6,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::actions::ButtonAction;
-use crate::profiles::ProfileStore;
+use crate::mapping::ButtonMapping;
 use crate::provider::{legacy_shortcuts, ProviderConfig};
 
-pub const SETTINGS_VERSION: u32 = 3;
+pub const SETTINGS_VERSION: u32 = 4;
 
 /// 录音键（语音键）的触发模式。
 ///
@@ -38,7 +38,9 @@ pub struct AppSettings {
     /// 增益（dB，±24）。
     pub gain_db: f64,
     pub provider: ProviderConfig,
-    pub profiles: ProfileStore,
+    /// 按键映射（单方案）。多方案/按前台智能切换机制在 v4 拔除：
+    /// UI 已收敛单方案许久，数据结构只是维护税。
+    pub mapping: ButtonMapping,
     /// 按键自定义映射总开关（关闭 = 遥控器按键直通系统）。
     pub button_mapping_enabled: bool,
     /// 实验性：语音会话每 40s 发送 ATVV 续租（MIC_EXTEND），
@@ -85,7 +87,7 @@ impl Default for AppSettings {
             audio_endpoint_name: String::new(),
             gain_db: 0.0,
             provider: ProviderConfig::default(),
-            profiles: ProfileStore::default(),
+            mapping: crate::mapping::default_mapping(),
             button_mapping_enabled: true,
             experimental_voice_extend: false,
             voice_key_trigger_mode: VoiceKeyTriggerMode::Ptt,
@@ -116,34 +118,17 @@ impl AppSettings {
         // 语音触发已收敛到录音键：读取即清除其他键上的旧触发绑定，
         // 保证按键行为只由 voice_key_trigger_mode 决定（迁移幂等）。
         settings.purge_legacy_voice_triggers();
-        settings.normalize_single_profile();
         Ok(settings)
     }
 
-    /// 按键映射页已收敛为单方案：关闭智能绑定并清空进程绑定表，让
-    /// resolve_active 恒等于手动选中的方案——"配了就生效"不再依赖前台应用。
-    /// 多套 profiles 数据保留（不破坏旧数据），仅不再提供切换与绑定入口。
-    pub fn normalize_single_profile(&mut self) {
-        self.profiles.smart_enabled = false;
-        self.profiles.rules.process_bindings.clear();
-        // smart 关闭后 resolve_active 恒等于选中方案，fallback 字段不影响行为，
-        // 不重写（保持 roundtrip 稳定）。
-        if self.profiles.selected_profile_id.is_empty() {
-            self.profiles.selected_profile_id =
-                self.profiles.profiles.first().map(|p| p.id.clone()).unwrap_or_default();
-        }
-    }
-
-    /// 清除所有方案里其他键的语音触发绑定（pushToTalk / 免提动作）。
+    /// 清除其他键上的语音触发绑定（pushToTalk / 免提动作）。
     /// 语音触发统一由录音键模式（voice_key_trigger_mode）承担。
     pub fn purge_legacy_voice_triggers(&mut self) {
-        for profile in &mut self.profiles.profiles {
-            for binding in profile.mapping.bindings.values_mut() {
-                binding.push_to_talk = false;
-                for slot in [&mut binding.single, &mut binding.double, &mut binding.long] {
-                    if matches!(slot, ButtonAction::TriggerHandsFree) {
-                        *slot = ButtonAction::Disabled;
-                    }
+        for binding in self.mapping.bindings.values_mut() {
+            binding.push_to_talk = false;
+            for slot in [&mut binding.single, &mut binding.double, &mut binding.long] {
+                if matches!(slot, ButtonAction::TriggerHandsFree) {
+                    *slot = ButtonAction::Disabled;
                 }
             }
         }
@@ -164,6 +149,26 @@ impl AppSettings {
                     .or_insert_with(|| serde_json::json!("system"));
                 obj.entry("theme".to_string())
                     .or_insert_with(|| serde_json::json!("system"));
+            }
+        }
+        if version < 4 {
+            // v3 → v4：拔除多方案机制——选中方案的映射提升为顶层 mapping，
+            // profiles 数据整体丢弃（UI 已单方案许久，其余方案不可达）。
+            if let Some(obj) = value.as_object_mut() {
+                let profiles_value = obj.remove("profiles");
+                let selected_mapping = profiles_value.as_ref().and_then(|store| {
+                    let list = store.get("profiles")?.as_array()?;
+                    let selected_id = store.get("selectedProfileId").and_then(|v| v.as_str());
+                    let chosen = list
+                        .iter()
+                        .find(|p| p.get("id").and_then(|v| v.as_str()) == selected_id)
+                        .or_else(|| list.first());
+                    chosen.and_then(|p| p.get("mapping")).cloned()
+                });
+                // 无 profiles 数据的异常配置落出厂默认映射，不让按键全空。
+                let mapping = selected_mapping
+                    .unwrap_or_else(|| serde_json::to_value(crate::mapping::default_mapping()).unwrap());
+                obj.insert("mapping".into(), mapping);
             }
         }
         if version < 3 {
@@ -232,7 +237,7 @@ mod tests {
         let s = AppSettings::default();
         assert!(!s.onboarding_complete);
         assert_eq!(s.gain_db, 0.0);
-        assert!(!s.profiles.smart_enabled);
+        assert_eq!(s.mapping.bindings.len(), 8, "出厂默认映射应已预置 8 个键");
         assert_eq!(s.schema_version, SETTINGS_VERSION);
     }
 
@@ -351,25 +356,22 @@ mod tests {
 
         let shortcut = Shortcut { vk: 0x1b, modifiers: 0, label: "Esc".into() };
         let mut s = AppSettings::default();
-        {
-            let profile = s.profiles.selected_mut();
-            profile.mapping = ButtonMapping {
-                bindings: [
-                    // ok：免提在 single 槽 + 正常动作在 double 槽 → 只清触发槽。
-                    ("ok".into(), ButtonBinding {
-                        single: TriggerHandsFree, double: shortcut.clone(), long: Disabled, push_to_talk: false,
-                    }),
-                    // back：按住说话第四通道 → 清开关。
-                    ("back".into(), ButtonBinding {
-                        single: Disabled, double: Disabled, long: Disabled, push_to_talk: true,
-                    }),
-                    // home：纯正常动作 → 原样保留。
-                    ("home".into(), ButtonBinding::single(shortcut.clone())),
-                ].into_iter().collect(),
-            };
-        }
+        s.mapping = ButtonMapping {
+            bindings: [
+                // ok：免提在 single 槽 + 正常动作在 double 槽 → 只清触发槽。
+                ("ok".into(), ButtonBinding {
+                    single: TriggerHandsFree, double: shortcut.clone(), long: Disabled, push_to_talk: false,
+                }),
+                // back：按住说话第四通道 → 清开关。
+                ("back".into(), ButtonBinding {
+                    single: Disabled, double: Disabled, long: Disabled, push_to_talk: true,
+                }),
+                // home：纯正常动作 → 原样保留。
+                ("home".into(), ButtonBinding::single(shortcut.clone())),
+            ].into_iter().collect(),
+        };
         s.purge_legacy_voice_triggers();
-        let bindings = &s.profiles.selected().mapping.bindings;
+        let bindings = &s.mapping.bindings;
         assert_eq!(bindings["ok"].single, Disabled);
         assert_eq!(bindings["ok"].double, shortcut);
         assert!(!bindings["back"].push_to_talk);
@@ -381,29 +383,47 @@ mod tests {
     }
 
     #[test]
-    fn normalize_collapses_to_single_profile() {
-        // 智能方案（按前台进程分方案）是"配了不生效"的一类根源：UI 已收敛为
-        // 单方案，归一必须关掉 smart 绑定并清空进程表，选中方案保留。
-        let mut s = AppSettings::default();
-        s.profiles.smart_enabled = true;
-        s.profiles.rules.process_bindings.insert("notepad.exe".into(), "p1".into());
-        s.normalize_single_profile();
-        assert!(!s.profiles.smart_enabled);
-        assert!(s.profiles.rules.process_bindings.is_empty());
-        assert_eq!(s.profiles.selected_profile_id, s.profiles.profiles[0].id);
+    fn migrates_v3_profiles_to_top_level_mapping() {
+        // v3 多方案已拔除：选中方案的 mapping 必须无损提升，其余方案丢弃。
+        let v3 = serde_json::json!({
+            "schemaVersion": 3,
+            "profiles": {
+                "profiles": [
+                    { "id": "p1", "name": "通用", "icon": "",
+                      "mapping": { "bindings": { "up": { "single": { "kind": "volume_up" }, "double": { "kind": "disabled" }, "long": { "kind": "disabled" }, "pushToTalk": false } } } },
+                    { "id": "p2", "name": "第二套", "icon": "",
+                      "mapping": { "bindings": { "ok": { "single": { "kind": "show_desktop" }, "double": { "kind": "disabled" }, "long": { "kind": "disabled" }, "pushToTalk": false } } } }
+                ],
+                "selectedProfileId": "p2",
+                "smartEnabled": false,
+                "rules": { "processBindings": {}, "fallbackProfileId": "" }
+            }
+        })
+        .to_string();
+        let s = AppSettings::load(&v3).unwrap();
+        assert!(s.mapping.bindings.contains_key("ok"), "选中方案 p2 的绑定应提升为顶层");
+        assert!(!s.mapping.bindings.contains_key("up"), "未选中方案 p1 的绑定应丢弃");
+        assert_eq!(s.schema_version, SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn migrates_v3_without_profiles_to_default_mapping() {
+        let v3 = serde_json::json!({ "schemaVersion": 3 }).to_string();
+        let s = AppSettings::load(&v3).unwrap();
+        assert_eq!(s.mapping, crate::mapping::default_mapping());
     }
 
     #[test]
     fn load_purges_legacy_voice_triggers() {
         // 老版本把免提绑在 ok 键上：读取即清除，保证行为只由录音键模式决定。
         let mut raw = serde_json::to_value(AppSettings::default()).unwrap();
-        raw["profiles"]["profiles"][0]["mapping"]["bindings"]["ok"] = serde_json::json!({
+        raw["mapping"]["bindings"]["ok"] = serde_json::json!({
             "single": serde_json::to_value(ButtonAction::TriggerHandsFree).unwrap(),
             "double": { "kind": "disabled" },
             "long": { "kind": "disabled" },
             "pushToTalk": false
         });
         let s = AppSettings::load(&raw.to_string()).unwrap();
-        assert_eq!(s.profiles.selected().mapping.bindings["ok"].single, ButtonAction::Disabled);
+        assert_eq!(s.mapping.bindings["ok"].single, ButtonAction::Disabled);
     }
 }

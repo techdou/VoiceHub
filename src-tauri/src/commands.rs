@@ -102,46 +102,15 @@ pub fn clear_history(bridge: State<'_, Arc<Bridge>>) -> Result<(), String> {
 
 /// 绑定前台进程 → Profile（Smart Profiles）。
 #[tauri::command]
-pub fn bind_process_to_profile(
-    bridge: State<'_, Arc<Bridge>>,
-    process: String,
-    profile_id: String,
-) -> Result<(), String> {
-    let mut settings = bridge.settings();
-    settings
-        .profiles
-        .bind_process(&process, &profile_id)
-        .map_err(|e| e.to_string())?;
-    bridge.apply_settings(settings)
-}
-
-#[tauri::command]
-pub fn unbind_process(bridge: State<'_, Arc<Bridge>>, process: String) -> Result<(), String> {
-    let mut settings = bridge.settings();
-    settings.profiles.rules.process_bindings.remove(
-        &voicehub_core::profiles::normalize_process_name(&process),
-    );
-    bridge.apply_settings(settings)
-}
-
-#[tauri::command]
 pub fn get_foreground_process() -> Option<String> {
     voicehub_windows::foreground::foreground_process_name()
 }
 
-/// 把某方案重置为出厂默认映射。
+/// 把按键映射重置为出厂默认。
 #[tauri::command]
-pub fn reset_profile_to_default(bridge: State<'_, Arc<Bridge>>, profile_id: String) -> Result<(), String> {
+pub fn reset_mapping_to_default(bridge: State<'_, Arc<Bridge>>) -> Result<(), String> {
     let mut settings = bridge.settings();
-    let Some(profile) = settings
-        .profiles
-        .profiles
-        .iter_mut()
-        .find(|p| p.id == profile_id)
-    else {
-        return Err(format!("方案不存在：{profile_id}"));
-    };
-    profile.mapping = voicehub_core::mapping::default_mapping();
+    settings.mapping = voicehub_core::mapping::default_mapping();
     bridge.apply_settings(settings)
 }
 

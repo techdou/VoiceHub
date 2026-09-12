@@ -17,7 +17,7 @@ describe('connection settings draft', () => {
       pairedDeviceName: null, audioEndpointName: '', gainDb: 0,
       provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
-      profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
+      mapping: { bindings: {} },
       buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: "ptt", f5GateEnabled: true, launchAtLogin: false, language: 'system', theme: 'system',
     } as AppSettings)
     const errors: unknown[] = []
@@ -47,7 +47,7 @@ describe('connection settings draft', () => {
       pairedDeviceName: null, audioEndpointName: '', gainDb: 0,
       provider: { kind: 'custom', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
-      profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
+      mapping: { bindings: {} },
       buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: "ptt", f5GateEnabled: true, launchAtLogin: false, language: 'system', theme: 'system',
     } as AppSettings)
     const container = document.createElement('div')
@@ -83,7 +83,7 @@ describe('connection settings draft', () => {
       pairedDeviceName: null, audioEndpointName: '', gainDb: 0,
       provider: { kind: 'sayit', customVk: 0, customModifiers: 0, customMode: 'hold',
         sayitVk: 0, sayitModifiers: 0, stopDelayMs: 100, startupGraceMs: 0 },
-      profiles: { profiles: [], selectedProfileId: '', smartEnabled: false, rules: { processBindings: {}, fallbackProfileId: '' } },
+      mapping: { bindings: {} },
       buttonMappingEnabled: true, experimentalVoiceExtend: false, voiceKeyTriggerMode: 'ptt', f5GateEnabled: true,
       launchAtLogin: false, language: 'system', theme: 'system',
     } as AppSettings)
