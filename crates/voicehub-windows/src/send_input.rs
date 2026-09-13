@@ -35,7 +35,10 @@ fn modifier_vks(modifiers: u8) -> Vec<u16> {
         vks.push(0xA0); // LSHIFT
     }
     if modifiers & MOD_ALT != 0 {
-        vks.push(0xA4); // LMENU
+        // Win32 的 MOD_ALT 语义不分左右（RegisterHotKey 监听方无感），但
+        // LL 钩子监听方（豆包输入法语音唤起默认右 Alt）分——注入选右 Alt，
+        // 兼容"只认右 Alt"的目标应用；扩展位由 vk_to_scan 处理（0xA5 带 E0）。
+        vks.push(0xA5); // RMENU
     }
     if modifiers & MOD_WIN != 0 {
         vks.push(0x5B); // LWIN
@@ -260,5 +263,22 @@ mod tests {
         let up = chord_events(chord, true).unwrap();
         assert_eq!(down.len(), 3);
         assert_eq!(up.len(), 3);
+    }
+
+    #[test]
+    fn alt_modifier_injects_right_alt() {
+        // MOD_ALT 修饰注入右 Alt（RMENU 0xA5）：豆包输入法语音唤起默认监听
+        // 右 Alt，LL 钩子监听方区分左右；扫描码 0x38 + 扩展位。
+        let vks = modifier_vks(MOD_ALT);
+        assert_eq!(vks, vec![0xA5]);
+        let (scan, ext) = vk_to_scan(0xA5).unwrap();
+        assert_eq!(scan, 0x38);
+        assert!(ext);
+        // 释放沿逆序：主键先弹、修饰后弹。
+        let chord = KeyChord::new(0x44, MOD_ALT);
+        let down = chord_events(chord, false).unwrap();
+        let up = chord_events(chord, true).unwrap();
+        assert_eq!(down.len(), 2);
+        assert_eq!(up.len(), 2);
     }
 }
