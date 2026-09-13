@@ -138,67 +138,6 @@ onMounted(async () => {
           activeButtons.value = next;
         }
         break;
-      case "ShowSettings":
-        showOnboarding.value = false;
-        break;
-      default:
-        break;
-    }
-  });
-  if (disposed) unlisten();
-  try {
-    await reloadSettings();
-  } catch (error) {
-    console.error("[voicehub] load settings failed:", error);
-  }
-  try {
-    await refreshBle();
-  } catch (error) {
-    console.error("[voicehub] ble snapshot failed:", error);
-  }
-});
-</script>
-
-<template>
-  <div class="app-shell">
-    <Sidebar
-      v-if="!embedded"
-      :page="page"
-      :recording="recording"
-      :ble-phase="bleSnapshot?.phase ?? null"
-      @navigate="(target) => (page = target as PageId)"
-    />
-    <main class="main">
-      <ConnectionPage
-        v-if="page === 'connection'"
-        :settings="settings"
-        :ble-snapshot="bleSnapshot"
-        :save-state="saveState"
-        :save-error="saveError"
-        @update-settings="persistSettings"
-        @sync-settings="(next) => (settings = next)"
-      />
-      <ButtonsPage
-        v-else-if="page === 'buttons'"
-        :settings="settings"
-        :save-state="saveState"
-        :save-error="saveError"
-        :active-buttons="activeButtons"
-        :voice-active="recording"
-        @update-settings="persistSettings"
-      />
-      <StatsPage v-else-if="page === 'stats'" />
-      <HistoryPage v-else-if="page === 'history'" />
-      <DiagnosticsPage v-else-if="page === 'diagnostics'" />
-      <AboutPage v-else-if="page === 'about'" :version="version" @open="openUrl" />
-    </main>
-    <Onboarding
-      v-if="showOnboarding && settings"
-      :settings="settings"
-      @update-settings="persistSettings"
-      @finish="
-        showOnboarding = false;
-        page = 'connection';
       "
     />
   </div>

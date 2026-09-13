@@ -16,7 +16,6 @@ const EXPECTED_TAGS = [
   "Battery",
   "ActionReceipt",
   "ButtonActivity",
-  "ShowSettings",
   "AudioEndpointChanged",
 ];
 

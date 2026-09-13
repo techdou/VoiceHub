@@ -47,7 +47,6 @@ pub enum UiEvent {
     ActionReceipt { button: String, gesture: String, action: String, ok: bool },
     /// 物理按键按下 / 释放沿（画布实时高亮）。
     ButtonActivity { button: String, pressed: bool },
-    ShowSettings,
     AudioEndpointChanged { name: String },
 }
 
@@ -977,7 +976,6 @@ mod tests {
                 },
                 "ButtonActivity",
             ),
-            (UiEvent::ShowSettings, "ShowSettings"),
             (
                 UiEvent::AudioEndpointChanged {
                     name: "CABLE Input".into(),
