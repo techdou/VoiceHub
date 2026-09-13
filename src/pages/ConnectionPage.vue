@@ -462,6 +462,10 @@ function setF5Gate(enabled: boolean) {
       <div v-if="draft.provider.kind === 'sayit'" class="setting-row">
         <a class="btn" href="#/voice-engine">{{ t("connection.open_engine_settings") }}</a>
       </div>
+      <div v-if="draft.provider.kind === 'custom'" class="hint" style="margin-bottom: 12px">
+        <strong>{{ t("connection.provider.custom_hint_title") }}</strong>
+        <p class="hint" style="margin: 6px 0 0">{{ t("connection.provider.custom_hint_steps") }}</p>
+      </div>
       <div v-if="draft.provider.kind === 'custom'" class="setting-row">
         <div>
           <div class="label">{{ t("connection.provider.custom_key") }}</div>
