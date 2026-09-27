@@ -363,6 +363,52 @@ fn is_injection_exempt_vk(vk: u32) -> bool {
     matches!(vk, 0xA6 | 0xA7) || (0x7C..=0x87).contains(&vk)
 }
 
+/// `KBDLLHOOKSTRUCT.flags` 的 LLKHF_ALTDOWN 位：这次按键发生时 Alt 是否按住。
+///
+/// 这是 OS 派发事件时自己的视角，比事后问 `GetAsyncKeyState` 更贴近现场。
+/// ⚠️ 不能用「msg == WM_SYSKEYDOWN」代替：F10 单独按下也走 WM_SYSKEYDOWN。
+#[cfg(windows)]
+const LLKHF_ALTDOWN: u32 = 0x20;
+
+/// 左右 Shift / Ctrl / Alt / Win 的 vk。
+const MODIFIER_VK_CODES: [u32; 8] = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
+
+/// 这个单键热键是否要求「裸按」—— 按下的那一刻不能有额外修饰键按住。
+///
+/// 起因：用户把 F4 设成免提，结果按 Alt+F4 也会开始录音（而且 F4 的 down 被我们吞掉，
+/// Alt+F4 本身还失效了）。判定原来只比 vk，压根不看修饰键。
+///
+/// **只对主键成立**（F1–F24、Space、Insert、CapsLock、BrowserBack…）。热键本身就是
+/// 修饰键时绝不能套这条规则，两个原因都会让热键彻底失效：
+///   · 「按住说话」默认是右 Ctrl、免提默认是右 Alt。自己就是 Ctrl，再去问
+///     「有没有 Ctrl 按住」永远为真；
+///   · 欧洲键盘布局的 AltGr 会同时产生 左Ctrl + 右Alt。右 Alt 当热键时，
+///     这些用户每次按都带着一个左 Ctrl，会被永久挡住。
+///
+/// 鼠标键也排除：它们走的是鼠标钩子，而且 Alt+侧键不是任何系统快捷键 ——
+/// 放行反而会把浏览器的前进/后退导航漏给别的程序（见 pitfalls 第 6 条）。
+fn single_key_requires_bare_press(vk: u32) -> bool {
+    !MODIFIER_VK_CODES.contains(&vk) && !is_mouse_vk(vk)
+}
+
+/// 按下这个单键热键的时刻，是否有额外修饰键按住（有则整条放行、不吞、不触发）。
+///
+/// Ctrl / Shift / Alt / Win 我们从不吞掉，所以它们的异步键状态是可靠的 ——
+/// pitfalls 第 13 条那条「鼠标键查不到物理状态」的限制在这里不适用。
+#[cfg(windows)]
+unsafe fn single_key_blocked_by_modifiers(vk: u32, kb_flags: u32) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    if !single_key_requires_bare_press(vk) {
+        return false;
+    }
+    if kb_flags & LLKHF_ALTDOWN != 0 {
+        return true;
+    }
+    MODIFIER_VK_CODES
+        .iter()
+        .any(|code| GetAsyncKeyState(*code as i32) < 0)
+}
+
 #[allow(dead_code)]
 fn modifier_kind(setting: &str) -> Option<&'static str> {
     match setting {
@@ -1822,6 +1868,13 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 // 「修饰键卡住」。非 Alt 单键（F 键、Space、侧键等）维持原状：只吞 keydown。
                 let is_alt_key = vk == 0xA4 || vk == 0xA5;
 
+                // 单键热键必须是「裸按」才算命中：Alt+F4 不该唤起绑在 F4 上的免提。
+                //
+                // ⚠️ **只能用在 keydown 上。** keyup 一律照原样处理 —— 否则
+                // 「按 F4 开始录音 → 再按住 Alt → 松开 F4」会因为松开那一刻有修饰键
+                // 而跳过释放，录音就再也停不下来了（只能等 5 分钟硬截止）。
+                let modifiers_block_down = single_key_blocked_by_modifiers(vk, kb_flags);
+
                 // ── 诊断：仅在「当前配置的 PTT/免提热键」被按下时记录 flags/scanCode ──
                 // 只记每个组合成员的首个 down，不把按住产生的 repeat 全部塞进无界队列；
                 // 漏 key-up 看门狗直接刷新该成员的 last_down，不依赖诊断日志。
@@ -1831,10 +1884,19 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     }) && !state.hands_free_active.load(Ordering::SeqCst))
                         || (is_hf_key && !state.hf_key_down.load(Ordering::SeqCst)));
                 if should_log_hotkey_down {
+                    // 两种名字要分开：不然「按 Alt+F4 没反应」和「热键压根没送到」
+                    // 在日志里长得一模一样，排查时无从下手。
+                    // 组合键 PTT 命中时 modifiers_block_down 也可能为真（它就是要修饰键），
+                    // 那种情况按下面 bare_press_violated 的规则放行，这条日志只作提示。
+                    let msg_name = if modifiers_block_down {
+                        "hotkey-down-with-modifier"
+                    } else {
+                        "hotkey-down"
+                    };
                     HOOK_ACTION_TX.with(|tx| {
                         if let Some(sender) = tx.borrow().as_ref() {
                             if sender.send(HookAction::Diag {
-                                vk, msg_name: "hotkey-down", flags: kb_flags, scan_code: kb_scan_code,
+                                vk, msg_name, flags: kb_flags, scan_code: kb_scan_code,
                             }).is_err() {
                                 TRY_SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
                             }
@@ -1851,12 +1913,17 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     let is_pure_modifier_combo = is_combo
                         && state.ptt_modifier_mask == state.ptt_full_mask;
                     let is_main_key = state.ptt_modifier_mask & member_bit == 0;
+                    // 「裸按」规则只套单键 PTT。组合键（Alt+F4 之类）本来就要求修饰键
+                    // 按住，套上去等于把它自己永久挡死。
+                    let bare_press_violated = !is_combo && modifiers_block_down;
 
                     // 旧单键维持原消费策略。普通组合仅当主键首次按下时所需修饰键
                     // 已全部按住，才吞主键 down，并用位图保证只吞它配对的 up。
                     // 若顺序是 K→Ctrl，组合仍可开始，但 K 的 down/up 都放行，不制造孤立事件。
                     if !is_combo {
-                        if is_kdown || (is_kup && is_alt_key) {
+                        // 带修饰键按下时整条放行：不吞，让 Alt+F4 这类系统/程序快捷键
+                        // 照常送到前台程序。下面的按下记账也一并跳过。
+                        if (is_kdown && !bare_press_violated) || (is_kup && is_alt_key) {
                             consumed = true;
                         }
                     } else if !is_pure_modifier_combo && is_main_key {
@@ -1887,7 +1954,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
                         }
                     }
 
-                    if is_kdown {
+                    // 记账也要跳过：否则 Alt+F4 虽然没被吞，录音照样开始了。
+                    if is_kdown && !bare_press_violated {
                         state.ptt_last_down_ms[member_index].store(now_ms(), Ordering::SeqCst);
                         let became_complete = press_ptt_member(
                             &state.ptt_pressed_mask,
@@ -1942,7 +2010,9 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 if is_hf_key {
                     let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
                     let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-                    if is_down {
+                    // 带修饰键按下时整条放行。不 begin_hf_press ⇒ hf_key_down 仍是 false
+                    // ⇒ 下面的 end_hf_press 也返回 false，配对的 keyup 同样不吞。
+                    if is_down && !modifiers_block_down {
                         consumed = true; // 吞掉 keydown 防止系统处理
                         if begin_hf_press(&state.hf_key_down) {
                             HOOK_ACTION_TX.with(|tx| {
@@ -1965,7 +2035,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 if is_ai_toggle_key {
                     let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
                     let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-                    if is_down {
+                    // 同免提：带修饰键就整条放行（见上面 modifiers_block_down 的注释）
+                    if is_down && !modifiers_block_down {
                         consumed = true;
                         if begin_hf_press(&state.ai_toggle_key_down) {
                             HOOK_ACTION_TX.with(|tx| {
@@ -1996,9 +2067,9 @@ unsafe extern "system" fn low_level_keyboard_proc(
 mod tests {
     use super::{
         begin_hf_press, begin_ptt_press, claim_ptt_release, complete_ptt_release, end_hf_press,
-        is_injection_exempt_vk, is_mouse_button_setting, is_mouse_vk, press_ptt_member,
-        ptt_key_config, release_ptt_member, should_consume_combo_main_down, DEFAULT_PTT_SETTING,
-        DEFAULT_PTT_VK, SINGLE_KEY_TABLE,
+        is_injection_exempt_vk, is_mouse_button_setting, is_mouse_vk, modifier_kind,
+        press_ptt_member, ptt_key_config, release_ptt_member, should_consume_combo_main_down,
+        single_key_requires_bare_press, DEFAULT_PTT_SETTING, DEFAULT_PTT_VK, SINGLE_KEY_TABLE,
     };
     #[cfg(windows)]
     use super::queue_ptt_release;
@@ -2203,6 +2274,39 @@ mod tests {
                 is_mouse_vk(*vk),
             );
         }
+    }
+
+    /// 「裸按」规则必须覆盖每一个主键，且必须放过每一个修饰键。
+    ///
+    /// 这两条各自对应一个真实故障：漏掉主键 → Alt+F4 会唤起绑在 F4 上的免提，
+    /// 而且 F4 的 down 被吞掉、Alt+F4 本身也失效（用户报的就是这个）；
+    /// 误伤修饰键 → 「按住说话」默认的右 Ctrl、免提默认的右 Alt 会永久失效
+    /// （自己就是 Ctrl，再问「Ctrl 有没有按下」永远为真），而且是静默的：
+    /// 编译过、其它测试全绿，只有真机上按下去没反应。
+    #[test]
+    fn bare_press_rule_covers_main_keys_and_spares_modifiers() {
+        for (code, vk) in SINGLE_KEY_TABLE {
+            let is_modifier = modifier_kind(code).is_some();
+            let is_mouse = is_mouse_button_setting(code);
+            let expected = !is_modifier && !is_mouse;
+            assert_eq!(
+                single_key_requires_bare_press(*vk),
+                expected,
+                "{code} (vk={vk:#04x})：modifier={is_modifier} mouse={is_mouse}，\
+                 应当 requires_bare_press={expected}",
+            );
+        }
+    }
+
+    /// 几个点名的键，防止上面那条循环因为清单本身写错而一起错。
+    #[test]
+    fn bare_press_rule_named_cases() {
+        assert!(single_key_requires_bare_press(0x73), "F4 是主键，必须要求裸按");
+        assert!(single_key_requires_bare_press(0x20), "Space 是主键");
+        assert!(single_key_requires_bare_press(0xA6), "BrowserBack 走键盘钩子，算主键");
+        assert!(!single_key_requires_bare_press(0xA3), "右 Ctrl 是「按住说话」默认键，不能套");
+        assert!(!single_key_requires_bare_press(0xA5), "右 Alt 是免提默认键，也是 AltGr 的一半");
+        assert!(!single_key_requires_bare_press(0x05), "鼠标侧键走鼠标钩子，不套这条");
     }
 
     /// 鼠标按键只允许单键格式。两个看门狗跳过鼠标成员时依赖这一点：

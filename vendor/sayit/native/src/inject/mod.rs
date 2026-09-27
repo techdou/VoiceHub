@@ -148,6 +148,13 @@ pub fn inject_text(text: &str, restore_clipboard: bool) -> InjectResult {
     let ctx = context::capture_context("inject");
 
     if ctx.hwnd.is_empty() || ctx.hwnd == "0" {
+        // 这个分支此前一行日志都不写，于是「插不进去」的排查里它是个盲区：用户看到
+        // 兜底卡片，日志里却只有前端那条 reason=no_foreground_window，说不清是真的
+        // 没有前台窗口，还是捕获本身失败了。
+        crate::commands::system::write_log_line(&format!(
+            "[RUST] [inject] no foreground window hwnd={:?} focusHwnd={:?} process={:?}",
+            ctx.hwnd, ctx.focus_hwnd, ctx.process_name
+        ));
         return InjectResult {
             ok: false, strategy: None,
             reason: Some("no_foreground_window".to_string()), detail: None,
@@ -155,16 +162,16 @@ pub fn inject_text(text: &str, restore_clipboard: bool) -> InjectResult {
         };
     }
 
-    let editable = is_likely_editable(&ctx);
-    if !editable {
+    let gate = editability_gate(&ctx);
+    if !gate.is_editable() {
         return InjectResult {
             ok: false,
             strategy: Some("overlay_fallback".to_string()),
             reason: Some("not_editable".to_string()),
-            detail: Some(format!(
-                "class={} focusClass={} hasCaret={} process={}",
-                ctx.window_class, ctx.focus_class, ctx.has_caret, ctx.process_name
-            )),
+            // gate 说明结论是哪一层判据给出的，后面四项是那四层各自的输入。缺了它们，
+            // 日志只能说明"被拦了"，说不出是哪一层落空，排查得另跑一遍探测脚本
+            // （2026-09 查微信 4.1 改名时吃过这个亏）。
+            detail: Some(describe_editability(&ctx, gate)),
             uncertain: false,
         };
     }
@@ -183,11 +190,66 @@ pub fn inject_text(_text: &str, _restore_clipboard: bool) -> InjectResult {
     InjectResult { ok: false, strategy: None, reason: Some("not_windows".to_string()), detail: None, uncertain: false }
 }
 
-fn is_likely_editable(ctx: &context::AppContext) -> bool {
-    is_likely_editable_pub(ctx)
+/// 「这里能不能打字」的结论，外加**是哪一层判据给出的**。
+///
+/// 为什么要带上「哪一层」而不只是 bool：判据一共四层（caret / 原生控件类名 / UIA /
+/// 进程名白名单），任何一层都会因为第三方应用换 UI 框架、改进程名而失效，而失效的
+/// 表现完全一样 —— 插字退化成兜底卡片，不报错。只有 bool 的话日志只能说明「被拦
+/// 了」，说不出是哪一层落空，排查得另跑一遍 `dev-scripts/probe-foreground-target.ps1`
+/// 才能定性（2026-09 微信 4.1 把 WeChat.exe 改名成 Weixin.exe 那次就是这么查的）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditableGate {
+    /// explorer 的桌面图标列表：明确拒绝，优先级高于 caret
+    ExplorerDesktopReject,
+    /// 系统报告了文本光标，最可靠的信号
+    Caret,
+    /// 焦点或窗口类名命中原生可编辑控件（Edit / RichEdit / Scintilla / Word）
+    NativeClass,
+    /// UIA 报了 Edit / Document / ComboBox
+    UiaEditableControl,
+    /// UIA 报了 Custom/Group/Pane 且有 ValuePattern，即富文本编辑器
+    UiaRichEditor,
+    /// UIA 说这个可编辑控件是只读的
+    UiaReadOnly,
+    /// Chromium 窗口且能获得键盘焦点，乐观放行
+    ChromiumOptimistic,
+    /// 前面几层都没信号，靠进程名白名单放行
+    ProcessAllowlist,
+    /// 四层判据全部落空
+    NoSignal,
+}
+
+impl EditableGate {
+    pub fn is_editable(self) -> bool {
+        !matches!(
+            self,
+            Self::ExplorerDesktopReject | Self::UiaReadOnly | Self::NoSignal
+        )
+    }
+
+    /// 写进日志和探测结果的稳定标识。改名等于改日志契约，排查脚本会对不上。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplorerDesktopReject => "explorer_desktop_reject",
+            Self::Caret => "caret",
+            Self::NativeClass => "native_class",
+            Self::UiaEditableControl => "uia_editable_control",
+            Self::UiaRichEditor => "uia_rich_editor",
+            Self::UiaReadOnly => "uia_read_only",
+            Self::ChromiumOptimistic => "chromium_optimistic",
+            Self::ProcessAllowlist => "process_allowlist",
+            Self::NoSignal => "no_signal",
+        }
+    }
 }
 
 pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
+    editability_gate(ctx).is_editable()
+}
+
+/// 判据只有这一份实现，`is_likely_editable_pub` 是它的 bool 视图。别再复制一份出来
+/// 只为了拿结论 —— 两份判据迟早漂移，而漂移的症状是「改了一处，另一条路径照旧」。
+pub fn editability_gate(ctx: &context::AppContext) -> EditableGate {
     let fc = ctx.focus_class.to_lowercase();
     let wc = ctx.window_class.to_lowercase();
     let proc = ctx.process_name.to_lowercase();
@@ -201,10 +263,10 @@ pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
             .iter()
             .any(|class_name| fc == *class_name || wc == *class_name)
     {
-        return false;
+        return EditableGate::ExplorerDesktopReject;
     }
 
-    if ctx.has_caret { return true; }
+    if ctx.has_caret { return EditableGate::Caret; }
 
     // Native Win32 editable controls — always considered editable
     let native_editable_classes = [
@@ -214,7 +276,7 @@ pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
         "_wwg",
     ];
     for cls in &native_editable_classes {
-        if fc.contains(cls) || wc.contains(cls) { return true; }
+        if fc.contains(cls) || wc.contains(cls) { return EditableGate::NativeClass; }
     }
 
     // UIA-based detection: if control_type is populated, use it as primary signal.
@@ -233,9 +295,13 @@ pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
         if is_editable_control || is_rich_editor {
             if ctx.is_enabled {
                 if ctx.is_read_only == Some(true) {
-                    return false;
+                    return EditableGate::UiaReadOnly;
                 }
-                return true;
+                return if is_editable_control {
+                    EditableGate::UiaEditableControl
+                } else {
+                    EditableGate::UiaRichEditor
+                };
             }
         }
 
@@ -268,7 +334,7 @@ pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
                 || ct == "Separator"
                 || ct == "ProgressBar";
             if !definitely_not_editable {
-                return true;
+                return EditableGate::ChromiumOptimistic;
             }
         }
 
@@ -283,14 +349,43 @@ pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
         // 与 code/devenv 同类，文本区可编辑，按进程名兜底放行
         "trae", "cursor", "windsurf", "kiro",
         "chrome", "msedge", "firefox", "opera", "brave",
-        "teams", "wechat", "dingtalk", "slack",
+        // 微信自 4.x 起整个界面用 Qt 重写（窗口类 Qt51514QWindowIcon，输入框自绘）：
+        // 没有 Win32 caret、没有子控件 HWND（focusClass 就等于窗口类）、UIA 只能看到
+        // 顶层 Window 且无 ValuePattern —— 上面三层判据对它全部为空，进程名是唯一
+        // 的放行依据。而 4.1 又把 exe 从 WeChat.exe 改名成 Weixin.exe（装到
+        // Tencent\Weixin\），只写 "wechat" 的话用户升级后就静默退化成兜底卡片
+        // （2026-09-20 实测 4.1.13.65）。两个名字都要留：3.9 老版本和微信开发者
+        // 工具（wechatdevtools.exe）仍然叫 wechat。
+        "teams", "wechat", "weixin", "dingtalk", "slack",
         "windowsterminal", "cmd", "powershell",
         "mobaxterm", "putty", "securecrt", "xshell",
     ];
     for p in &editable_procs {
-        if proc.contains(p) { return true; }
+        if proc.contains(p) { return EditableGate::ProcessAllowlist; }
     }
-    false
+    EditableGate::NoSignal
+}
+
+/// 把结论和四层判据各自的输入拼成一行，日志与探测结果共用同一份格式。
+///
+/// 刻意不含窗口标题和 exe 全路径：这行会进 sayit.log，而日志整份跟着诊断包发给
+/// 开发者。类名、控件类型、进程名足够定位「为什么判成不可输入」，标题里的聊天
+/// 对象名和路径里的 Windows 用户名对排查没有任何作用。
+pub fn describe_editability(ctx: &context::AppContext, gate: EditableGate) -> String {
+    format!(
+        "gate={} editable={} class={} focusClass={} hasCaret={} controlType={} valuePattern={} kbFocusable={} enabled={} readOnly={} process={}",
+        gate.as_str(),
+        gate.is_editable(),
+        ctx.window_class,
+        ctx.focus_class,
+        ctx.has_caret,
+        if ctx.control_type.is_empty() { "-" } else { ctx.control_type.as_str() },
+        ctx.is_value_pattern_available,
+        ctx.is_keyboard_focusable,
+        ctx.is_enabled,
+        ctx.is_read_only.map_or("-", |v| if v { "true" } else { "false" }),
+        ctx.process_name
+    )
 }
 
 // ─── Core injection logic ───
@@ -919,4 +1014,102 @@ unsafe fn native_get_clipboard_text() -> Option<String> {
 
     let _ = CloseClipboard();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{describe_editability, editability_gate, is_likely_editable_pub, EditableGate};
+    use crate::context::AppContext;
+
+    /// 微信 4.1.13.65 的真实取值，来自 dev-scripts/probe-foreground-target.ps1：
+    /// Qt 自绘窗口，caret / 原生类名 / UIA 三层判据全部为空，只有进程名能放行它。
+    fn weixin_4x_ctx(process_name: &str) -> AppContext {
+        AppContext {
+            process_name: process_name.to_string(),
+            window_class: "Qt51514QWindowIcon".to_string(),
+            // Qt 整个窗口只有一个 HWND，GetFocus 返回的就是顶层窗口本身
+            focus_class: "Qt51514QWindowIcon".to_string(),
+            has_caret: false,
+            // UIA 只能看到顶层窗口，看不到自绘的输入框
+            control_type: "Window".to_string(),
+            is_value_pattern_available: false,
+            is_keyboard_focusable: false,
+            is_enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn weixin_4x_is_editable_via_process_allowlist() {
+        // 4.1 起 exe 叫 Weixin.exe。这条 2026-09-20 之前是 false，表现为用户升级微信后
+        // 插不进文本、只能从兜底卡片手动复制。
+        //
+        // 断言的是 gate 而不只是"能插"：前三层判据对 Qt 自绘窗口全都是空的，唯一放行
+        // 它的是进程名白名单。只断言 bool 的话，将来若有人给 Qt 类名开了个后门，结论
+        // 照样是 true，测试照样全绿，而真正在起作用的机制已经换了。
+        let ctx = weixin_4x_ctx("Weixin.exe");
+        assert_eq!(editability_gate(&ctx), EditableGate::ProcessAllowlist);
+        assert!(is_likely_editable_pub(&ctx));
+    }
+
+    #[test]
+    fn wechat_3x_name_still_editable() {
+        // 老版本与微信开发者工具仍然叫 WeChat.exe，改名后不能把它们丢掉
+        assert_eq!(
+            editability_gate(&weixin_4x_ctx("WeChat.exe")),
+            EditableGate::ProcessAllowlist
+        );
+        assert_eq!(
+            editability_gate(&weixin_4x_ctx("wechatdevtools.exe")),
+            EditableGate::ProcessAllowlist
+        );
+    }
+
+    /// 明确否掉的方案：不能因为"Qt 窗口拿不到 UIA 信息"就把所有 Qt 应用当成可编辑。
+    /// 判错的代价不对称 —— 漏判只是让用户从兜底卡片手动粘一次，误判会让前端报
+    /// 插入成功而目标一个字都没收到（SendInput 成功不等于插进去了，见 pitfalls #28）。
+    #[test]
+    fn unknown_qt_app_falls_through_all_gates() {
+        let ctx = weixin_4x_ctx("qbittorrent.exe");
+        // 与上面那条微信用例唯一的差别就是进程名，所以这一对测试合起来证明：
+        // 放行微信的确实是进程名那一层，不是别的判据顺手放过去的。
+        assert_eq!(editability_gate(&ctx), EditableGate::NoSignal);
+        assert!(!is_likely_editable_pub(&ctx));
+    }
+
+    /// 桌面图标重命名时 explorer 确实有 caret，但那里不是文本注入目标；
+    /// 这条钉住 caret 之前的那道明确拒绝没有被后来的放宽绕过。
+    #[test]
+    fn explorer_desktop_is_rejected_before_caret() {
+        let ctx = AppContext {
+            process_name: "explorer.exe".to_string(),
+            window_class: "Progman".to_string(),
+            focus_class: "SysListView32".to_string(),
+            has_caret: true,
+            is_enabled: true,
+            ..Default::default()
+        };
+        // has_caret=true 却仍然拒绝，说明那道明确拒绝排在 caret 之前 —— 这正是它存在
+        // 的理由，改动判据顺序会让它失效。
+        assert_eq!(editability_gate(&ctx), EditableGate::ExplorerDesktopReject);
+        assert!(!is_likely_editable_pub(&ctx));
+    }
+
+    /// 这行诊断串会进 sayit.log，而日志整份跟着诊断包发给开发者。窗口标题里可能是
+    /// 聊天对象名或文档名，exe 路径里带 Windows 用户名，两者对排查毫无作用。
+    #[test]
+    fn describe_editability_never_leaks_title_or_path() {
+        let mut ctx = weixin_4x_ctx("Weixin.exe");
+        ctx.window_title = "文件传输助手 - 季度奖金方案".to_string();
+        ctx.exe_path = r"C:\Users\zhangsan\AppData\Local\Programs\Weixin.exe".to_string();
+
+        let line = describe_editability(&ctx, editability_gate(&ctx));
+
+        assert!(!line.contains("季度奖金"), "window title leaked: {line}");
+        assert!(!line.contains("zhangsan"), "exe path leaked: {line}");
+        // 同时确认该有的还在，别把这条测试变成"什么都不记也能过"
+        assert!(line.contains("gate=process_allowlist"), "{line}");
+        assert!(line.contains("process=Weixin.exe"), "{line}");
+        assert!(line.contains("focusClass=Qt51514QWindowIcon"), "{line}");
+    }
 }

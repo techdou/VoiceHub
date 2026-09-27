@@ -103,8 +103,9 @@ pub fn get_recording_context(
 }
 
 fn probe_result_for_context(ctx: &AppContext, started_at: i64, completed_at: i64) -> Value {
-    // Determine editability using the same heuristic as inject
-    let editable = crate::inject::is_likely_editable_pub(ctx);
+    // 与 inject 共用同一个判据实现，顺带拿到「结论是哪一层给出的」
+    let gate = crate::inject::editability_gate(ctx);
+    let editable = gate.is_editable();
 
     // Check if the target is our own process
     let is_current_app_process = {
@@ -130,7 +131,12 @@ fn probe_result_for_context(ctx: &AppContext, started_at: i64, completed_at: i64
         "pid": ctx.pid,
         "tid": ctx.tid,
         "process": &ctx.process_name,
-        "detail": format!("class={} focusClass={} hasCaret={}", ctx.window_class, ctx.focus_class, ctx.has_caret),
+        // not_editable 时前端只把这个 detail 串记进日志（见 RecorderOrchestrator 的
+        // "Target is not editable"），所以四层判据的输入和结论都得在里面 —— 缺了的话
+        // 日志只能说明"被拦了"，说不出是哪一层落空。
+        "detail": crate::inject::describe_editability(ctx, gate),
+        // 结构化的同一件事，供诊断界面直接展示，不必让前端再解析 detail 串
+        "gate": gate.as_str(),
         "hasCaret": ctx.has_caret,
         "windowClass": &ctx.window_class,
         "focusClass": &ctx.focus_class,
