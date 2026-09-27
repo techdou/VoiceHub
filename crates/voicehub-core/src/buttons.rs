@@ -15,13 +15,12 @@ fn usage_map() -> &'static HashMap<u16, RemoteButton> {
     })
 }
 
-/// RC003 实有按键（2026-09-13 真机采集定案）+ 语音键。
-/// 12 键模型是 RC001 布局的遗产：电源/返回/TV 三轮采集零报文（机身无键），
-/// 左右键在 RC003 触摸板上不存在（水平滑动=光标移动，产品决策不拦截），
-/// 音量±确认无数据源（Windows 只暴露键盘接口不暴露 consumer——参考项目
-/// 2026-09-05 调查归档；macOS 遗产），全部拔除。`hid_usage` 为遥控器 HID
-/// 报文里的 usage 值；语音键走键盘页 F5、Home/菜单走经典蓝牙键盘页 VK，
-/// 单独处理。
+/// RC003 可映射按键（2026-09-27 真机重采定案，9 键）+ 语音键。
+/// 电源/TV/左/右与 Home/菜单一样走经典蓝牙键盘页 VK（raw_input.rs 合成），
+/// `hid_usage` 是内部合成码而非真机 consumer 报文值——沿用社区交叉核对表
+/// （Issue #1 osagem fork）保持一致。返回/音量±在 Windows 上用户态不可达
+/// （Raw Input 零报文零系统反应；读原始通道需注入驱动宿主，2026-09-27
+/// 评审决定不引入），不入模型。语音键走键盘页 F5，不参与映射。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteButton {
@@ -30,15 +29,23 @@ pub enum RemoteButton {
     Down,
     Home,
     Menu,
+    Left,
+    Right,
+    Power,
+    Tv,
 }
 
 impl RemoteButton {
-    pub const ALL: [RemoteButton; 5] = [
+    pub const ALL: [RemoteButton; 9] = [
         RemoteButton::Up,
         RemoteButton::Ok,
         RemoteButton::Down,
         RemoteButton::Home,
         RemoteButton::Menu,
+        RemoteButton::Left,
+        RemoteButton::Right,
+        RemoteButton::Power,
+        RemoteButton::Tv,
     ];
 
     pub fn hid_usage(self) -> u16 {
@@ -48,6 +55,10 @@ impl RemoteButton {
             RemoteButton::Down => 0x51,
             RemoteButton::Home => 0x4A,
             RemoteButton::Menu => 0x65,
+            RemoteButton::Left => 0x50,
+            RemoteButton::Right => 0x4F,
+            RemoteButton::Power => 0x66,
+            RemoteButton::Tv => 0x35,
         }
     }
 

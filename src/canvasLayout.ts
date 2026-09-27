@@ -1,7 +1,8 @@
 /// 连线画布几何：设计尺寸 780×700，遥控器 152×620 居中（1:4.065 与
-/// RC003 实物照片一致）。锚点坐标按 RC003 实物照片逐键重新标定
-/// （黑色键面连通域分析：顶部 左电源/右语音、中部圆盘、左列 返回/主页/菜单、
-/// 右列 音量±/TV），与 src/assets/rc003-remote.webp 像素级对齐。
+/// RC003 实物照片一致）。锚点坐标按 RC003 实物照片逐键标定
+/// （黑色键面连通域分析：顶部 左电源/右语音、中部圆盘含左右键、
+/// 左列 返回/主页/菜单、右列 音量±/TV），与 src/assets/rc003-remote.webp
+/// 像素级对齐。9 键模型（2026-09-27）：返回/音量±不入模型，画布不展示。
 
 import type { RemoteButtonId } from "./types";
 
@@ -29,11 +30,15 @@ interface Placement {
 }
 
 export const PLACEMENTS: Placement[] = [
-  { button: "up", side: "left", anchor: { x: 0.502, y: 0.136 }, targetY: 0.22 },
-  { button: "home", side: "left", anchor: { x: 0.294, y: 0.453 }, targetY: 0.46 },
-  { button: "menu", side: "left", anchor: { x: 0.295, y: 0.546 }, targetY: 0.7 },
-  { button: "ok", side: "right", anchor: { x: 0.502, y: 0.211 }, targetY: 0.34 },
-  { button: "down", side: "right", anchor: { x: 0.502, y: 0.286 }, targetY: 0.46 },
+  { button: "power", side: "left", anchor: { x: 0.242, y: 0.064 }, targetY: 0.1 },
+  { button: "up", side: "left", anchor: { x: 0.502, y: 0.136 }, targetY: 0.23 },
+  { button: "left", side: "left", anchor: { x: 0.198, y: 0.211 }, targetY: 0.36 },
+  { button: "home", side: "left", anchor: { x: 0.294, y: 0.453 }, targetY: 0.49 },
+  { button: "menu", side: "left", anchor: { x: 0.295, y: 0.546 }, targetY: 0.62 },
+  { button: "right", side: "right", anchor: { x: 0.806, y: 0.211 }, targetY: 0.22 },
+  { button: "ok", side: "right", anchor: { x: 0.502, y: 0.211 }, targetY: 0.35 },
+  { button: "down", side: "right", anchor: { x: 0.502, y: 0.286 }, targetY: 0.48 },
+  { button: "tv", side: "right", anchor: { x: 0.703, y: 0.547 }, targetY: 0.61 },
 ];
 
 export const VOICE_ANCHOR = { x: 0.759, y: 0.064 };

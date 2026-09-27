@@ -17,14 +17,19 @@ export type ButtonAction =
   | { kind: "show_desktop" }
   | { kind: "delete_line" };
 
-/** RC003 实有按键（2026-09-13 真机采集定案），与 Rust RemoteButton 枚举
+/** RC003 可映射按键（2026-09-27 真机重采定案，9 键：电源/TV/左右走经典蓝牙
+ *  键盘页 VK；返回/音量±用户态不可达不入模型），与 Rust RemoteButton 枚举
  *  一一对应（契约测试 rustContract.test.ts 守护）。 */
 export type RemoteButtonId =
   | "up"
   | "ok"
   | "down"
   | "home"
-  | "menu";
+  | "menu"
+  | "left"
+  | "right"
+  | "power"
+  | "tv";
 
 export interface ButtonBinding {
   single: ButtonAction;

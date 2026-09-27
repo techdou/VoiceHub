@@ -36,9 +36,10 @@ const { t } = useI18n();
 const SLOTS = ["single", "double", "long"] as const;
 type Slot = (typeof SLOTS)[number];
 
-/// 键名图标：与遥控器键面符号一致（OK/TV 无符号键用短文本）。
+/// 键名图标：与遥控器键面符号一致（OK/TV/电源无符号键用短文本/通用符号）。
 const buttonIcons: Record<string, string> = {
   up: "▲", ok: "OK", down: "▼", home: "⌂", menu: "☰",
+  left: "◀", right: "▶", power: "⏻", tv: "TV",
 };
 
 function buttonName(button: string): string {

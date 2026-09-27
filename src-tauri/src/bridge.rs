@@ -755,12 +755,17 @@ impl Bridge {
     }
 
     /// key_gate 边沿 sink 的入口（钩子线程调用，仅做 channel 转发）：
-    /// 吞掉的 Home/菜单键转成 usage 集合，套最近的真实遥控器设备路径
-    /// 走与 Raw Input 完全相同的主链路（差分 → 手势 → 动作）。
+    /// 吞掉的 tracked 键（Home/菜单/左右/TV/电源）转成 usage 集合，套最近
+    /// 的真实遥控器设备路径走与 Raw Input 完全相同的主链路（差分 → 手势 → 动作）。
     fn feed_remote_kb_edge(self: &Arc<Self>, vk: u32, pressed: bool) {
         let usage = match vk {
             0x24 => RemoteButton::Home.hid_usage(),
             0x5D => RemoteButton::Menu.hid_usage(),
+            0x25 => RemoteButton::Left.hid_usage(),
+            0x27 => RemoteButton::Right.hid_usage(),
+            0xC0 => RemoteButton::Tv.hid_usage(),
+            // 电源（钩子侧已按扫描码 0x5E 过滤，此处只会收到真电源事件）。
+            0xFF => RemoteButton::Power.hid_usage(),
             _ => return,
         };
         let path = lock(&self.inner).last_remote_kb_path.clone();
@@ -973,7 +978,7 @@ impl Bridge {
     }
 }
 
-/// 映射里配置了任意动作或 PTT 的 tracked 键（Home/菜单）位掩码——
+/// 映射里配置了任意动作或 PTT 的 tracked 键（Home/菜单/左右/TV/电源）位掩码——
 /// 「配置即接管」：一旦配置，遥控器在线期间该键物理事件由映射接管。
 fn tracked_mask(settings: &AppSettings) -> u32 {
     let configured = |key: &str| {
@@ -984,11 +989,17 @@ fn tracked_mask(settings: &AppSettings) -> u32 {
             .is_some_and(|binding| *binding != voicehub_core::mapping::ButtonBinding::default())
     };
     let mut mask = 0;
-    if configured("home") {
-        mask |= key_gate::TRACK_HOME;
-    }
-    if configured("menu") {
-        mask |= key_gate::TRACK_APPS;
+    for (key, bit) in [
+        ("home", key_gate::TRACK_HOME),
+        ("menu", key_gate::TRACK_APPS),
+        ("left", key_gate::TRACK_LEFT),
+        ("right", key_gate::TRACK_RIGHT),
+        ("tv", key_gate::TRACK_TV),
+        ("power", key_gate::TRACK_POWER),
+    ] {
+        if configured(key) {
+            mask |= bit;
+        }
     }
     mask
 }

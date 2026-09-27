@@ -12,12 +12,14 @@
 //! - UP 沿：只按配对裁决——本次按住的所有 DOWN 全被吞才吞 UP，
 //!   任何 DOWN 泄漏则 UP 必放行（宁送孤立 UP，不留 OS 粘键）。
 //!
-//! tracked 键接管（Home / 菜单）：这两个键走经典蓝牙键盘通道，与物理键盘
-//! 同 VK 单事件流——LL 钩子无法区分来源，也没有 GATT/consumer 先导信号可
-//! 做归因（参考实现的 60ms 等待方案依赖双事件流，此处不成立）。语义取
-//! 「配置即接管」：键在映射里配置了动作且遥控器在线 → 吞掉物理事件
-//! （原生透传行为如 Home 跳行首 / Apps 弹菜单随之消失），边沿经 sink 喂
-//! 回宿主映射链路。代价：遥控器在线期间物理键盘的同名键也被接管。
+//! tracked 键接管（Home / 菜单 / 左 / 右 / TV / 电源）：这些键走经典蓝牙
+//! 键盘通道，与物理键盘同 VK 单事件流——LL 钩子无法区分来源，也没有
+//! GATT/consumer 先导信号可做归因（参考实现的 60ms 等待方案依赖双事件流，
+//! 此处不成立）。语义取「配置即接管」：键在映射里配置了动作且遥控器在线
+//! → 吞掉物理事件（原生透传行为如 Home 跳行首 / Apps 弹菜单随之消失），
+//! 边沿经 sink 喂回宿主映射链路。代价：遥控器在线期间物理键盘的同名键也
+//! 被接管。电源键 VK 0xFF 是 Windows 的"无映射"兜底值，必须叠加扫描码
+//! 0x5E 双匹配，避免吞掉其他未知键（2026-09-27 真机重采定案）。
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -32,6 +34,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const VK_F5: u32 = 0x74;
 const VK_HOME: u32 = 0x24;
 const VK_APPS: u32 = 0x5D;
+const VK_LEFT: u32 = 0x25;
+const VK_RIGHT: u32 = 0x27;
+const VK_TV: u32 = 0xC0;
+/// 电源：VK 0xFF + 扫描码 0x5E（经典蓝牙键盘页，2026-09-27 probe_hid 实测）。
+const VK_POWER: u32 = 0xFF;
+const SCAN_REMOTE_POWER: u32 = 0x5E;
 
 /// 武装窗口：GATT 控制通知到达后的一小段时间（遥控器 HID F5 通常
 /// 晚 60–90ms 到达；应用被后台节流时工作线程可能再拖 120ms）。
@@ -50,11 +58,15 @@ static REMOTE_CONNECTED: AtomicBool = AtomicBool::new(false);
 /// 安装并发时双线程双钩子（双钩子吞键无害，但退出只卸一个会泄漏到进程结束）。
 static INSTALL_LOCK: AtomicBool = AtomicBool::new(false);
 
-/// tracked 键位掩码：bit0 = HOME，bit1 = APPS（配置即接管）。
+/// tracked 键位掩码（配置即接管）：HOME/APPS/LEFT/RIGHT/TV/POWER。
 static TRACKED_MASK: AtomicU32 = AtomicU32::new(0);
 /// tracked 键各自独立的按住配对（与 F5 的 HOLD_PAIRING 同语义，按 VK 隔离）。
 static HOLD_PAIRING_HOME: AtomicU32 = AtomicU32::new(HOLD_NONE);
 static HOLD_PAIRING_APPS: AtomicU32 = AtomicU32::new(HOLD_NONE);
+static HOLD_PAIRING_LEFT: AtomicU32 = AtomicU32::new(HOLD_NONE);
+static HOLD_PAIRING_RIGHT: AtomicU32 = AtomicU32::new(HOLD_NONE);
+static HOLD_PAIRING_TV: AtomicU32 = AtomicU32::new(HOLD_NONE);
+static HOLD_PAIRING_POWER: AtomicU32 = AtomicU32::new(HOLD_NONE);
 
 /// 被吞 tracked 键的边沿投递端（宿主注册；闭包内转发到 dispatcher 线程，
 /// 钩子线程绝不能同步执行映射动作——tap 注入带 sleep 会阻塞键盘管线）。
@@ -62,6 +74,14 @@ static EDGE_SINK: OnceLock<Arc<dyn Fn(u32, bool) + Send + Sync>> = OnceLock::new
 
 pub const TRACK_HOME: u32 = 1 << 0;
 pub const TRACK_APPS: u32 = 1 << 1;
+pub const TRACK_LEFT: u32 = 1 << 2;
+pub const TRACK_RIGHT: u32 = 1 << 3;
+pub const TRACK_TV: u32 = 1 << 4;
+pub const TRACK_POWER: u32 = 1 << 5;
+
+/// 全部 tracked 键位的并集（宿主计算掩码用）。
+pub const TRACK_ALL: u32 =
+    TRACK_HOME | TRACK_APPS | TRACK_LEFT | TRACK_RIGHT | TRACK_TV | TRACK_POWER;
 
 pub const HOLD_NONE: u32 = 0;
 pub const HOLD_SWALLOWED_ALL: u32 = 1;
@@ -146,7 +166,7 @@ pub fn is_persistent_armed() -> bool {
 
 /// tracked 键集合同步（宿主按映射配置计算：键上配置了任意动作或 PTT 即接管）。
 pub fn set_tracked_keys(mask: u32) {
-    TRACKED_MASK.store(mask & (TRACK_HOME | TRACK_APPS), Ordering::Relaxed);
+    TRACKED_MASK.store(mask & TRACK_ALL, Ordering::Relaxed);
 }
 
 /// 注册被吞 tracked 键的边沿投递端。闭包在钩子线程被调——只许做无阻塞
@@ -160,6 +180,10 @@ fn tracked(vk: u32) -> bool {
     match vk {
         VK_HOME => mask & TRACK_HOME != 0,
         VK_APPS => mask & TRACK_APPS != 0,
+        VK_LEFT => mask & TRACK_LEFT != 0,
+        VK_RIGHT => mask & TRACK_RIGHT != 0,
+        VK_TV => mask & TRACK_TV != 0,
+        VK_POWER => mask & TRACK_POWER != 0,
         _ => false,
     }
 }
@@ -169,8 +193,18 @@ fn pairing_slot(vk: u32) -> Option<&'static AtomicU32> {
     match vk {
         VK_HOME => Some(&HOLD_PAIRING_HOME),
         VK_APPS => Some(&HOLD_PAIRING_APPS),
+        VK_LEFT => Some(&HOLD_PAIRING_LEFT),
+        VK_RIGHT => Some(&HOLD_PAIRING_RIGHT),
+        VK_TV => Some(&HOLD_PAIRING_TV),
+        VK_POWER => Some(&HOLD_PAIRING_POWER),
         _ => None,
     }
+}
+
+/// 电源键身份判定：VK 0xFF 是 Windows 对"无映射扫描码"的兜底值，仅当
+/// 扫描码为 0x5E 时才是遥控器电源键；其余 0xFF 事件一律当普通键透传。
+pub fn is_remote_power(vk: u32, scan_code: u32) -> bool {
+    vk == VK_POWER && scan_code == SCAN_REMOTE_POWER
 }
 
 fn armed() -> bool {
@@ -262,7 +296,12 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let vk = kb.vkCode as u32;
             let is_up = !(wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN);
 
-            // tracked 键（Home/菜单）走独立裁决：各自配对槽 + 边沿喂 sink。
+            // tracked 键（Home/菜单/左右/TV/电源）走独立裁决：各自配对槽 + 边沿喂 sink。
+            // 电源的 VK 0xFF 是"无映射"兜底值：仅扫描码 0x5E 的事件才进入
+            // tracked 裁决，其余 0xFF（未知设备/未知键）按普通键透传。
+            if vk == VK_POWER && !is_remote_power(vk, kb.scanCode) {
+                return CallNextHookEx(None, code, wparam, lparam);
+            }
             if let Some(slot) = pairing_slot(vk) {
                 if tracked(vk) {
                     let pairing = slot.load(Ordering::Relaxed);
@@ -388,14 +427,40 @@ mod tests {
 
     #[test]
     fn tracked_mask_filters_unknown_bits() {
-        // 集合 API 只接受已知位。
+        // 集合 API 只接受已知位（bit6 及以上被滤掉）。
         TRACKED_MASK.store(0, Ordering::Relaxed);
-        set_tracked_keys(TRACK_HOME | TRACK_APPS | 0xF0);
-        assert_eq!(TRACKED_MASK.load(Ordering::Relaxed), TRACK_HOME | TRACK_APPS);
+        set_tracked_keys(TRACK_ALL | 0xFFFFFFC0);
+        assert_eq!(TRACKED_MASK.load(Ordering::Relaxed), TRACK_ALL);
         assert!(tracked(VK_HOME));
         assert!(tracked(VK_APPS));
+        assert!(tracked(VK_LEFT));
+        assert!(tracked(VK_RIGHT));
+        assert!(tracked(VK_TV));
+        assert!(tracked(VK_POWER));
         assert!(!tracked(0x41));
         TRACKED_MASK.store(0, Ordering::Relaxed);
         assert!(!tracked(VK_HOME));
+    }
+
+    #[test]
+    fn power_requires_scan_code_match() {
+        // VK 0xFF 是兜底值：只有扫描码 0x5E 才是遥控器电源键。
+        assert!(is_remote_power(0xFF, 0x5E));
+        assert!(!is_remote_power(0xFF, 0x5F));
+        assert!(!is_remote_power(0xFF, 0x00));
+        assert!(!is_remote_power(0x5F, 0x5E));
+    }
+
+    #[test]
+    fn new_tracked_keys_take_over_while_remote_online() {
+        // 左/右/TV/电源与 Home/菜单同语义：配置即接管，遥控器在线才吞。
+        assert!(decide(VK_LEFT, false, false, false, HOLD_NONE, true, true));
+        assert!(decide(VK_RIGHT, false, false, false, HOLD_NONE, true, true));
+        assert!(decide(VK_TV, false, false, false, HOLD_NONE, true, true));
+        assert!(decide(VK_POWER, false, false, false, HOLD_NONE, true, true));
+        assert!(!decide(VK_LEFT, false, false, false, HOLD_NONE, false, true));
+        // UP 沿按配对裁决（防粘键）。
+        assert!(decide(VK_TV, true, false, false, HOLD_SWALLOWED_ALL, true, true));
+        assert!(!decide(VK_TV, true, false, false, HOLD_LEAKED, true, true));
     }
 }

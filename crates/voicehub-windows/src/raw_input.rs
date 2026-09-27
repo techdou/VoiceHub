@@ -310,22 +310,25 @@ fn parse_raw_input(raw: &RAWINPUT, wparam: WPARAM) -> Vec<HidEvent> {
             // 接口，BLE GATT 是 5070），Windows 翻译成 VK_HOME(0x24) /
             // VK_APPS(0x5D)。合成 consumer usage 集合，复用 UsageTracker
             // 差分与手势状态机（Home/菜单支持双击/长按）。
-            match kb.VKey {
-                0x24 => {
-                    return vec![HidEvent::UsageSet(if pressed {
-                        vec![RemoteButton::Home.hid_usage()]
-                    } else {
-                        Vec::new()
-                    })]
-                }
-                0x5D => {
-                    return vec![HidEvent::UsageSet(if pressed {
-                        vec![RemoteButton::Menu.hid_usage()]
-                    } else {
-                        Vec::new()
-                    })]
-                }
-                _ => {}
+            // 2026-09-27 真机重采（Issue #1，9 键定案）：左/右/TV/电源同走
+            // 该通道——VK_LEFT(0x25)/VK_RIGHT(0x27)/VK_OEM_3(0xC0=TV)；
+            // 电源的 makecode 0x5E 在 Windows 无映射 VK，落到 0xFF 兜底值，
+            // 必须按 VK+扫描码双匹配（VK_SLEEP 0x5F 实测零命中）。
+            let remote_vk_button = match (kb.VKey, kb.MakeCode) {
+                (0x24, _) => Some(RemoteButton::Home),
+                (0x5D, _) => Some(RemoteButton::Menu),
+                (0x25, _) => Some(RemoteButton::Left),
+                (0x27, _) => Some(RemoteButton::Right),
+                (0xC0, _) => Some(RemoteButton::Tv),
+                (0xFF, 0x5E) => Some(RemoteButton::Power),
+                _ => None,
+            };
+            if let Some(button) = remote_vk_button {
+                return vec![HidEvent::UsageSet(if pressed {
+                    vec![button.hid_usage()]
+                } else {
+                    Vec::new()
+                })];
             }
             return vec![HidEvent::Activity];
         }
