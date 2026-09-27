@@ -6,12 +6,13 @@ use std::sync::Mutex;
 
 /// Default settings values (mirrors electron-app/electron/store.ts)
 const DEFAULT_SETTINGS: &[(&str, &str)] = &[
-    ("workMode", r#""local""#),
-    ("aiEnabled", "false"),
     // 按住说话的默认键。不能是 Shift：长按右 Shift 会触发 Windows 筛选键，
     // 导致松开后录音停不下来。与 src/services/defaults.ts、keyboard/mod.rs 的
     // DEFAULT_PTT_SETTING 保持一致。
     ("shortcutPTT", r#""ControlRight""#),
+    // VoiceHub：嵌入运行时默认本地模式、AI 整理默认关（宿主工作区按需开启）。
+    ("workMode", r#""local""#),
+    ("aiEnabled", "false"),
     ("shortcutPTTCombo", r#""Alt+Q""#),
     ("shortcutHandsFree", r#""AltRight""#),
     ("shortcutToggleAi", r#""""#),
@@ -180,6 +181,8 @@ impl Storage {
         Ok(())
     }
 
+    /// VoiceHub：自定义 GGUF 模型被引擎接受后，把选择原子提交进设置
+    /// （customModelPath + modelId 一致落库，读侧两键永不错位）。
     pub fn select_custom_model(&self, path: &str, model_id: &str) -> SqlResult<()> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;

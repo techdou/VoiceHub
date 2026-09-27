@@ -10,6 +10,7 @@ import {
 } from './debugLog'
 import { getWSUrl } from './runtimeConfig'
 import { withLegacyServerTextContext } from './contextAware'
+import { extractServerAiEvidence } from './transcription/aiPolicy'
 import { setConnectionStatus } from '../stores/connectionStatus'
 import type { ActiveAppContext, TextContext } from '../types/appContext'
 import type { ClientRuntimeInfo } from '../types/appApi'
@@ -31,6 +32,12 @@ export interface FinalResult {
   asrEngine?: string
   asrModel?: string
   contextApplied?: boolean
+  /**
+   * 服务端 AI 的执行证据，从 llm_debug 里只摘 error 与 provider。
+   * 有它才能把「服务端跑了但很快」和「服务端压根没跑」分开 —— llm_ms=0 分不出来。
+   * 刻意不透传整个 llm_debug：服务器开了 debug_llm 时它带完整 prompt 与原始输出。
+   */
+  serverAi?: { error?: string; provider?: string }
 }
 
 export interface AudioStats {
@@ -278,6 +285,9 @@ export function connect(cbs: WSCallbacks): Promise<void> {
               asrEngine: msg.asr_engine || undefined,
               asrModel: msg.asr_model || undefined,
               contextApplied: explicitContextApplied ?? (legacyContextApplied ? true : undefined),
+              // 只摘这两个结论性字段往下传，llm_debug 本体留在这里（开了 debug_llm 时
+              // 它带完整 prompt 和原始输出，不能顺着结果对象扩散）。
+              serverAi: extractServerAiEvidence(msg?.llm_debug),
             })
             break
           }

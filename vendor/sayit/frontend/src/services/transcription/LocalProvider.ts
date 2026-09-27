@@ -7,6 +7,7 @@ import { getSetting } from '../store'
 import { addRuntimeEvent } from '../debugLog'
 import { BufferedProvider } from './BufferedProvider'
 import { polishWithClientAi } from './clientAiPolish'
+import { policyFromSnapshot, resolveAndLogAiOutcome, type AiOutcomeContext } from './aiPolicy'
 import type { TranscriptionCallbacks } from './types'
 
 export class LocalProvider extends BufferedProvider {
@@ -51,7 +52,8 @@ export class LocalProvider extends BufferedProvider {
     // 真正的失败会在识别阶段带着具体原因报出来，这里仍按就绪处理。
     try {
       const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
-      await invoke<string>('preload_local_model', { modelId, accelerator })
+      const gpuDevice = await getSetting('localAsr.gpuDevice', '') as string
+      await invoke<string>('preload_local_model', { modelId, accelerator, gpuDevice })
     } catch (err) {
       addRuntimeEvent('warn', 'local', 'Local model preload failed; provider remains marked ready', { error: String(err) })
     }
@@ -75,12 +77,17 @@ export class LocalProvider extends BufferedProvider {
       if (!this.isRunCurrent(runId)) return
       const accelerator = await getSetting('localAsr.accelerator', 'auto')
       if (!this.isRunCurrent(runId)) return
+      // 必须跟着传：它是引擎缓存 key 的一部分，这里漏掉就会与预加载的那份不符，
+      // 每次口述都白付一次"卸旧 + 载新 + 预热"。
+      const gpuDevice = await getSetting('localAsr.gpuDevice', '')
+      if (!this.isRunCurrent(runId)) return
 
       const result = await invoke<{ text: string; elapsed_ms: number }>('local_transcribe', {
         audioB64,
         modelId,
         language,
         accelerator,
+        gpuDevice,
       })
       if (!this.isRunCurrent(runId)) return
       asrText = result.text
@@ -96,17 +103,36 @@ export class LocalProvider extends BufferedProvider {
     if (!this.isRunCurrent(runId)) return
     this.callbacks.onASR?.({ text: asrText, asrMs, durationSec })
 
+    // 策略与结果判据与实时录音、其它两种模式共用同一份；时长用本地 PCM 实际秒数，
+    // 不四舍五入（"恰好等于门槛"这一档会判错）。
+    const policy = policyFromSnapshot(startOpts?.aiConfig, 'local', durationSec)
+    const outcomeContext: AiOutcomeContext = {
+      operationId: startOpts?.operationId || `local-${runId}`,
+      trigger: startOpts?.source === 'history_reprocess' ? 'history_reprocess' : 'live',
+    }
+
     if (!asrText.trim()) {
       if (!this.isRunCurrent(runId)) return
-      this.callbacks.onFinal?.({ asrText: '', llmText: '', asrMs, llmMs: 0, durationSec })
+      // 空识别也要有结论：以前这条路直接 return，日志里查不到"为什么没整理"。
+      const outcome = resolveAndLogAiOutcome(outcomeContext, policy, { asrTextEmpty: true })
+      this.callbacks.onFinal?.({
+        asrText: '',
+        llmText: '',
+        asrMs,
+        llmMs: 0,
+        durationSec,
+        aiSource: outcome.source,
+        aiStatus: outcome.status,
+      })
       this.callbacks.onDone?.()
       return
     }
 
     const polish = await polishWithClientAi({
       asrText,
-      durationSec,
       startOptions: startOpts,
+      policy,
+      outcomeContext,
       logSource: 'local',
       isCurrent: () => this.isRunCurrent(runId),
     })

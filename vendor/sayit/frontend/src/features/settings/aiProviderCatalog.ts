@@ -63,6 +63,23 @@ export const AI_PROVIDERS: AiProvider[] = [
     defaultModels: ['mimo-v2.5', 'mimo-v2.5-pro'],
   },
   {
+    value: 'zhipu',
+    get label() { return t('aiProvider.zhipu') },
+    /**
+     * 版本段在 base 里是 `/v4`，不是 `/v1`（normalize_base_url 认得这个形状，会原样保留）。
+     *
+     * 之前没有这张卡，用户只能选「OpenAI 兼容」自己填地址，而这个地址**几乎必然填错**：
+     * 智谱文档里出现的是完整端点 `.../v4/chat/completions`，照抄过来会被再拼一次；
+     * 只填到 `.../api/paas` 又会被补成 `/api/paas/v1`。两种都是 404，用户看到的就是
+     * 「智谱接不上」。做成内置卡之后没有可填错的余地。
+     */
+    defaultUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    // glm-4.7-flash 在官方「免费模型」目录下（docs.bigmodel.cn/cn/guide/models/free/glm-4.7-flash），
+    // 所以放第一位当默认值 —— 想白用的人开箱即可。
+    defaultModels: ['glm-4.7-flash', 'glm-4.7'],
+    consoleUrl: 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys',
+  },
+  {
     value: 'groq',
     // 品牌名，中英文都写 Groq，不需要 locale 键（同 DeepSeek 的处理）
     label: 'Groq',

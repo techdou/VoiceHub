@@ -4,7 +4,7 @@
 //! Runs the message loop on a dedicated thread.
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
@@ -60,6 +60,10 @@ const ESCAPE_MODE_OFF: u32 = 0;
 const ESCAPE_MODE_CANCEL_PROCESSING: u32 = 1;
 const ESCAPE_MODE_DISMISS_FALLBACK: u32 = 2;
 const ESCAPE_MODE_CANCEL_RECORDING: u32 = 3;
+/// 处理已超时、正在宽限期里等迟到结果时按 Esc：放弃等待。
+/// 必须和 dismiss_fallback 分开 —— 它除了收起提示，还要让随后到达的迟到结果
+/// **不再自动插字**（否则界面说着"失败"，文字却突然出现在输入框里）。
+const ESCAPE_MODE_ABANDON_LATE_RESULT: u32 = 4;
 static ESCAPE_ACTION_MODE: AtomicU32 = AtomicU32::new(ESCAPE_MODE_OFF);
 static ESCAPE_ACTION_TOKEN: AtomicU64 = AtomicU64::new(0);
 static ESCAPE_ACTION_DEADLINE_MS: AtomicI64 = AtomicI64::new(0);
@@ -71,7 +75,11 @@ pub fn set_escape_action_mode(mode: &str, token: u64) -> Result<(), String> {
         // 录音硬上限约 5 分钟；留足安全余量，但异常状态也不会永久吞 Esc。
         "cancel_recording" => (ESCAPE_MODE_CANCEL_RECORDING, 11 * 60 * 1000),
         "cancel_processing" => (ESCAPE_MODE_CANCEL_PROCESSING, 2 * 60 * 1000),
+        // 结果卡/失败卡不再自动消失，改由前端在可见期间续期，所以这里的 TTL 只是
+        // 异常兜底（渲染端卡死时不至于永久吞 Esc）。续期间隔必须明显小于它。
         "dismiss_fallback" => (ESCAPE_MODE_DISMISS_FALLBACK, 30 * 1000),
+        // 宽限期最长 LATE_FINAL_GRACE_MS（15s），留足余量。
+        "abandon_late_result" => (ESCAPE_MODE_ABANDON_LATE_RESULT, 60 * 1000),
         _ => return Err(format!("Unknown Escape action mode: {mode}")),
     };
     // 先关闭模式，再按 token/deadline/final mode 的顺序发布一组一致快照。
@@ -105,7 +113,150 @@ fn escape_action_mode_name(mode: u32) -> &'static str {
         ESCAPE_MODE_CANCEL_RECORDING => "cancel_recording",
         ESCAPE_MODE_CANCEL_PROCESSING => "cancel_processing",
         ESCAPE_MODE_DISMISS_FALLBACK => "dismiss_fallback",
+        ESCAPE_MODE_ABANDON_LATE_RESULT => "abandon_late_result",
         _ => "off",
+    }
+}
+
+// ── 悬浮窗卡片快捷键（与卡片生命周期绑定的临时组合键）──
+//
+// 为什么不能用 global_shortcut 注册 Ctrl+C：那是**永久**占用，用户在别的程序里
+// 就再也复制不了东西。为什么不能在 overlay 的 webview 里监听 keydown：悬浮窗是
+// `.focused(false)` 且显示时带 SWP_NOACTIVATE，按键始终发给用户原来的程序，DOM
+// 永远收不到 —— Esc 当年就是因此改用这个钩子的。
+//
+// 所以做成"只在卡片可见期间、且只在卡片弹出时那个前台窗口里"生效的临时接管，
+// 三道闸门：位掩码（哪些动作开着）、token（哪一张卡片）、前台窗口（还是不是他）。
+const CARD_HOTKEY_COPY: u32 = 1 << 0;
+
+static CARD_HOTKEY_MASK: AtomicU32 = AtomicU32::new(0);
+static CARD_HOTKEY_TOKEN: AtomicU64 = AtomicU64::new(0);
+static CARD_HOTKEY_DEADLINE_MS: AtomicI64 = AtomicI64::new(0);
+/// 卡片弹出瞬间的前台窗口句柄。0 表示不校验 —— 拿不到前台窗口时宁可少吞一次
+/// （漏判只让用户改用鼠标点，误吞会抢走他在别处的复制）。
+static CARD_HOTKEY_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
+/// 一次物理按下只投递一个动作；同时保证配对的 keyup 也被吞掉，否则目标程序会
+/// 收到一个孤立的 C 抬起事件（与 ESCAPE_KEY_DOWN 同一个理由）。
+static CARD_HOTKEY_C_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// 卡片快捷键的硬截止。
+///
+/// 结果卡现在**不再自动消失**（文本还没交给用户，不该按"通知已读"处理），所以
+/// 前端会在卡片可见期间周期性续期。这个 TTL 只是异常兜底：渲染端卡死或进程忙死时，
+/// 绝不能永久接管用户的 Ctrl+C。续期间隔必须明显小于它。
+const CARD_HOTKEY_TTL_MS: i64 = 20 * 1000;
+
+/// 开启/续期/解除卡片快捷键。`actions` 为空即全部解除。
+pub fn set_card_hotkeys(actions: &[String], token: u64) -> Result<(), String> {
+    let mut mask = 0u32;
+    for action in actions {
+        match action.as_str() {
+            "copy" => mask |= CARD_HOTKEY_COPY,
+            other => return Err(format!("Unknown card hotkey action: {other}")),
+        }
+    }
+
+    if mask == 0 {
+        CARD_HOTKEY_MASK.store(0, Ordering::SeqCst);
+        CARD_HOTKEY_TOKEN.store(0, Ordering::SeqCst);
+        CARD_HOTKEY_DEADLINE_MS.store(0, Ordering::SeqCst);
+        CARD_HOTKEY_FOREGROUND.store(0, Ordering::SeqCst);
+        return Ok(());
+    }
+
+    // 续期（token 未变）时不要重新取前台窗口：卡片可见期间用户可能已经切走，
+    // 那正是要解除接管的情形，重新取会把新前台当成"卡片的主人"又接管回来。
+    let renewing = CARD_HOTKEY_TOKEN.load(Ordering::SeqCst) == token
+        && CARD_HOTKEY_MASK.load(Ordering::SeqCst) != 0;
+    if !renewing {
+        CARD_HOTKEY_FOREGROUND.store(current_foreground_hwnd(), Ordering::SeqCst);
+    }
+
+    // 与 set_escape_action_mode 同样的发布顺序：先关，再写 token/deadline，最后开 mask。
+    // 钩子只有看到非零 mask 之后才会去读 token。
+    CARD_HOTKEY_MASK.store(0, Ordering::SeqCst);
+    CARD_HOTKEY_TOKEN.store(token, Ordering::SeqCst);
+    CARD_HOTKEY_DEADLINE_MS.store(now_ms() + CARD_HOTKEY_TTL_MS, Ordering::SeqCst);
+    CARD_HOTKEY_MASK.store(mask, Ordering::SeqCst);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn current_foreground_hwnd() -> isize {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe { GetForegroundWindow().0 as isize }
+}
+
+#[cfg(not(windows))]
+fn current_foreground_hwnd() -> isize {
+    0
+}
+
+/// 读取当前生效的卡片快捷键；顺手做过期自清（与 active_escape_action 同构）。
+fn active_card_hotkeys() -> (u32, u64) {
+    let mask = CARD_HOTKEY_MASK.load(Ordering::SeqCst);
+    if mask == 0 {
+        return (0, 0);
+    }
+    if now_ms() > CARD_HOTKEY_DEADLINE_MS.load(Ordering::SeqCst) {
+        CARD_HOTKEY_MASK.store(0, Ordering::SeqCst);
+        CARD_HOTKEY_TOKEN.store(0, Ordering::SeqCst);
+        CARD_HOTKEY_DEADLINE_MS.store(0, Ordering::SeqCst);
+        CARD_HOTKEY_FOREGROUND.store(0, Ordering::SeqCst);
+        return (0, 0);
+    }
+    (mask, CARD_HOTKEY_TOKEN.load(Ordering::SeqCst))
+}
+
+/// 前台窗口是否仍是卡片弹出时那个。记录值为 0（取不到）时一律放过校验。
+#[cfg(windows)]
+fn card_hotkey_foreground_matches() -> bool {
+    let expected = CARD_HOTKEY_FOREGROUND.load(Ordering::SeqCst);
+    if expected == 0 {
+        return true;
+    }
+    current_foreground_hwnd() == expected
+}
+
+/// 这一刻按下的是不是**只有** Ctrl 的 Ctrl+C。
+///
+/// 为什么要排除其他修饰键：Ctrl+Shift+C（浏览器开发者工具的"检查元素"）、Ctrl+Alt+C、
+/// Win+Ctrl+C 都含着一个 Ctrl+C。只判"Ctrl 按着"会把这些一并截走，用户在自己的程序里
+/// 突然少了一个快捷键，而且完全看不出是谁干的。
+///
+/// 用 `GetAsyncKeyState` 是可靠的：这些修饰键我们从不吞（见
+/// single_key_blocked_by_modifiers 的注释）。唯一的边界是用户把**右 Ctrl 设成了
+/// PTT 单键**（默认配置就是），那一路 down 会被吞掉、异步状态可能读不到 —— 但那种
+/// 场景下按右 Ctrl 本来就在开始录音，不会是在复制。
+#[cfg(windows)]
+unsafe fn only_ctrl_is_down(kb_flags: u32) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    const VK_CONTROL: i32 = 0x11;
+    const VK_SHIFT: i32 = 0x10;
+    const VK_MENU: i32 = 0x12;
+    const VK_LWIN: i32 = 0x5B;
+    const VK_RWIN: i32 = 0x5C;
+
+    if GetAsyncKeyState(VK_CONTROL) >= 0 {
+        return false;
+    }
+    // Alt 优先用事件自带的 LLKHF_ALTDOWN：那是 OS 派发这次按键时的视角，比事后问
+    // GetAsyncKeyState 更贴近现场（与 single_key_blocked_by_modifiers 同一个理由）。
+    if kb_flags & LLKHF_ALTDOWN != 0 {
+        return false;
+    }
+    for vk in [VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN] {
+        if GetAsyncKeyState(vk) < 0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn card_hotkey_action_name(action: u32) -> &'static str {
+    match action {
+        CARD_HOTKEY_COPY => "copy",
+        _ => "unknown",
     }
 }
 
@@ -483,6 +634,8 @@ enum HookAction {
     HfToggle { vk: u32 },
     AiToggle { vk: u32 },
     Escape { mode: u32, token: u64 },
+    /// 悬浮窗卡片上的临时组合键（目前只有 Ctrl+C = 复制结果文本）。
+    CardHotkey { action: u32, token: u64 },
     Diag { vk: u32, msg_name: &'static str, flags: u32, scan_code: u32 },
     Shutdown,
     /// 快捷键录制期间捕获到的鼠标侧键（vk=0x05/0x06），用于让设置页绑定侧键。
@@ -1350,6 +1503,16 @@ impl KeyboardHookManager {
                             "token": token,
                         }));
                     }
+                    HookAction::CardHotkey { action, token } => {
+                        let action_name = card_hotkey_action_name(action);
+                        crate::commands::system::write_log_line(
+                            &format!("[RUST] [card-hotkey] action={action_name} token={token}")
+                        );
+                        let _ = dispatch_state.app_handle.emit("card-hotkey", serde_json::json!({
+                            "action": action_name,
+                            "token": token,
+                        }));
+                    }
                     HookAction::MouseCaptured { vk } => {
                         let setting = match vk {
                             0x04 => "MButton",
@@ -1842,6 +2005,40 @@ unsafe extern "system" fn low_level_keyboard_proc(
             }
         }
 
+        // 悬浮窗卡片的 Ctrl+C。判据与上面的 Esc 同构（mask + token + deadline），
+        // 额外两道：这一刻 Ctrl 必须按着，且前台窗口仍是卡片弹出时那个 —— 用户切走
+        // 之后，他的 Ctrl+C 就该归他自己。
+        const VK_C: u32 = 0x43;
+        if vk == VK_C {
+            if is_kdown {
+                if CARD_HOTKEY_C_DOWN.load(Ordering::SeqCst) {
+                    // 按住不放产生的 repeat：继续吞，但不重复投递动作。
+                    return LRESULT(1);
+                }
+                let (mask, token) = active_card_hotkeys();
+                if mask & CARD_HOTKEY_COPY != 0
+                    && only_ctrl_is_down(kb_flags)
+                    && card_hotkey_foreground_matches()
+                {
+                    CARD_HOTKEY_C_DOWN.store(true, Ordering::SeqCst);
+                    HOOK_ACTION_TX.with(|tx| {
+                        if let Some(sender) = tx.borrow().as_ref() {
+                            if sender
+                                .send(HookAction::CardHotkey { action: CARD_HOTKEY_COPY, token })
+                                .is_err()
+                            {
+                                TRY_SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    });
+                    return LRESULT(1);
+                }
+            }
+            if is_kup && CARD_HOTKEY_C_DOWN.swap(false, Ordering::SeqCst) {
+                return LRESULT(1);
+            }
+        }
+
         // ── CRITICAL: This callback MUST return within ~200ms or Windows
         // will silently remove the hook. NO blocking operations allowed.
         // All logging and emit are offloaded through the non-blocking action channel.
@@ -2066,14 +2263,75 @@ unsafe extern "system" fn low_level_keyboard_proc(
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_hf_press, begin_ptt_press, claim_ptt_release, complete_ptt_release, end_hf_press,
+        active_card_hotkeys, begin_hf_press, begin_ptt_press, card_hotkey_action_name,
+        claim_ptt_release, complete_ptt_release, end_hf_press, escape_action_mode_name,
         is_injection_exempt_vk, is_mouse_button_setting, is_mouse_vk, modifier_kind,
-        press_ptt_member, ptt_key_config, release_ptt_member, should_consume_combo_main_down,
-        single_key_requires_bare_press, DEFAULT_PTT_SETTING, DEFAULT_PTT_VK, SINGLE_KEY_TABLE,
+        press_ptt_member, ptt_key_config, release_ptt_member, set_card_hotkeys,
+        set_escape_action_mode, should_consume_combo_main_down, single_key_requires_bare_press,
+        CARD_HOTKEY_COPY, CARD_HOTKEY_DEADLINE_MS, CARD_HOTKEY_FOREGROUND, DEFAULT_PTT_SETTING,
+        DEFAULT_PTT_VK, SINGLE_KEY_TABLE,
     };
     #[cfg(windows)]
     use super::queue_ptt_release;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// 卡片快捷键的三道闸门与自清。
+    ///
+    /// 这些是进程级静态量，所以整组断言刻意放在**同一个** #[test] 里 —— 拆成多个会被
+    /// 并行调度互相踩掉，表现为随机失败。
+    #[test]
+    fn card_hotkeys_are_scoped_to_one_card_and_expire_on_their_own() {
+        // 未知动作必须报错，绝不能静默开成"什么都不接管"或"全都接管"。
+        assert!(set_card_hotkeys(&["retry".to_string()], 1).is_err());
+
+        set_card_hotkeys(&["copy".to_string()], 7).unwrap();
+        assert_eq!(active_card_hotkeys(), (CARD_HOTKEY_COPY, 7));
+
+        // 续期（同 token）绝不能重新取前台窗口：卡片可见期间用户可能已经切走，
+        // 那正是要解除接管的情形，重新取会把新前台当成"卡片的主人"又接管回来。
+        CARD_HOTKEY_FOREGROUND.store(0x1234, Ordering::SeqCst);
+        set_card_hotkeys(&["copy".to_string()], 7).unwrap();
+        assert_eq!(
+            CARD_HOTKEY_FOREGROUND.load(Ordering::SeqCst),
+            0x1234,
+            "renewal must keep the foreground window captured when the card appeared",
+        );
+
+        // 过了硬截止就自己关掉，不依赖前端来解除（渲染端卡死时不能永久吞 Ctrl+C）。
+        CARD_HOTKEY_DEADLINE_MS.store(1, Ordering::SeqCst);
+        assert_eq!(active_card_hotkeys(), (0, 0));
+        assert_eq!(
+            CARD_HOTKEY_FOREGROUND.load(Ordering::SeqCst),
+            0,
+            "expiry must also drop the captured foreground window",
+        );
+
+        // 空数组 = 解除。
+        set_card_hotkeys(&["copy".to_string()], 8).unwrap();
+        set_card_hotkeys(&[], 8).unwrap();
+        assert_eq!(active_card_hotkeys(), (0, 0));
+    }
+
+    /// 动作名与模式名是**跨进程契约**：前端按这两个字符串分派。
+    /// 改名就会静默失效（事件照发、前端认不出来），所以在这里钉住。
+    #[test]
+    fn hotkey_and_escape_names_match_the_frontend_contract() {
+        assert_eq!(card_hotkey_action_name(CARD_HOTKEY_COPY), "copy");
+
+        for mode in [
+            "off",
+            "cancel_recording",
+            "cancel_processing",
+            "dismiss_fallback",
+            "abandon_late_result",
+        ] {
+            set_escape_action_mode(mode, 1).unwrap();
+            // off 的 token 会被清零，其余模式都该原样读回自己的名字。
+            let value = super::ESCAPE_ACTION_MODE.load(Ordering::SeqCst);
+            assert_eq!(escape_action_mode_name(value), mode, "mode name drifted: {mode}");
+        }
+        set_escape_action_mode("off", 0).unwrap();
+    }
 
     #[test]
     fn hands_free_triggers_on_first_down_and_rearms_on_up() {

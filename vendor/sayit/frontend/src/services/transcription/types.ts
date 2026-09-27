@@ -3,6 +3,7 @@
 
 import type { ActiveAppContext, TextContext } from '../../types/appContext'
 import type { ClientRuntimeInfo } from '../../types/appApi'
+import type { AiConfigSnapshot, AiPolicy } from './aiPolicy'
 
 export type WorkMode = 'server' | 'cloud_api' | 'local'
 
@@ -45,6 +46,22 @@ export interface FinalResult {
   aiStatus?: AiExecutionStatus
   aiProvider?: string
   aiModel?: string
+  /**
+   * 跳过 / 失败的稳定原因码（AiReason）。
+   *
+   * 声明在这里是因为它**运行时已经**通过 `...polish` 流到录音器了（spread 不触发
+   * TS 的多余属性检查，不声明只会让它成为一个看不见的隐式字段）。
+   * 第 1a 批只保证日志有它，写进历史记录是第 2 批的事。
+   */
+  aiReason?: string
+  /**
+   * 服务端 AI 的执行证据，从 llm_debug 里**只取结论性字段**。
+   *
+   * 不透传整个 llm_debug：它在服务器开了 debug_llm 时会带完整 prompt 与原始输出，
+   * 顺着结果对象传播出去早晚会被某处日志整条打出来。
+   * 有它才能把「服务端跑了但很快」和「服务端压根没跑」分开 —— 光看 llm_ms=0 分不出来。
+   */
+  serverAi?: { error?: string; provider?: string }
 }
 
 export interface TranscriptionCallbacks {
@@ -61,6 +78,13 @@ export interface TranscriptionCallbacks {
 export interface StartOptions {
   /** 当前录音代次；取消或开始下一次后，旧代次的异步结果必须全部丢弃。 */
   runId: number
+  /** 本次处理的日志关联标识。历史重跑必须新建，不能复用被重跑那条记录的旧标识。 */
+  operationId?: string
+  /**
+   * 本次冻结的 AI 相关配置。冻结的理由是事后解释：用户录完之后改了设置，
+   * 这条记录的原因也不能跟着变。
+   */
+  aiConfig?: AiConfigSnapshot
   systemPrompt?: string
   disableAi?: boolean
   /** 录音未达到该时长时只做识别，不调用 AI。0 / undefined = 不设门槛。 */
@@ -79,11 +103,18 @@ export interface StartOptions {
 export interface StopOptions {
   pttHoldMs?: number
   /**
-   * 松键时才知道的「这次别做 AI 整理」。目前只有短语音门槛会用到：录音时长要等录完
-   * 才知道，而服务器模式的 AI 在服务端紧跟 ASR 执行，start 时来不及决定。
-   * 只能追加跳过理由，不能反过来把 AI 打开。
+   * 松键时才知道的「这次别做 AI 整理」。录音时长要等录完才知道，而服务器模式的 AI
+   * 在服务端紧跟 ASR 执行，start 时来不及决定。
+   *
+   * 这是 policy 压成的布尔，只给线上协议用。**压完的值不要再回头当跳过原因**
+   * ——自配 AI 路线也会发 true（服务端不做、客户端做），把它解释成"整次跳过"是错的。
    */
   disableAi?: boolean
+  /**
+   * 本次的完整策略（含路由与原因）。松键时由录音器用实际 PCM 时长算出，
+   * 随 stop 一起交给 Provider，保证「线上那个布尔」和「日志里记的原因」出自同一次判断。
+   */
+  aiPolicy?: AiPolicy
   audioStats?: {
     avgRms: number
     peakRms: number

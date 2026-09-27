@@ -10,14 +10,43 @@ import {
   displayShortcut,
   getSingleKeyDisplay,
   isSingleKeySetting,
+  keyEventToShortcutCandidate,
+  pttShortcutConflictsWithAccelerator,
 } from '@/lib/shortcutKeys'
-import { refreshPTTSetting } from '@/services/webviewKeyboardFallback'
+import {
+  ComboShortcutInput,
+  checkShortcutBeforeCommit,
+} from '@/features/settings/ShortcutInputs'
+import { refreshPTTSetting, setShortcutCaptureActive } from '@/services/webviewKeyboardFallback'
 import appIcon from '@/assets/icon-128.png'
 import { t, type TranslationKey } from '@/i18n'
 import { useT } from '@/i18n/useT'
 
-/** 简化键盘布局，高亮当前快捷键 */
-function KeyboardHint({ activeKey, pressed }: { activeKey: string; pressed?: boolean }) {
+/**
+ * 免提键与「按住说话」撞在同一个键上时，两个功能会被同一次按键同时触发。
+ *
+ * 模块级函数而不是 useCallback：它进 effect 的依赖数组，引用一变就会把整个录制
+ * effect（连带 begin/endShortcutCapture）重启一遍。PTT 设置在这里现读现用，
+ * 不需要组件 state。
+ */
+async function validateHandsFreeAgainstPTT(value: string): Promise<string | null> {
+  if (!value) return null
+  const ptt = await getSetting('shortcutPTT', 'ControlRight') as string
+  return pttShortcutConflictsWithAccelerator(ptt, value)
+    ? t('settings.shortcuts.conflictPtt')
+    : null
+}
+
+/** 保存免提键并让原生侧立刻用上：三步缺一不可，所以只留这一个出口。 */
+async function persistHandsFreeShortcut(value: string): Promise<void> {
+  await setSetting('shortcutHandsFree', value)
+  bridge.notifyShortcutsChanged()
+  // 同步刷新 webview 回退缓存，否则向导内（SayIt 窗口聚焦）测试时新键不生效
+  await refreshPTTSetting()
+}
+
+/** 简化键盘布局，高亮当前快捷键（可以是一组 —— 组合键会同时按住几个） */
+function KeyboardHint({ activeKeys, pressed }: { activeKeys: string[]; pressed?: boolean }) {
   const rows: { code: string; label: string; w?: number }[][] = [
     [
       { code: 'ShiftLeft', label: 'Shift', w: 52 },
@@ -43,7 +72,7 @@ function KeyboardHint({ activeKey, pressed }: { activeKey: string; pressed?: boo
       {rows.map((row, ri) => (
         <div key={ri} className="flex items-center justify-center gap-1">
           {row.map((key) => {
-            const isActive = key.code === activeKey
+            const isActive = activeKeys.includes(key.code)
             const isPressed = isActive && pressed
             return (
               <div
@@ -115,13 +144,30 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
   const [workMode, setWorkMode] = useState('')
   const [serverOk, setServerOk] = useState<boolean | null>(null)
   const [testText, setTestText] = useState('')
-  const [listeningKey, setListeningKey] = useState(false)
   // 热键确认步骤的状态
   const [keyConfirmed, setKeyConfirmed] = useState(false)
-  const [keyPressed, setKeyPressed] = useState(false)
-  const keyPressedRef = useRef(false)
+  /** 手指还按着的那个候选值（未提交）。空串 = 没在按 */
+  const [capturing, setCapturing] = useState('')
+  /** 当前物理按住的 DOM code。组合键会同时有多个，键盘图靠它高亮 */
+  const [pressedCodes, setPressedCodes] = useState<string[]>([])
+  /** 这次按键为什么没被采纳（系统保留组合、被别的程序占用、和 PTT 撞） */
+  const [captureError, setCaptureError] = useState('')
   const hfKeyRef = useRef('AltRight')
   const settingsDirtyRef = useRef(false)
+
+  /** 手指还按着时大号键帽跟着候选走，松开后回到已确认的那个 */
+  const shownKey = capturing || hfKey
+  const shownLabel = displayShortcut(shownKey).join(' + ')
+  const isPressing = pressedCodes.length > 0
+  /**
+   * 键盘示意图只在「单键」时留着。
+   *
+   * 它的用途是帮新手找到"右 Alt 在哪"，而图上只有 Shift 那行和最下面一行 ——
+   * 组合键的主键（D）本来就不在图上，把图补成整块键盘会把这一步的卡片撑爆。
+   * 已经会按组合键的用户也不需要这张图。按下过程中保持显示，避免中途闪一下。
+   */
+  const showKeyboardHint = isPressing || isSingleKeySetting(shownKey)
+  const hintActiveKeys = isPressing ? pressedCodes : [shownKey]
 
   useEffect(() => {
     getSetting('shortcutHandsFree', 'AltRight').then((k) => {
@@ -136,65 +182,105 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
     }
   }, [])
 
-  // 热键确认步骤：监听按键按下和松开，同时抑制录音系统响应热键
-  // 只依赖 step，避免 hfKey 变化导致 effect 反复运行和钩子反复重启
+  // 热键确认步骤：录制免提热键。
+  //
+  // **单键和组合键（Ctrl+D）都要能录。** 判定与提交校验都复用设置页那两个函数，
+  // 口径必须一致 —— 这里以前自己写了一份只认单键白名单的版本，于是按 Ctrl+D 时
+  // Ctrl 的 keydown 先到、`ControlLeft` 恰好在白名单里，免提键被静默存成「左 Ctrl」，
+  // D 根本没轮到，而用户看到的现象是"组合键不支持"。
+  //
+  // 只依赖 step，避免 hfKey 等 state 变化导致 effect 反复运行、钩子反复重启。
   useEffect(() => {
     if (step !== 2) return
     setPttSuppressed(true)
-    const pressedKeyCodeRef = { current: '' } // 当前按住的键
+    // 挂起本应用自己的全部热键（同设置页录制）：不挂起的话，按一个已经注册过的组合键
+    // 会被 RegisterHotKey 抢走、webview 收不到 keydown，等于永远录不进来。
+    // 副作用是这一步里热键都不响应 —— 正好，这一步只确认键位，不该开始录音。
+    setShortcutCaptureActive(true)
+    void bridge.beginShortcutCapture()
 
-    const confirmKey = (code: string) => {
-      // 保存到 ref，避免 state 更新触发 effect 重启
-      hfKeyRef.current = code
-      settingsDirtyRef.current = true
-      // 更新 UI 状态（state 更新不会触发 effect 重建，因为 state 不在依赖里）
-      setHfKey(code)
-      setKeyPressed(true)
-      keyPressedRef.current = true
-      pressedKeyCodeRef.current = code
-      setKeyConfirmed(true)
+    /** 当前按住的物理 code：既给键盘图高亮用，也用来判断某条事件路径是否该让位 */
+    const pressed = new Set<string>()
+    /** 本次按键周期的状态。用普通对象而非 state：读写要同步，且不能触发 effect 重启 */
+    const session = { candidate: '', committing: false }
+
+    const syncPressed = () => setPressedCodes([...pressed])
+
+    const commit = (value: string) => {
+      if (session.committing) return
+      session.committing = true
+      void (async () => {
+        const error = await checkShortcutBeforeCommit(value, validateHandsFreeAgainstPTT)
+        if (error) {
+          setCaptureError(error)
+        } else {
+          // 存进 ref：state 更新不会重启 effect（state 不在依赖里），ref 才是 cleanup 落盘时的真相
+          hfKeyRef.current = value
+          settingsDirtyRef.current = true
+          setHfKey(value)
+          setKeyConfirmed(true)
+          setCaptureError('')
+        }
+        session.candidate = ''
+        session.committing = false
+        setCapturing('')
+      })()
     }
 
-    const releaseKey = () => {
-      if (keyPressedRef.current) {
-        keyPressedRef.current = false
-        setKeyPressed(false)
+    const isModifierKey = (event: KeyboardEvent) =>
+      event.key === 'Control' || event.key === 'Alt'
+      || event.key === 'Shift' || event.key === 'Meta'
+
+    // 路径 1：webview 收到的按键。捕获模式下原生钩子会放行已绑定的单键，
+    // 所以右 Alt 这类平时被吞掉的键在这一步也走这条路。
+    const onDown = (event: KeyboardEvent) => {
+      if (event.repeat) return
+      const candidate = keyEventToShortcutCandidate(event)
+      // **录不成快捷键的键一律放行，不要 preventDefault。**
+      // 裸 Tab、裸 Enter 都不是合法的免提键（candidate 为 null），拦下来只会把
+      // 键盘用户困在这一步：Tab 移不了焦点，Enter 点不了「下一步」。
+      // 修饰键自己也返回 null，但它是组合键的一半，要照常吞掉并记账。
+      if (!candidate && !isModifierKey(event)) return
+      event.preventDefault()
+      pressed.add(event.code)
+      syncPressed()
+      // candidate 为 null（单按 Ctrl）时保留上一个候选，别覆盖成空 ——
+      // 否则 Ctrl+D 里任何一个不成型的中间事件都会把已经录到的组合键抹掉。
+      if (candidate) {
+        session.candidate = candidate
+        setCapturing(candidate)
+        setCaptureError('')
       }
-      pressedKeyCodeRef.current = ''
+    }
+    const onUp = (event: KeyboardEvent) => {
+      // delete 返回 false = 这个键的 down 被放行过（如 Tab），它的 up 也不该拦
+      if (!pressed.delete(event.code)) return
+      event.preventDefault()
+      syncPressed()
+      // 第一次松开就提交本次按住过的候选；session.committing 挡掉后续 keyup
+      if (session.candidate) commit(session.candidate)
     }
 
-    // 路径 1：webview 能收到的按键（右 Ctrl 等）
-    const onDown = (e: KeyboardEvent) => {
-      e.preventDefault()
-      const code = e.code
-      if (isSingleKeySetting(code) && pressedKeyCodeRef.current !== code) {
-        confirmKey(code)
-      }
-    }
-    const onUp = (e: KeyboardEvent) => {
-      e.preventDefault()
-      if (pressedKeyCodeRef.current === e.code) {
-        releaseKey()
-      }
-    }
-
-    // 路径 2：被 Rust 钩子拦截的按键（右 Alt）—— keyup 时触发
+    // 路径 2：兜底。万一某个键仍被原生钩子吞掉（只 emit 事件、webview 收不到 keydown），
+    // 就按老办法确认一次，让这一步不至于卡死。webview 已经在处理时让位，避免重复提交。
     const unlistenHf = bridge.listen('toggle-hands-free', () => {
-      // Rust 端只在 keyup 时 emit，模拟"按下-松开"的视觉反馈
-      confirmKey(hfKeyRef.current || 'AltRight')
-      setTimeout(() => releaseKey(), 150)
+      if (pressed.size === 0) commit(hfKeyRef.current || 'AltRight')
     })
-
-    // 路径 3：PTT 键 keydown/keyup
     const unlistenPttDown = bridge.listen('ptt-down', (event: unknown) => {
       const payload = event as { payload?: { pttSetting?: string } }
       const setting = payload?.payload?.pttSetting
-      if (setting && isSingleKeySetting(setting) && pressedKeyCodeRef.current !== setting) {
-        confirmKey(setting)
-      }
+      if (setting && pressed.size === 0) commit(setting)
     })
-    const unlistenPttUp = bridge.listen('ptt-up', () => {
-      releaseKey()
+
+    // 路径 3：鼠标侧键/中键。webview 收不到（会被当成前进/后退导航），由 Rust 底层
+    // 鼠标钩子在 OS 层吞掉后回报。延迟提交见 ShortcutInputs 里的同一处说明；
+    // 原生侧捕到一次就自动退出捕获模式，所以提交完要重新打开，否则后面就录不动了。
+    const offMouse = bridge.onMouseShortcutCaptured(({ setting }) => {
+      if (!setting) return
+      window.setTimeout(() => {
+        commit(setting)
+        void bridge.beginShortcutCapture()
+      }, 400)
     })
 
     window.addEventListener('keydown', onDown)
@@ -203,43 +289,29 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
       window.removeEventListener('keydown', onDown)
       window.removeEventListener('keyup', onUp)
       setPttSuppressed(false)
+      setShortcutCaptureActive(false)
+      setCapturing('')
+      setPressedCodes([])
       unlistenHf.then((fn) => fn())
       unlistenPttDown.then((fn) => fn())
-      unlistenPttUp.then((fn) => fn())
+      offMouse()
 
-      // 离开 Step 2 时统一保存设置并重配置键盘钩子
+      // 立刻退出捕获模式，**不等落盘**。
+      //
+      // 顺序反过来（先 await 落盘）会留一个竞态：下一步那个录制控件自己会
+      // beginShortcutCapture，而这边迟到的 endShortcutCapture 会把它刚开的捕获关掉，
+      // 于是用户在「试一试」里按组合键录不进去。
+      // 两个命令都是「从存储读当前值重新注册一遍」，谁后执行都不会注册到错的键上：
+      // notifyShortcutsChanged 一定排在 setSetting 之后发出。
+      //
+      // **退出必须无条件执行** —— 漏掉的话用户走完向导会发现所有热键都不响应了。
+      void bridge.endShortcutCapture()
       if (settingsDirtyRef.current) {
         settingsDirtyRef.current = false
-        void (async () => {
-          await setSetting('shortcutHandsFree', hfKeyRef.current)
-          bridge.notifyShortcutsChanged()
-          // 同步刷新 webview 回退缓存，否则向导内（SayIt 窗口聚焦）测试时新键不生效
-          await refreshPTTSetting()
-        })()
+        void persistHandsFreeShortcut(hfKeyRef.current)
       }
     }
   }, [step])
-
-  // 试一试步骤：监听按键修改快捷键
-  useEffect(() => {
-    if (!listeningKey) return
-    const handler = (e: KeyboardEvent) => {
-      e.preventDefault()
-      const code = e.code
-      if (isSingleKeySetting(code)) {
-        setHfKey(code)
-        void (async () => {
-          await setSetting('shortcutHandsFree', code)
-          bridge.notifyShortcutsChanged()
-          // 同步刷新 webview 回退缓存，否则向导内测试时新键不生效
-          await refreshPTTSetting()
-        })()
-      }
-      setListeningKey(false)
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [listeningKey])
 
   const canTest = workMode === 'server' && serverOk === true
   const totalSteps = 5
@@ -302,29 +374,35 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
             {/* 大号按键展示 */}
             <div className="my-6">
               <div
-                className={`inline-flex items-center justify-center rounded-xl border-2 px-8 py-4 text-lg font-bold transition-all ${keyPressed
+                className={`inline-flex items-center justify-center rounded-xl border-2 px-8 py-4 text-lg font-bold transition-all ${isPressing
                   ? 'border-foreground bg-foreground text-background scale-105 shadow-xl'
                   : keyConfirmed
                     ? 'border-emerald-500 bg-emerald-500/10 text-emerald-600'
                     : 'border-primary/40 bg-primary/5 text-primary animate-pulse'
                   }`}
               >
-                {keyPressed ? `${hfLabel} ⬇` : keyConfirmed ? `✓ ${hfLabel}` : hfLabel}
+                {isPressing ? `${shownLabel} ⬇` : keyConfirmed ? `✓ ${shownLabel}` : shownLabel}
               </div>
             </div>
 
             {/* 键盘位置示意 */}
-            <div className="w-full rounded-xl border bg-card p-3">
-              <p className="mb-2 text-[11px] text-muted-foreground">{t('welcome.keyPosition')}</p>
-              <KeyboardHint activeKey={hfKey} pressed={keyPressed} />
-            </div>
+            {showKeyboardHint && (
+              <div className="w-full rounded-xl border bg-card p-3">
+                <p className="mb-2 text-[11px] text-muted-foreground">{t('welcome.keyPosition')}</p>
+                <KeyboardHint activeKeys={hintActiveKeys} pressed={isPressing} />
+              </div>
+            )}
 
-            {!keyConfirmed && (
+            {/* 按键没被采纳时必须说清为什么：不然用户只看到"按了没变化" */}
+            {captureError && (
+              <p role="alert" className="mt-4 text-xs text-destructive">{captureError}</p>
+            )}
+            {!keyConfirmed && !captureError && (
               <p className="mt-4 text-xs text-muted-foreground/60">
                 {t('welcome.supportedKeys')}
               </p>
             )}
-            {keyConfirmed && (
+            {keyConfirmed && !captureError && (
               <p className="mt-4 text-xs text-muted-foreground">
                 {t('welcome.changeHint')}
               </p>
@@ -338,26 +416,23 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
           <div>
             <h2 className="mb-5 text-center text-xl font-bold">{t('welcome.tryTitle')}</h2>
 
+            {/* 用设置页那个录制控件，不再自己写一份：组合键、系统保留组合校验、
+                「已被别的程序占用」探测全都在里面。allowClear=false —— 向导的目的是
+                让用户拿到一个能用的键，一个把它清成"未设置"的按钮在这里只会制造问题。 */}
             <Card className="mb-4">
-              <CardContent className="flex items-center justify-between p-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
-                    <Keyboard className="h-5 w-5 text-primary" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">{t('welcome.handsFreeShortcut')}</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">{t('welcome.clickToChange')}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setListeningKey(true)}
-                  className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition-all ${listeningKey
-                    ? 'border-primary bg-primary/10 text-primary animate-pulse'
-                    : 'border-border bg-muted/50 text-foreground hover:border-primary/50'
-                    }`}
-                >
-                  {listeningKey ? t('welcome.pressNewKey') : hfLabel}
-                </button>
+              <CardContent className="p-4">
+                <ComboShortcutInput
+                  value={hfKey}
+                  onChange={(value) => {
+                    setHfKey(value)
+                    hfKeyRef.current = value
+                    void persistHandsFreeShortcut(value)
+                  }}
+                  label={t('welcome.handsFreeShortcut')}
+                  description={t('welcome.clickToChange')}
+                  allowClear={false}
+                  validate={validateHandsFreeAgainstPTT}
+                />
               </CardContent>
             </Card>
 

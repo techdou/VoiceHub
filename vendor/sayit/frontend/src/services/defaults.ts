@@ -69,8 +69,13 @@ export const DEFAULTS: Record<string, unknown> = {
 
   // ── ASR（云 API）──
   // 可选值以 features/settings/asrProviderCatalog.ts 的 ASR_PROVIDERS 为准：
-  // 'doubao_v2' | 'qwen' | 'qwen_audio_stream' | 'qwen_realtime' | 'qwen_omni_35_*' | 'mimo' | 'groq_whisper'
+  // 'doubao_v2' | 'qwen' | 'qwen_audio_stream' | 'qwen_realtime' | 'qwen_omni_35_*'
+  // | 'mimo' | 'groq_whisper' | 'openai_transcribe' | 'openai_live_transcribe'
+  // | 'gemini_transcribe' | 'gemini_live_transcribe' | 'openrouter_transcribe'
   'cloudAsr.provider': 'doubao_v2',
+  // 启用服务选定的模型。只有「同协议多模型」的服务（Groq / OpenAI）用得上，
+  // 空串 = 让后端用它自己的默认。写入前已由 resolveAsrModel 归一，见 asrProfileStore。
+  'cloudAsr.model': '',
   // 运行时读的「本次生效凭据」镜像。豆包按控制台代次算出来后写进这两个键：
   // 新版控制台只有一个 API Key、appId 必为空串（Rust 侧靠它区分两代鉴权头）。
   'cloudAsr.apiKey': '',
@@ -99,6 +104,11 @@ export const DEFAULTS: Record<string, unknown> = {
   // GGUF 引擎的计算后端偏好。'auto' = 有 GPU 用 GPU、没有自动用 CPU。
   // 没装 GPU 加速包的机器永远是 CPU，这个值不影响功能，只影响速度。
   'localAsr.accelerator': 'auto', // 可选: 'auto' | 'cpu' | 'gpu'
+  // 多显卡机器上指定用哪张卡。空串 = 交给引擎自动挑（独显优先）。
+  // 值是 GgufDevice.id（后端报的 PCI 总线 id，拿不到时回落成 "kind:name"），
+  // **不是** registry 索引 —— 索引会随驱动更新变动，存索引等于让用户的选择
+  // 在某次驱动更新后静默指向另一张卡。设置界面只在检测到两张以上 GPU 时出现。
+  'localAsr.gpuDevice': '',
   // 本地模型空闲多少分钟后卸载（实测释放 350 MB ~ 2.6 GB 内存）。0 = 从不卸载。
   // 默认常驻，保证下一次识别无需重新付“加载 + 预热”的等待；内存紧张的用户可在
   // 本地模式设置中选择空闲 10 / 30 / 60 分钟后自动释放。

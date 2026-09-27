@@ -55,6 +55,16 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let hf = storage.get("shortcutHandsFree", None).as_str().unwrap_or("AltRight").to_owned();
     let ai = storage.get("shortcutToggleAi", None).as_str().unwrap_or("").to_owned();
     let idle = storage.get("localAsr.unloadIdleMinutes", None).as_u64().unwrap_or(0);
+    // 启动预热参数必须在 manage 之前读走（storage 随后 move 进 app）。
+    let warmup = (storage.get("workMode", None).as_str() == Some("local")).then(|| {
+        (
+            storage.get("localAsr.modelId", None).as_str().unwrap_or("sensevoice-small-gguf").to_string(),
+            storage.get("localAsr.accelerator", None).as_str().unwrap_or("auto").to_string(),
+            // 显卡选择是缓存 key 的一部分，这里传空（自动）而用户设了具体某张卡
+            // 的话，预热引擎会在第一次口述时因 key 不符被整个丢掉重载一遍。
+            storage.get("localAsr.gpuDevice", None).as_str().unwrap_or("").to_string(),
+        )
+    });
     app.manage(storage);
     app.manage(window::WindowState::new());
     app.manage(keyboard::KeyboardHookManager::new());
@@ -95,8 +105,20 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(std::time::Duration::from_secs(2));
         overlay_app.state::<window::WindowState>().prewarm_overlay(&overlay_app);
     });
+    // ⚠️ 这里**故意不注册** ggml 计算后端（上游 0.2.2 行为）：注册会 dlopen 所有
+    // ggml 模块，ggml-vulkan.dll 一载入就建真实 Vulkan 上下文——云模式用户白占
+    // ~36MB 显存且启动阻塞 80~520ms。注册已下沉到 gguf_asr 的懒路径。
+    //
+    // 本地模式启动预热（0.2.2）：别等用户第一次按热键才加载几百 ms~几秒。
+    if let Some((model_id, accelerator, gpu_device)) = warmup {
+        std::thread::spawn(move || {
+            match models::gguf_asr::preload(&model_id, &accelerator, &gpu_device) {
+                Ok(()) => log::info!("Startup local model warm-up completed: {}", model_id),
+                Err(e) => log::info!("Startup local model warm-up skipped ({}): {}", model_id, e),
+            }
+        });
+    }
     std::thread::spawn(move || {
-        models::gguf_asr::init_backends();
         models::gguf_asr::spawn_idle_unloader(idle);
     });
     Ok(())

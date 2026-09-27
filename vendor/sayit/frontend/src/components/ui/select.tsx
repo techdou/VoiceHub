@@ -6,6 +6,12 @@ import { cn } from '@/lib/utils'
 export interface SelectOption {
   value: string
   label: string
+  /**
+   * 悬停提示。只有在 label 可能被 truncate 截掉、而完整内容对用户有用时才设
+   * （麦克风列表就是：设备名很长，但那串后缀正是辨认设备的依据）。
+   * 不设就没有 tooltip —— 别给所有下拉都挂上，那是噪音。
+   */
+  title?: string
 }
 
 export interface SelectProps {
@@ -16,17 +22,20 @@ export interface SelectProps {
   className?: string
   placeholder?: string
   disabled?: boolean
+  /** 关联可见标题的 id。触发器是个 <button>，屏幕阅读器只会念它内部的当前值，
+   *  旁边那行 <label> 文本不会自动关联（没有 htmlFor 可指）。与 Segmented 同款。 */
+  labelledBy?: string
 }
 
 const Select = forwardRef<HTMLDivElement, SelectProps>(
-  ({ value, onChange, options, children, className, placeholder, disabled = false }, ref) => {
+  ({ value, onChange, options, children, className, placeholder, disabled = false, labelledBy }, ref) => {
     const t = useT()
     const [isOpen, setIsOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement>(null)
 
     // 如果传入了 children（原生 option），则解析它们
     const parsedOptions: SelectOption[] = options || []
-    
+
     if (!options && children) {
       const childArray = Array.isArray(children) ? children : [children]
       childArray.forEach((child: any) => {
@@ -66,6 +75,9 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
           type="button"
           onClick={() => !disabled && setIsOpen(!isOpen)}
           disabled={disabled}
+          aria-labelledby={labelledBy}
+          aria-haspopup="listbox"
+          aria-expanded={isOpen}
           className={cn(
             'flex h-9 w-full items-center justify-between rounded-md border border-input-border bg-input-bg px-3 text-sm text-foreground transition-colors',
             'hover:border-muted-foreground/40 focus:border-input-focus-border focus:outline-none focus:ring-2 focus:ring-input-focus-ring/20',
@@ -73,7 +85,10 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
             isOpen && 'border-input-focus-border ring-2 ring-input-focus-ring/20',
           )}
         >
-          <span className={cn('truncate', !selectedOption && 'text-input-placeholder')}>
+          <span
+            className={cn('truncate', !selectedOption && 'text-input-placeholder')}
+            title={selectedOption?.title}
+          >
             {selectedOption?.label || placeholder || t('ui.selectPlaceholder')}
           </span>
           <ChevronDown
@@ -99,7 +114,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
                       : 'text-foreground hover:bg-accent',
                   )}
                 >
-                  <span className="truncate">{option.label}</span>
+                  <span className="truncate" title={option.title}>{option.label}</span>
                   {option.value === value && <Check className="ml-2 h-4 w-4 shrink-0" />}
                 </button>
               ))}

@@ -16,7 +16,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use transcribe_cpp::{
-    Backend, Feature, Itn, Model, ModelOptions, Pnc, RunOptions, Session, SessionOptions,
+    Backend, DeviceType, Feature, Itn, Model, ModelOptions, Pnc, RunOptions, Session,
+    SessionOptions,
 };
 #[cfg(test)]
 use transcribe_cpp::TimestampKind;
@@ -25,14 +26,27 @@ use super::downloader::model_dir;
 
 /// 已加载的引擎。Session 内部持有 Model 的 Arc，所以重复推理不会重新加载权重。
 ///
-/// 缓存 key 是 (model_id, accelerator)：这两个变了才需要真的重建模型。
+/// 缓存 key 是 (model_id, accelerator, gpu_device)：这三个变了才需要真的重建模型。
 /// language 不在 key 里 —— 它只是 RunOptions 的运行时参数，每次转写传入即可，
 /// 切换识别语言不应该付一次"重载 + 预热"（1.7B 约 9 s）的钱。
 pub(crate) struct Loaded {
     model_id: String,
     accelerator: String,
+    /// 用户选的显卡标识（`GgufDevice::id`，空 = 自动）。
+    ///
+    /// key 里存的是**设置值**而不是解析出来的 registry 索引：索引会随驱动更新
+    /// 变（上游明确说明），拿它当 key 会让同一份设置在枚举抖动时反复重载模型。
+    gpu_device: String,
     /// 实际绑定的后端字符串（"cpu" / "vulkan" / …），用于诊断页显示。
     backend: String,
+    /// 实际绑定的设备描述（如 "NVIDIA GeForce RTX 4060"）。
+    ///
+    /// 必须如实回报，不能拿"用户选了哪张"顶替：`gpu_device` 索引 0 是上游的
+    /// 自动哨兵，选中 registry 索引 0 那张卡时我们传的是 0，最终由库的探测顺序
+    /// 决定用哪张（独显优先）。绝大多数情况两者一致，但集显排在索引 0、机器
+    /// 又有独显时就会不一致 —— 那时界面必须显示真实结果，否则用户永远查不出
+    /// "我设了却没生效"。
+    device: Option<String>,
     /// 本 session 能接受的最长音频（毫秒）。0 = 无实际上限。
     max_audio_ms: i64,
     /// 这个模型族是否支持 ITN / PNC 的运行时开关。加载时探一次，之后按结果决定
@@ -61,6 +75,7 @@ static CACHE: Mutex<Option<Loaded>> = Mutex::new(None);
 static STATUS: Mutex<EngineStatus> = Mutex::new(EngineStatus {
     loading_model: None,
     backend: None,
+    device: None,
 });
 
 struct EngineStatus {
@@ -68,6 +83,8 @@ struct EngineStatus {
     loading_model: Option<String>,
     /// 已加载引擎实际绑定的后端字符串（"cpu" / "vulkan" / …）；None = 未加载。
     backend: Option<String>,
+    /// 实际绑定的设备描述；None = 未加载或库没报。见 `Loaded::device`。
+    device: Option<String>,
 }
 
 fn mark_loading(model_id: &str) {
@@ -76,18 +93,21 @@ fn mark_loading(model_id: &str) {
         // 旧引擎马上就要被丢弃，先把 backend 清空：否则重载期间诊断页会报一个
         // 已经不存在的后端。
         status.backend = None;
+        status.device = None;
     }
 }
 
-fn mark_loaded(backend: &str) {
+fn mark_loaded(backend: &str, device: Option<&str>) {
     if let Ok(mut status) = STATUS.lock() {
         status.backend = Some(backend.to_string());
+        status.device = device.map(|d| d.to_string());
     }
 }
 
 fn mark_unloaded() {
     if let Ok(mut status) = STATUS.lock() {
         status.backend = None;
+        status.device = None;
     }
 }
 
@@ -108,8 +128,17 @@ impl Drop for LoadingGuard {
 static INIT: std::sync::Once = std::sync::Once::new();
 
 /// 注册计算后端 + 把 ggml/native 的日志接到 log facade。
-/// 必须在第一次加载模型之前调用（dynamic-backends 构建下不注册就加载会直接报
-/// TRANSCRIBE_ERR_BACKEND）。
+///
+/// **懒调用，绝不放回启动路径。** 这一步会 dlopen exe 旁边所有 ggml 模块，其中
+/// `ggml-vulkan.dll`（70 MB）一被载入就立刻 `vk::createInstance()` 建出真实的 Vulkan
+/// 上下文：实测白占约 36 MB 共享显存、让进程带着 `engtype_compute` 出现在任务管理器的
+/// GPU 进程列表里，本身还要 80~520 ms。云 API / 服务器模式一个模型都不加载，付这笔钱
+/// 收益为零（0.1.8 前的实际情况，用户反馈"即便使用云 API 模式也持续占用 GPU"）。
+/// 而且上游标注 idempotent 但 NOT retryable，进程内没有反注册路径 —— 注册了就撤不回来。
+///
+/// 生产调用点只有两个，都在真正需要本地引擎的那一刻：
+/// - `ensure_loaded()` —— 所有模型加载的必经之路（`preload` / `transcribe` 都走它）
+/// - `describe_devices()` —— 本地模式的设置页与用户主动打开的诊断页
 ///
 /// 目前只扫 exe 旁边的模块目录（build.rs 会把 transcribe.dll + ggml-*.dll 放那儿）。
 /// 注意 `init_backends(dir)` 只扫**一个**目录，不是"追加一个目录"：所以将来做
@@ -152,6 +181,84 @@ pub struct GgufDevice {
     pub name: String,
     /// 设备可用内存（MB）。CPU 报的是系统内存，GPU 报的是显存。
     pub memory_mb: u64,
+    /// 设置里用来记住"选了哪张卡"的稳定标识。
+    ///
+    /// 优先用后端报的 `device_id`（PCI 设备对应的总线 id），拿不到就回落到
+    /// `kind:name`。**绝不能存 registry 索引** —— 上游明确说索引会随驱动更新
+    /// 或换机器变动，存索引等于让用户的选择在某次驱动更新后静默指向另一张卡。
+    pub id: String,
+    /// ggml registry 索引，也就是 `ModelOptions::gpu_device` 的取值空间。
+    /// 带给前端只为排序与调试展示，不作为持久化标识。
+    pub index: usize,
+    /// 是不是 GPU/IGPU（只有这两类能被显式指定）。CPU 与 BLAS 之类的 ACCEL 设备
+    /// 传给 `gpu_device` 会被上游判成 INVALID_ARG，整次加载失败。
+    pub is_gpu: bool,
+}
+
+/// 把设置里存的显卡标识解析成 `ModelOptions::gpu_device`。
+///
+/// 返回值是 ggml registry 索引，0 = 交给库自动挑（独显优先，各档内按注册顺序）。
+///
+/// 三条硬规则，违反任意一条上游都会直接 `TRANSCRIBE_ERR_INVALID_ARG`、
+/// 让整次模型加载失败（不是回落，是报错）：
+/// 1. 请求 CPU 后端时必须是 0 —— 没有 GPU 可选。
+/// 2. 只能指向 GPU/IGPU 设备。
+/// 3. 必须在 `[0, device_count)` 范围内。
+///
+/// 还有一条不是错误但会让结果与用户预期不符：**索引 0 是"自动"哨兵，没办法
+/// 显式选中 registry 索引 0 那张卡**。实际影响很小，因为自动探测本来就是独显
+/// 优先、同档按注册顺序，所以"第一张独显"就是自动的结果；真正落空的只有
+/// "索引 0 是集显、机器还有独显、用户偏要用集显"这一种组合。那种情况下只能
+/// 靠 `GGML_VK_VISIBLE_DEVICES` 在进程启动前限制可见设备。
+///
+/// 所以加载完成后一律用 `Model::device()` 把**实际**绑定的设备回报给界面，
+/// 不拿用户的选择顶替 —— 见 `Loaded::device`。
+fn resolve_gpu_device(selected: &str, accelerator: &str) -> i32 {
+    if selected.is_empty() || selected == "auto" {
+        return 0;
+    }
+    pick_gpu_device_index(&describe_devices(), selected, accelerator)
+}
+
+/// `resolve_gpu_device` 的决策部分，抽出来是为了能不碰真实硬件地测。
+/// 所有的回落分支都在这里，枚举设备那一步留在调用方。
+fn pick_gpu_device_index(devices: &[GgufDevice], selected: &str, accelerator: &str) -> i32 {
+    if selected.is_empty() || selected == "auto" {
+        return 0;
+    }
+    if accelerator == "cpu" {
+        log::warn!(
+            "A specific GPU ({}) is selected but the compute backend is set to CPU; ignoring the GPU selection",
+            selected
+        );
+        return 0;
+    }
+    let Some(dev) = devices.iter().find(|d| d.id == selected) else {
+        // 换了显卡、拔了外置 GPU、驱动没起来都会走到这里。回落到自动而不是报错：
+        // 用户的本意是"用本地识别"，不是"用这张卡，否则别识别"。
+        log::warn!(
+            "The selected GPU ({}) is not among the registered compute devices; falling back to automatic selection",
+            selected
+        );
+        return 0;
+    };
+    if !dev.is_gpu {
+        log::warn!(
+            "The selected compute device ({}) is not a GPU; falling back to automatic selection",
+            dev.name
+        );
+        return 0;
+    }
+    if dev.index == 0 {
+        // 不是失败：0 就是自动，而自动的探测顺序本来就会先挑这一档里的独显。
+        log::info!(
+            "The selected GPU ({}) sits at registry index 0, which is the automatic sentinel; the library will pick it by probe order",
+            dev.name
+        );
+        return 0;
+    }
+    log::info!("Requesting GPU device {} ({})", dev.index, dev.name);
+    dev.index as i32
 }
 
 /// 诊断信息：已注册的计算设备 + 当前绑定的后端。
@@ -160,6 +267,9 @@ pub struct GgufDevice {
 pub struct GgufDiagnostics {
     pub devices: Vec<GgufDevice>,
     pub current_backend: Option<String>,
+    /// 实际绑定的设备描述。多显卡机器上"选了哪张"和"真的用了哪张"可能不同
+    /// （见 `resolve_gpu_device`），界面显示的必须是这个。
+    pub current_device: Option<String>,
     /// 正在加载中的模型 id。非 None 时 `current_backend` 一定是 None ——
     /// 界面这时该说"正在加载"，而不是"模型未加载"。
     pub loading_model: Option<String>,
@@ -178,6 +288,7 @@ pub async fn gguf_asr_diagnostics() -> Result<GgufDiagnostics, String> {
     tokio::task::spawn_blocking(|| GgufDiagnostics {
         devices: describe_devices(),
         current_backend: current_backend(),
+        current_device: current_device(),
         loading_model: loading_model(),
         native_version: transcribe_cpp::version(),
         process_memory_mb: process_memory_mb(),
@@ -218,17 +329,38 @@ pub fn process_memory_mb() -> u64 {
 }
 
 /// 列出已注册的计算设备，给诊断页 / 设置页用。
+///
+/// 自己负责注册后端（启动路径上已经不做了），否则拿到的永远是空列表。
+///
+/// 这不会让云 / 服务器模式的用户白付 Vulkan 初始化：本函数只有两个调用点，
+/// `LocalModeSection` 的 GPU 摘要（`VoiceEnginePage` 里由 `workMode === 'local'`
+/// 门住，只在本地模式渲染）和用户主动打开的诊断页。两者都意味着用户正在查看
+/// 本地引擎的硬件信息，这时枚举设备就是他要的结果。
 pub fn describe_devices() -> Vec<GgufDevice> {
+    init_backends();
     transcribe_cpp::devices()
         .into_iter()
-        .map(|d| GgufDevice {
-            kind: d.kind.to_string(),
-            name: if d.description.is_empty() {
-                d.name
+        .enumerate()
+        .map(|(i, d)| {
+            let name = if d.description.is_empty() {
+                d.name.clone()
             } else {
-                d.description
-            },
-            memory_mb: d.memory_total / (1024 * 1024),
+                d.description.clone()
+            };
+            GgufDevice {
+                kind: d.kind.to_string(),
+                // index 由库给（枚举时填的就是 registry 索引）；它是 Option，只有
+                // `Model::device()` 取回的设备才会是 None，而这里一定是枚举来的。
+                // 回落到 enumerate 的序号只是防御，两者本来就相等。
+                index: d.index.unwrap_or(i),
+                is_gpu: matches!(d.device_type, DeviceType::Gpu | DeviceType::Igpu),
+                id: d
+                    .device_id
+                    .clone()
+                    .unwrap_or_else(|| format!("{}:{}", d.kind, name)),
+                name,
+                memory_mb: d.memory_total / (1024 * 1024),
+            }
         })
         .collect()
 }
@@ -283,13 +415,24 @@ fn resolve_backend(pref: &str) -> Backend {
     }
 }
 
-/// 加载模型（若 key 未变则复用）。`accelerator` 取 "auto" | "cpu" | "gpu"。
-/// 换加速器要重建：后端是 Model::load_with 时绑定的，之后改不了。
-fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
+/// 加载模型（若 key 未变则复用）。`accelerator` 取 "auto" | "cpu" | "gpu"，
+/// `gpu_device` 是 `GgufDevice::id`（空 = 自动挑）。
+/// 换加速器或换显卡都要重建：设备是 Model::load_with 时绑定的，之后改不了。
+fn ensure_loaded(model_id: &str, accelerator: &str, gpu_device: &str) -> Result<(), String> {
+    // 后端注册的**唯一生产入口之一**（另一个是 describe_devices）。启动路径上不再注册，
+    // 所以这里必须自己保证前置条件：dynamic-backends 构建下不先注册就 Model::load_with
+    // 会直接报 TRANSCRIBE_ERR_BACKEND，而下面 resolve_backend 里的 backend_available()
+    // 也要靠它才能看到 GPU。
+    //
+    // 放在 CACHE.lock() **之前**：首次注册要 80~520 ms，而 CACHE 锁会被整个
+    // "卸旧 + 加载 + 预热"过程持有（见 STATUS 的说明），不该再往里塞耗时操作。
+    // init_backends 内部是 Once，重复调用无代价，并发调用由 Once 自己串行。
+    init_backends();
+
     let mut cache = CACHE.lock().map_err(|e| format!("Failed to acquire model cache lock: {}", e))?;
 
     if let Some(ref c) = *cache {
-        if c.model_id == model_id && c.accelerator == accelerator {
+        if c.model_id == model_id && c.accelerator == accelerator && c.gpu_device == gpu_device {
             // 与空闲卸载共用同一把锁更新时间，保证守护线程拿到锁后不会
             // 把刚被复用、即将开始推理的模型当成过期模型卸载。
             touch_activity();
@@ -305,20 +448,37 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
     // 先释放旧引擎再建新的，避免同时驻留两份权重（GGUF 动辄几百 MB ~ 数 GB）。
     *cache = None;
 
+    // VoiceHub custom GGUF：模型不在 models 目录，路径由用户选择并持久化。
     let path = if model_id == super::custom::ID {
-        super::custom::path().ok_or("Select a custom GGUF model first")?
-    } else { find_gguf(&model_dir(model_id))? };
+        super::custom::path().ok_or("Custom model path is not set")?
+    } else {
+        find_gguf(&model_dir(model_id))?
+    };
     log::info!("Loading GGUF ASR model: {} ({})", model_id, path.display());
     let start = Instant::now();
 
     let options = ModelOptions {
         backend: resolve_backend(accelerator),
-        gpu_device: 0, // 0 = 自动/首个匹配
+        // 0 = 自动/首个匹配；非 0 = 指定的 ggml registry 索引。见 resolve_gpu_device。
+        gpu_device: resolve_gpu_device(gpu_device, accelerator),
     };
     let model = Model::load_with(&path, &options)
         .map_err(|e| format!("Failed to load model ({}): {}", model_id, e))?;
 
     let backend = model.backend();
+    // 实际绑定到哪个设备。失败不影响功能，只是诊断少一条信息 —— 但多显卡机器上
+    // 这是回答"我指定的那张卡到底用上了没有"的唯一依据，所以失败也要留日志。
+    let device = match model.device() {
+        Ok(d) => Some(if d.description.is_empty() {
+            d.name
+        } else {
+            d.description
+        }),
+        Err(e) => {
+            log::warn!("Could not read the bound compute device: {}", e);
+            None
+        }
+    };
     let caps = model.capabilities();
     let arch = model.arch();
     let languages = caps.languages.clone();
@@ -337,7 +497,9 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
     let mut entry = Loaded {
         model_id: model_id.to_string(),
         accelerator: accelerator.to_string(),
+        gpu_device: gpu_device.to_string(),
         backend,
+        device,
         max_audio_ms,
         supports_itn,
         supports_pnc,
@@ -351,20 +513,21 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
     let warmup_ms = warmup(&mut entry);
 
     log::info!(
-        "GGUF ASR ready in {}ms (load {}ms + warmup {}ms): {} arch={} backend={} langs={} max_audio_ms={} itn={} pnc={}",
+        "GGUF ASR ready in {}ms (load {}ms + warmup {}ms): {} arch={} backend={} device={} langs={} max_audio_ms={} itn={} pnc={}",
         start.elapsed().as_millis(),
         load_ms,
         warmup_ms,
         model_id,
         arch,
         entry.backend,
+        entry.device.as_deref().unwrap_or("unknown"),
         n_langs,
         max_audio_ms,
         supports_itn,
         supports_pnc
     );
 
-    mark_loaded(&entry.backend);
+    mark_loaded(&entry.backend, entry.device.as_deref());
     *cache = Some(entry);
     // 必须在释放 CACHE 锁之前刷新；否则空闲守护线程可能在这里插入并卸载
     // 刚加载完成、马上要用于推理的模型。
@@ -527,8 +690,8 @@ fn transcribe_with_cache(
 // ── 对外接口（被 local_asr.rs 的命令层分派调用）──
 
 /// 预加载模型。
-pub fn preload(model_id: &str, accelerator: &str) -> Result<(), String> {
-    ensure_loaded(model_id, accelerator)
+pub fn preload(model_id: &str, accelerator: &str, gpu_device: &str) -> Result<(), String> {
+    ensure_loaded(model_id, accelerator, gpu_device)
 }
 
 /// 释放常驻引擎，交还几百 MB ~ 数 GB 内存。
@@ -547,6 +710,12 @@ pub fn current_backend() -> Option<String> {
     STATUS.lock().ok().and_then(|s| s.backend.clone())
 }
 
+/// 当前**实际**绑定的计算设备描述，None = 未加载或库没报。
+/// 多显卡机器上这才是"用的哪张卡"的答案，别用用户的选择代替。
+pub fn current_device() -> Option<String> {
+    STATUS.lock().ok().and_then(|s| s.device.clone())
+}
+
 /// 正在加载中的模型 id，None = 没有加载在进行。
 /// 与 `current_backend` 互斥：加载中时后端一定是 None，界面该显示"正在加载"
 /// 而不是"模型未加载"。
@@ -559,10 +728,11 @@ pub fn transcribe(
     model_id: &str,
     language: &str,
     accelerator: &str,
+    gpu_device: &str,
     samples: &[f32],
     sample_rate: usize,
 ) -> Result<String, String> {
-    ensure_loaded(model_id, accelerator)?;
+    ensure_loaded(model_id, accelerator, gpu_device)?;
     transcribe_with_cache(samples, sample_rate, language)
 }
 
@@ -670,19 +840,6 @@ mod tests {
 
     const SR_U: usize = 16000;
 
-    #[test]
-    #[ignore = "Requires VOICEHUB_TEST_MODEL pointing to a local ASR GGUF file"]
-    fn custom_local_model_transcribes_real_audio() {
-        let path = std::env::var("VOICEHUB_TEST_MODEL").expect("VOICEHUB_TEST_MODEL");
-        super::super::custom::restore(Some(path.into()));
-        let text = run_with(super::super::custom::ID, 1, read_test_wav(), "zh");
-        assert!(!text.trim().is_empty(), "No transcription");
-        assert!(!text.contains("<|"), "Unfiltered model tags");
-        println!("VoiceHub local ASR: {text}");
-        unload();
-        super::super::custom::restore(None);
-    }
-
     /// 读 16 kHz / mono / 16-bit WAV 为 f32（只够读我们自己的测试音频）。
     fn read_wav(name: &str) -> Vec<f32> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -728,7 +885,7 @@ mod tests {
         for _ in 0..repeats {
             pcm.extend_from_slice(&base);
         }
-        transcribe(model_id, language, "auto", &pcm, SR_U).expect("转写失败")
+        transcribe(model_id, language, "auto", "", &pcm, SR_U).expect("转写失败")
     }
 
     /// SenseVoice：转写要出中文，且**必须有标点**。
@@ -972,6 +1129,138 @@ mod tests {
         assert!(resolve_language("auto", &[]).is_none());
     }
 
+    // ── 后端注册必须保持懒加载（源码约束）──
+    //
+    // 为什么用源码扫描而不是行为测试：`init_backends` 是进程级 `Once`，同一个测试
+    // 进程里别的测试可能已经注册过，所以运行时没法观测"启动路径有没有注册"。
+    // 而这条约束一旦破了，症状是"云 API 用户又开始白占显存"——用户能看见，
+    // 测试却全绿。仿照 main.rs 里 `configured_windows_do_not_override_webview2_browser_args`
+    // 的同一套做法。
+
+    /// 去掉行注释，避免注释里出现的函数名被当成真实调用。
+    fn strip_line_comments(source: &str) -> String {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 启动路径绝不能注册计算后端。加回去等于让云 API / 服务器模式的用户重新白付
+    /// 一个 Vulkan 上下文（约 36 MB 共享显存 + 80~520 ms 启动阻塞），而他们一个
+    /// 模型都不会加载。详见 `init_backends` 的文档注释。
+    /// （VoiceHub vendor：上游读 main.rs，这里守护的是等价的启动入口 lib.rs。）
+    #[test]
+    fn startup_path_does_not_register_compute_backends() {
+        let main_rs = strip_line_comments(include_str!("../lib.rs"));
+        assert!(
+            !main_rs.contains("init_backends"),
+            "lib.rs 又在启动路径上注册计算后端了。这会 dlopen ggml-vulkan.dll 并建出\n\
+             Vulkan 上下文，云 API / 服务器模式的用户白付显存与启动时间。\n\
+             注册应当只发生在 gguf_asr 的懒路径（ensure_loaded / describe_devices）。"
+        );
+    }
+
+    /// 反向约束：懒路径必须真的自己注册。少了这一步，本地模式会在
+    /// `Model::load_with` 直接报 TRANSCRIBE_ERR_BACKEND，诊断页的设备列表会空白。
+    #[test]
+    fn lazy_entry_points_register_compute_backends() {
+        let source = strip_line_comments(include_str!("gguf_asr.rs"));
+        for (entry, signature) in [
+            (
+                "ensure_loaded",
+                "fn ensure_loaded(model_id: &str, accelerator: &str, gpu_device: &str)",
+            ),
+            ("describe_devices", "pub fn describe_devices()"),
+        ] {
+            let body_start = source
+                .find(signature)
+                .unwrap_or_else(|| panic!("{entry} 的签名变了，请同步更新这条测试"));
+            // 只看函数开头这一小段：注册是前置动作，必须在任何实际工作之前发生。
+            let head = &source[body_start..(body_start + 700).min(source.len())];
+            assert!(
+                head.contains("init_backends()"),
+                "{entry} 没有先调用 init_backends()。启动路径上已经不注册了，\n\
+                 这里少一步就会让本地模式报 TRANSCRIBE_ERR_BACKEND / 设备列表空白。"
+            );
+        }
+    }
+
+    /// 一台"集显 + 独显 + CPU"机器的设备清单，顺序照 ggml 的 registry
+    /// （GPU 在前、CPU 最后，与本机实测 `[vulkan:Vulkan0, cpu:CPU]` 一致）。
+    fn fake_devices() -> Vec<GgufDevice> {
+        vec![
+            GgufDevice {
+                kind: "vulkan".into(),
+                name: "Integrated Graphics".into(),
+                memory_mb: 2048,
+                id: "PCI:0000:00:02.0".into(),
+                index: 0,
+                is_gpu: true,
+            },
+            GgufDevice {
+                kind: "vulkan".into(),
+                name: "Discrete GPU".into(),
+                memory_mb: 8192,
+                id: "PCI:0000:01:00.0".into(),
+                index: 1,
+                is_gpu: true,
+            },
+            GgufDevice {
+                kind: "cpu".into(),
+                name: "CPU".into(),
+                memory_mb: 32768,
+                id: "cpu:CPU".into(),
+                index: 2,
+                is_gpu: false,
+            },
+        ]
+    }
+
+    /// 选第二张卡是这个功能的主用例（反馈里的原话：显卡 0 已经被别的模型占满，
+    /// 想让 SayIt 用显卡 1）。必须解析成那张卡的 registry 索引。
+    #[test]
+    fn selecting_a_secondary_gpu_yields_its_registry_index() {
+        assert_eq!(
+            pick_gpu_device_index(&fake_devices(), "PCI:0000:01:00.0", "auto"),
+            1
+        );
+        // 显式请求 GPU 后端时同样成立（上游会额外校验厂商一致，Vulkan 对 Vulkan 没问题）
+        assert_eq!(
+            pick_gpu_device_index(&fake_devices(), "PCI:0000:01:00.0", "gpu"),
+            1
+        );
+    }
+
+    /// 四条回落，每一条都必须落到 0（自动），绝不能把非法值传给上游 ——
+    /// 上游对非法 `gpu_device` 是**直接报 INVALID_ARG 让整次加载失败**，
+    /// 不是悄悄回落。用户换了张显卡就打不开本地识别是不可接受的。
+    #[test]
+    fn invalid_or_unavailable_selections_fall_back_to_automatic() {
+        let devs = fake_devices();
+        // 没设置 / 显式自动
+        assert_eq!(pick_gpu_device_index(&devs, "", "auto"), 0);
+        assert_eq!(pick_gpu_device_index(&devs, "auto", "auto"), 0);
+        // 设置里记着一张已经不在机器上的卡（换卡、拔了 eGPU、驱动没起来）
+        assert_eq!(pick_gpu_device_index(&devs, "PCI:0000:09:00.0", "auto"), 0);
+        // 指向了 CPU：上游判 "is not a GPU device" → INVALID_ARG
+        assert_eq!(pick_gpu_device_index(&devs, "cpu:CPU", "auto"), 0);
+        // 后端选了 CPU 时任何非零值都是 INVALID_ARG（"no GPU to select"）
+        assert_eq!(pick_gpu_device_index(&devs, "PCI:0000:01:00.0", "cpu"), 0);
+    }
+
+    /// registry 索引 0 是上游的"自动"哨兵，没有办法显式选中它。
+    /// 这条钉住的是我们**知道**这个限制并按 0 传 —— 传 0 只是让库按探测顺序挑
+    /// （独显优先），所以界面上必须靠 `current_device` 显示真实结果，
+    /// 不能假设"选了就是用了"。详见 `resolve_gpu_device` 的文档注释。
+    #[test]
+    fn registry_index_zero_is_the_automatic_sentinel() {
+        assert_eq!(
+            pick_gpu_device_index(&fake_devices(), "PCI:0000:00:02.0", "auto"),
+            0
+        );
+    }
+
     /// 内嵌的预热音频必须能解析出足够的样本。这条防的是 include_bytes! 的路径
     /// 写错或资源文件被换掉 —— 那样预热会静默变成空操作，第一次口述又会慢回去。
     #[test]
@@ -1002,15 +1291,15 @@ mod tests {
 
         // 这一次含加载 + 预热
         let t_load = std::time::Instant::now();
-        let _ = transcribe(id, "auto", "auto", &base, SR_U).expect("转写失败");
+        let _ = transcribe(id, "auto", "auto", "", &base, SR_U).expect("转写失败");
         let load_and_first = t_load.elapsed().as_secs_f64();
 
         let t1 = std::time::Instant::now();
-        let _ = transcribe(id, "auto", "auto", &base, SR_U).expect("转写失败");
+        let _ = transcribe(id, "auto", "auto", "", &base, SR_U).expect("转写失败");
         let first = t1.elapsed().as_secs_f64();
 
         let t2 = std::time::Instant::now();
-        let _ = transcribe(id, "auto", "auto", &base, SR_U).expect("转写失败");
+        let _ = transcribe(id, "auto", "auto", "", &base, SR_U).expect("转写失败");
         let second = t2.elapsed().as_secs_f64();
 
         eprintln!(
@@ -1080,7 +1369,7 @@ mod tests {
         eprintln!("[info] GPU 设备存在: {has_gpu}");
 
         let base = read_test_wav();
-        let text = transcribe(id, "auto", "cpu", &base, SR_U).expect("转写失败");
+        let text = transcribe(id, "auto", "cpu", "", &base, SR_U).expect("转写失败");
         assert!(!text.trim().is_empty(), "强制 CPU 后输出为空");
         let backend = current_backend().unwrap_or_default();
         assert!(
@@ -1122,7 +1411,7 @@ mod tests {
             unload();
             std::thread::sleep(std::time::Duration::from_secs(2)); // 等工作集回落
             let before = process_memory_mb();
-            transcribe(id, "auto", "auto", &base, SR_U).expect("转写失败");
+            transcribe(id, "auto", "auto", "", &base, SR_U).expect("转写失败");
             let after = process_memory_mb();
             let limits = CACHE
                 .lock()
@@ -1392,6 +1681,21 @@ mod tests {
             single.chars().count()
         );
         unload();
+    }
+
+    /// VoiceHub：自定义 GGUF 模型端到端（真机集成，默认 ignore）。
+    /// 依赖 VOICEHUB_TEST_MODEL 指向一个真实 GGUF 文件；验证 custom 路径接入
+    /// 加载链路且转写输出过滤了模型 tag。
+    #[ignore]
+    fn custom_local_model_transcribes_real_audio() {
+        let path = std::env::var("VOICEHUB_TEST_MODEL").expect("VOICEHUB_TEST_MODEL");
+        super::super::custom::restore(Some(path.into()));
+        let text = run_with(super::super::custom::ID, 1, read_test_wav(), "zh");
+        assert!(!text.trim().is_empty(), "No transcription");
+        assert!(!text.contains("<|"), "Unfiltered model tags");
+        println!("VoiceHub local ASR: {text}");
+        unload();
+        super::super::custom::restore(None);
     }
 
 }

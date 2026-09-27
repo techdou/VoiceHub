@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
+import type { AsrHotwordCapability } from '../lib/asrModels'
 import type { DiagnosticOccurrence, DiagnosticsPreview } from '../types/appApi'
 
 // Re-export for convenience
@@ -102,11 +103,30 @@ export function getOverlayHealth(showId: number) {
   return invoke<OverlayHealthSnapshot>('get_overlay_health', { showId })
 }
 
-export type EscapeActionMode = 'off' | 'cancel_recording' | 'cancel_processing' | 'dismiss_fallback'
+export type EscapeActionMode =
+  | 'off'
+  | 'cancel_recording'
+  | 'cancel_processing'
+  | 'dismiss_fallback'
+  | 'abandon_late_result'
 
 /** 只在悬浮窗需要响应全局 Esc 时开启；Rust 侧带超时保险，避免异常后永久吞键。 */
 export function setEscapeActionMode(mode: EscapeActionMode, token = 0) {
   return invoke<void>('set_escape_action_mode', { mode, token })
+}
+
+/** 悬浮窗卡片上的临时组合键。字符串值是与 Rust 的契约，见 keyboard::card_hotkey_action_name。 */
+export type CardHotkeyAction = 'copy'
+
+/**
+ * 开启/续期/解除卡片快捷键；传空数组即解除。
+ *
+ * 为什么要经过原生：悬浮窗不抢焦点，按键始终发给用户原来的程序，webview 里的
+ * keydown 永远不会触发。Rust 侧带硬 TTL（20s）兜底，所以**卡片可见期间必须周期性
+ * 续期**，间隔要明显小于 TTL。
+ */
+export function setCardHotkeys(actions: CardHotkeyAction[], token = 0) {
+  return invoke<void>('set_card_hotkeys', { actions, token })
 }
 
 // ─── Paste / Context ───
@@ -431,9 +451,6 @@ export function onPTTUp(cb: (data?: unknown) => void) {
   return () => { unlisten.then((fn) => fn()) }
 }
 
-
-// onPTTToggle 已移除：native 从不发送 ptt-toggle 事件（上游遗留死监听，0.2.0 复查仍无发射端）。
-
 export function onPTTTimeoutWarning(cb: (data?: unknown) => void) {
   const unlisten = listen<unknown>('ptt-timeout-warning', (event) => cb(event.payload))
   return () => { unlisten.then((fn) => fn()) }
@@ -449,6 +466,31 @@ export function onEscapeAction(cb: (data: { mode: EscapeActionMode; token: numbe
   return () => { unlisten.then((fn) => fn()) }
 }
 
+export function onCardHotkey(cb: (data: { action: CardHotkeyAction; token: number }) => void) {
+  const unlisten = listen<{ action: CardHotkeyAction; token: number }>('card-hotkey', (event) => cb(event.payload))
+  return () => { unlisten.then((fn) => fn()) }
+}
+
+/** 事件名：悬浮窗自己收起了卡片（点关闭、或复制完成后自动收起）。 */
+export const OVERLAY_CARD_DISMISSED = 'overlay-card-dismissed'
+
+/**
+ * 悬浮窗收起卡片后回报主窗。
+ *
+ * 为什么必须回报：卡片的**生命周期归主窗的 OverlayService 管**（它持有续期定时器）。
+ * 悬浮窗那边只是一个渲染端，它 hideOverlay() 之后主窗毫不知情，8 秒后续期定时器
+ * 又会把 Esc / Ctrl+C 重新注册一遍 —— 卡片早就没了，用户的按键却还被接管着，
+ * 而且原生侧会重新抓一次前台窗口（此时可能已经是别的程序）。
+ */
+export function notifyCardDismissed(reason: string, token: number) {
+  return emit(OVERLAY_CARD_DISMISSED, { reason, token })
+}
+
+export function onCardDismissed(cb: (data: { reason: string; token: number }) => void) {
+  const unlisten = listen<{ reason: string; token: number }>(OVERLAY_CARD_DISMISSED, (event) => cb(event.payload))
+  return () => { unlisten.then((fn) => fn()) }
+}
+
 export function onMouseShortcutCaptured(cb: (data: { setting: string; vk: number }) => void) {
   const unlisten = listen<{ setting: string; vk: number }>('mouse-shortcut-captured', (event) => cb(event.payload))
   return () => { unlisten.then((fn) => fn()) }
@@ -457,4 +499,52 @@ export function onMouseShortcutCaptured(cb: (data: { setting: string; vk: number
 export function onPTTLabEvent(cb: (data?: unknown) => void) {
   const unlisten = listen<unknown>('ptt-lab-event', (event) => cb(event.payload))
   return () => { unlisten.then((fn) => fn()) }
+}
+
+/**
+ * 这家 ASR 拿用户的热词做什么。**权威声明在 Rust**（providers/capabilities.rs）。
+ *
+ * 前端刻意不自己维护一份「哪家支持热词」的清单：issue #67 的成因正是实现在 Rust、
+ * 声明在前端一张手写表格，两者无人对账，结果 6 家云服务被漏掉，界面平静地告诉
+ * 用户热词生效。
+ *
+ * 失败时返回 null（而不是编一个"不支持"）—— 让调用方能把"查不到"和"确定不传"
+ * 分开显示。老版本 Rust 没有这个 command 时也走这条。
+ */
+export function asrHotwordCapability(provider: string, extra?: Record<string, unknown>) {
+  return invoke<AsrHotwordCapability>('asr_hotword_capability', { provider, extra })
+    .catch(() => null)
+}
+
+/**
+ * 全部服务的热词行为，供「各服务对热词的支持」对照表使用。
+ *
+ * 这张表因此是**实现的投影**，不是界面里的第二份手写清单 —— 后者就是 issue #67：
+ * 表格漏了 6 家、还把「不支持」说成只是本地模型的问题，而没人会在改实现时想起它。
+ *
+ * 失败返回 null，调用方据此显示"暂时取不到"，不要退化成一张空表（空表看起来像
+ * "所有服务都不支持"）。
+ */
+export function asrHotwordCapabilityMatrix() {
+  return invoke<Record<string, AsrHotwordCapability>>('asr_hotword_capability_matrix')
+    .catch(() => null)
+}
+
+/**
+ * 前端内部广播：刚走完一次一次性云端转写，热词能力的答案可能已经变了。
+ *
+ * 只有「OpenAI 兼容」的 auto 协议会这样：它的答案在探测之前是 `undecided_protocol`，
+ * 而探测就发生在 `cloud_transcribe` 内部（结果进 `asr_openai_compat` 的 PROTOCOL_CACHE）。
+ * 热词页开着不动的时候完成首次录音，页面上那句"还没探测出来"会一直挂着 —— 它的查询
+ * 只在挂载时跑过一次。
+ *
+ * 广播点刻意只放在 `cloud_transcribe` 之后，不放在录音结束：流式路径不碰协议探测
+ * （`openai_compat` 没有流式实现），本地与服务器模式更不会。
+ */
+export const ASR_CAPABILITY_MAYBE_CHANGED_EVENT = 'sayit:asr-capability-maybe-changed'
+
+export function notifyAsrCapabilityMaybeChanged() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(ASR_CAPABILITY_MAYBE_CHANGED_EVENT))
+  }
 }

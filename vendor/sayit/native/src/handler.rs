@@ -61,6 +61,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
             commands::shortcuts::test_shortcut,
             commands::shortcuts::get_ptt_physical_key_states,
             commands::shortcuts::set_escape_action_mode,
+            commands::shortcuts::set_card_hotkeys,
             commands::shortcuts::set_ptt_lab_config,
             commands::shortcuts::begin_shortcut_capture,
             commands::shortcuts::end_shortcut_capture,
@@ -94,6 +95,12 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
             providers::registry::cloud_transcribe,
             providers::registry::test_ai_connection,
             providers::registry::test_asr_connection,
+            // 「这家 ASR 拿热词做什么」的唯一权威来源。前端不再自己维护一份清单 ——
+            // 那正是 issue #67 的成因（声明和实现分处两侧、无人对账）。
+            providers::capabilities::asr_hotword_capability,
+            // 同上，全部服务一次给全，供「各服务对热词的支持」对照表使用。
+            // 那张表因此是实现的投影，不是第二份手写清单。
+            providers::capabilities::asr_hotword_capability_matrix,
             // Doubao realtime streaming ASR
             providers::asr_doubao_realtime::doubao_stream_open,
             providers::asr_doubao_realtime::doubao_stream_send,
@@ -104,12 +111,23 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
             providers::asr_qwen_realtime::qwen_stream_send,
             providers::asr_qwen_realtime::qwen_stream_finish,
             providers::asr_qwen_realtime::qwen_stream_close,
-            // Qwen-Audio-3.0 streaming ASR (DashScope duplex protocol)
+            // Qwen-Audio-ASR-Flash streaming, 3.0 and 3.1 (DashScope duplex protocol)
             providers::asr_qwen_audio_stream::qwen_audio_stream_open,
             providers::asr_qwen_audio_stream::qwen_audio_stream_send,
             providers::asr_qwen_audio_stream::qwen_audio_stream_finish,
             providers::asr_qwen_audio_stream::qwen_audio_stream_close,
+            // OpenAI realtime transcription (gpt-live-transcribe)
+            providers::asr_openai_realtime::openai_live_open,
+            providers::asr_openai_realtime::openai_live_send,
+            providers::asr_openai_realtime::openai_live_finish,
+            providers::asr_openai_realtime::openai_live_close,
+            // Gemini Live API transcription (gemini-3.5-transcribe-live)
+            providers::asr_gemini_live::gemini_live_open,
+            providers::asr_gemini_live::gemini_live_send,
+            providers::asr_gemini_live::gemini_live_finish,
+            providers::asr_gemini_live::gemini_live_close,
             // Models (local model management)
+            // Custom GGUF model（VoiceHub 自有扩展：注册/读取自定义模型路径）。
             models::custom::custom_model_path,
             models::custom::register_custom_model,
             models::registry::list_available_models,

@@ -116,8 +116,6 @@ export default function ServerSection() {
       // 地址已变更：无论下方健康检查成功与否，都按新地址强制重连，
       // 让左下角连接状态反映新配置（改成错误地址后应显示未连接，而非仍旧"已连接"）
       reconnectProvider()
-      // VoiceHub 衔接说明：应用级自动更新由 VoiceHub 托管（native 侧已拒绝
-      // download/install 命令），这里不再触发更新检查，避免必然失败的下载。
     } catch (error) {
       setResult({ tone: 'error', message: t('server.saveFailed'), detail: String(error) })
       setBusy(false)

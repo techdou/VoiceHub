@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { useT } from '@/i18n/useT'
+import { useBackdropDismiss } from '@/hooks/useBackdropDismiss'
 import { cn } from '@/lib/utils'
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -41,6 +42,9 @@ export function Modal({
   const requestClose = useCallback(() => {
     if (!locked) onClose()
   }, [locked, onClose])
+
+  // 点背板关闭。判据在 hook 里，别改回「背板直接挂 onClick」—— 那样拖选一出面板就误关。
+  const backdropDismiss = useBackdropDismiss(requestClose)
 
   /**
    * 打开时把焦点移进弹窗（否则读屏与键盘用户还停在背后的页面上），关闭时还回去。
@@ -98,7 +102,7 @@ export function Modal({
       // 遮罩用固定的黑色而非 --foreground：深色主题的 foreground 是接近白的浅灰，
       // 拿它当遮罩会把背景照亮。遮罩在任何主题下都必须是暗的。
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={requestClose}
+      {...backdropDismiss}
     >
       <div
         ref={panelRef}
@@ -106,6 +110,8 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
+        // 冗余的第二道：真正的判据在 useBackdropDismiss（看那里的注释）。
+        // 单靠这一条挡不住拖选出面板的情况 —— 那时 click 压根不走面板这条路径。
         onClick={(e) => e.stopPropagation()}
         className={cn(
           'relative max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border bg-card p-6 shadow-xl',

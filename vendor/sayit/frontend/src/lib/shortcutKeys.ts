@@ -220,6 +220,66 @@ export function displayShortcut(shortcut: string): string[] {
     : displayAccelerator(shortcut)
 }
 
+/**
+ * 按键事件 → Tauri accelerator。只有「修饰键 + 主键」才成型，单按修饰键返回 null。
+ *
+ * 免提与预设切换存的就是这种格式（见 defaults.ts 的 shortcutHandsFree）。
+ */
+export function eventToAccelerator(event: KeyboardEvent): string | null {
+  const parts: string[] = []
+  if (event.ctrlKey || event.metaKey) parts.push('CommandOrControl')
+  if (event.altKey) parts.push('Alt')
+  if (event.shiftKey) parts.push('Shift')
+
+  const key = event.key
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(key)) return null
+
+  const keyMap: Record<string, string> = {
+    ' ': 'Space',
+    ArrowUp: 'Up',
+    ArrowDown: 'Down',
+    ArrowLeft: 'Left',
+    ArrowRight: 'Right',
+    Escape: 'Escape',
+    Enter: 'Return',
+    Backspace: 'Backspace',
+    Delete: 'Delete',
+    Tab: 'Tab',
+  }
+
+  const mapped = keyMap[key] || (key.length === 1 ? key.toUpperCase() : key)
+  parts.push(mapped)
+  return parts.length >= 2 ? parts.join('+') : null
+}
+
+/**
+ * 一次 keydown 该被录成什么：单键 DOM code、accelerator，或 null（还不成型）。
+ *
+ * **这个判断必须只有一份。** 向导里曾经自己写过一份「只认单键白名单」的版本，
+ * 于是按 Ctrl+D 时 Ctrl 的 keydown 先到、`ControlLeft` 恰好在白名单里 ——
+ * 免提键被静默存成「左 Ctrl」，D 根本没轮到，而用户看到的是"组合键不支持"。
+ *
+ * 判定顺序是**先组合、后单键**，不能反过来：`Space`、`Insert`、`F1`–`F24` 同时
+ * 出现在单键白名单里，先判单键会把 `Ctrl+Space`、`Ctrl+F1` 也吃成单键。
+ * 反过来是安全的 —— 纯修饰键（右 Alt）在 eventToAccelerator 里返回 null，
+ * 自然落到单键分支。
+ *
+ * 调用方在 keydown 里持续更新候选、在 keyup 时提交最后那个候选，**null 表示
+ * 「这次按键还没凑成东西」，要保留上一个候选**，不能覆盖成空 —— 否则先按 Ctrl+D
+ * 再松手的过程中，任何一次不成型的中间事件都会把已经录到的组合键抹掉。
+ *
+ * comboOnly 用于「必须是组合键」的设置（预设切换）：单键一律不成型。
+ */
+export function keyEventToShortcutCandidate(
+  event: KeyboardEvent,
+  options: { comboOnly?: boolean } = {},
+): string | null {
+  const accelerator = eventToAccelerator(event)
+  if (accelerator) return accelerator
+  if (options.comboOnly) return null
+  return resolveSingleKeyShortcut(event.code) ?? null
+}
+
 /** 拆分 PTT 设置；不在这里静默丢弃未知成员，交给校验器给出明确错误。 */
 export function parsePTTShortcut(setting: string): string[] {
   if (!setting.trim()) return []

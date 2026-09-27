@@ -4,7 +4,7 @@
 use super::diag;
 use super::prompt::wrap_user_text;
 use super::types::{AiProviderConfig, AiResult, TestResult, TextContext};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -53,10 +53,18 @@ fn thinking_overrides(config: &AiProviderConfig) -> Option<serde_json::Value> {
         return Some(serde_json::json!({ "enable_thinking": false }));
     }
 
+    // 已知「始终思考」的模型直接发最低强度那套，别先发一次注定被拒的 disabled。
+    // 放在最前面：它是按**模型**判的，比下面那些按供应商判的更具体。
+    if model_forces_thinking(&config.model) {
+        return Some(forced_thinking_overrides());
+    }
+
     // DeepSeek、小米 MiMo 和智谱 GLM 使用 thinking.type=disabled。
-    // 智谱通过官方域名识别（provider 是通用的 openai_compat）。
+    // 智谱两条都认：provider == "zhipu" 是内置卡，域名判断留给「用 OpenAI 兼容自己填
+    // 智谱地址」的老配置（这种存量配置不会因为新增内置卡而自动迁移）。
     if config.provider == "deepseek"
         || config.provider == "mimo"
+        || config.provider == "zhipu"
         || is_zhipu_api_url(&config.api_url)
     {
         return Some(serde_json::json!({ "thinking": { "type": "disabled" } }));
@@ -99,14 +107,19 @@ fn merge_overrides(body: &mut serde_json::Value, overrides: &serde_json::Value) 
     }
 }
 
-/// 记住「这个端点不接受思考参数」的进程内结论。
+/// 记住「这个端点该发哪套思考参数」的进程内结论。
+///
+/// 值是**降级后真正用的那套参数**，`None` 表示一个字段都别发。以前这里是
+/// `HashSet<端点>`，语义只有「拒绝思考参数」一种 —— 而强制思考的模型需要的不是
+/// 「什么都不发」，是「发一套更轻的」，一个布尔存不下这个区别
+/// （见 `forced_thinking_overrides` 的说明）。
 ///
 /// 只放内存、不落盘：一次进程生命周期内够用，而端点行为会随供应商升级变化，
-/// 持久化反而会把一条过期结论永久钉住。key 带上模型名是因为 `unsupported_value`
-/// 这类拒绝是按模型判的，同一网关换个模型结论可能不同。
-fn thinking_rejections() -> &'static Mutex<HashSet<String>> {
-    static REJECTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    REJECTED.get_or_init(|| Mutex::new(HashSet::new()))
+/// 持久化反而会把一条过期结论永久钉住。key 带上模型名是因为这类拒绝是按模型判的，
+/// 同一网关换个模型结论可能不同。
+fn thinking_memo() -> &'static Mutex<HashMap<String, Option<serde_json::Value>>> {
+    static MEMO: OnceLock<Mutex<HashMap<String, Option<serde_json::Value>>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn endpoint_key(config: &AiProviderConfig) -> String {
@@ -114,23 +127,72 @@ fn endpoint_key(config: &AiProviderConfig) -> String {
     format!("{}|{}", host, config.model)
 }
 
-fn endpoint_rejects_thinking(config: &AiProviderConfig) -> bool {
-    thinking_rejections()
+/// 之前降级过吗？`Some(params)` 是那次成功的参数（内层 `None` = 一个字段都不发）。
+fn remembered_thinking(config: &AiProviderConfig) -> Option<Option<serde_json::Value>> {
+    thinking_memo()
         .lock()
-        .map(|set| set.contains(&endpoint_key(config)))
-        .unwrap_or(false)
+        .ok()
+        .and_then(|memo| memo.get(&endpoint_key(config)).cloned())
 }
 
-fn remember_thinking_rejection(config: &AiProviderConfig) {
-    if let Ok(mut set) = thinking_rejections().lock() {
-        set.insert(endpoint_key(config));
+fn remember_thinking(config: &AiProviderConfig, overrides: Option<serde_json::Value>) {
+    if let Ok(mut memo) = thinking_memo().lock() {
+        memo.insert(endpoint_key(config), overrides);
     }
+}
+
+/// 「强制思考」模型该发的参数：思考开着，但用最低强度。
+///
+/// 为什么不能像别的端点那样直接把参数全去掉：这类模型**没有不思考这一档**，
+/// 去掉参数等于用它的默认强度，而智谱 GLM-5.3 的默认是 `reasoning_effort=max`
+/// （深度推理）—— 对语音输入来说那是最差的结果，比不降级还慢。官方给的迁移写法
+/// 正是把 `disabled` 换成 `enabled` + `reasoning_effort: "low"`。
+fn forced_thinking_overrides() -> serde_json::Value {
+    serde_json::json!({
+        "thinking": { "type": "enabled" },
+        "reasoning_effort": "low"
+    })
+}
+
+/// 模型名一眼能认出「始终思考」的那几个。
+///
+/// 只为省掉一次注定失败的往返（否则用户在设置页点「测试」会先吃一个 400）。
+/// 这个名单一定会过期，所以它不是唯一防线 —— 真正兜底的是 `forced_thinking_error`
+/// 那条按响应内容判定的路径，将来新出的强制思考模型走那条也能自愈。
+fn model_forces_thinking(model: &str) -> bool {
+    // glm-5.3 / glm-5.3-flash / glm-5.3-xxx 都算
+    model.trim().to_ascii_lowercase().starts_with("glm-5.3")
+}
+
+/// 这个错误是不是在说「本模型不能关思考，请改用强度档位」。
+///
+/// 智谱的原文是纯中文 + 一个错误码：
+/// `{"error":{"code":"1210","message":"该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"}}`
+///
+/// **`thinking` 这个词一次都没出现** —— 这正是旧判据（"响应体里有没有我们注入的键名"）
+/// 对它完全失效的原因：判据没命中 → 降级不执行 → 400 原样报给用户，界面上就是
+/// 「连接失败」。所以这里必须按语义匹配，不能只认字段名。
+fn forced_thinking_error(body: &str) -> bool {
+    // 智谱的错误码，最稳的一条
+    if body.contains("\"1210\"") || body.contains("\"code\":1210") {
+        return true;
+    }
+    // 中文原文（措辞可能随版本微调，取两个最稳的片段）
+    if body.contains("始终思考") || body.contains("不支持关闭思考") {
+        return true;
+    }
+    // 英文/其它网关的等价说法
+    let lower = body.to_ascii_lowercase();
+    lower.contains("does not support disabling thinking")
+        || lower.contains("thinking cannot be disabled")
+        || (lower.contains("reasoning_effort") && lower.contains("low"))
 }
 
 /// 这个 400 是不是我们注入的思考参数引起的 —— 返回被点名的那个字段名。
 ///
 /// 判定刻意保守：**只有响应体里出现了我们实际注入的键名**才算。密钥错、模型不存在这些
 /// 400 绝不能触发降级重试，否则每次请求都要白发两遍。
+/// 供应商用自然语言描述、完全不提字段名的那一类，由 `forced_thinking_error` 单独认。
 fn rejected_thinking_field(body: &str, overrides: &serde_json::Value) -> Option<String> {
     let object = overrides.as_object()?;
     object
@@ -203,10 +265,10 @@ async fn send_chat_with_thinking_fallback(
     timeout: Duration,
     scope: &str,
 ) -> Result<ChatHttpResponse, ChatHttpError> {
-    let overrides = if endpoint_rejects_thinking(config) {
-        None
-    } else {
-        thinking_overrides(config)
+    // 之前降级过就直接用那次的结论，不再重复撞墙
+    let overrides = match remembered_thinking(config) {
+        Some(remembered) => remembered,
+        None => thinking_overrides(config),
     };
 
     let Some(overrides) = overrides else {
@@ -222,25 +284,53 @@ async fn send_chat_with_thinking_fallback(
     }
 
     // 不限定状态码：多数端点回 400，也见过网关把参数校验失败报成 500
-    // （见 pitfalls「max_tokens 下限」那条）。真正的把关是下面这句——响应体必须
-    // 点名我们注入的字段，否则密钥错、模型不存在这些 400 会被白重试一遍。
-    let Some(field) = rejected_thinking_field(&resp.body, &overrides) else {
+    // （见 pitfalls「max_tokens 下限」那条）。真正的把关是下面这两句 —— 必须有一条
+    // 明确信号指向思考参数，否则密钥错、模型不存在这些 400 会被白重试一遍。
+    //
+    // 两种信号分别对应两种降级目标：
+    //   · 「这个模型不能关思考」→ 换成最低强度（去掉参数会落到 max，反而更慢）
+    //   · 「不认识这个字段」    → 一个都不发
+    let (fallback, reason) = if forced_thinking_error(&resp.body) {
+        (Some(forced_thinking_overrides()), "forced_thinking".to_string())
+    } else if let Some(field) = rejected_thinking_field(&resp.body, &overrides) {
+        (None, format!("unknown_field={}", field))
+    } else {
         return Ok(resp);
     };
 
-    remember_thinking_rejection(config);
+    // 已经在发最低强度那套了还被拒，就别再原地重试同一份
+    if fallback.as_ref() == Some(&overrides) {
+        return Ok(resp);
+    }
+
     diag::log(
         scope,
         "thinking_params_rejected",
         &format!(
-            "Endpoint rejected the disable-thinking parameter; retrying without it field={} status={} model={}",
-            field,
+            "Endpoint rejected our thinking parameters; retrying with fallback reason={} fallback={} status={} model={}",
+            reason,
+            if fallback.is_some() { "low_effort" } else { "none" },
             resp.status.as_u16(),
             config.model
         ),
     );
 
-    send_chat_once(url, config, base_body, timeout).await
+    let retried = match &fallback {
+        Some(params) => {
+            let mut body = base_body.clone();
+            merge_overrides(&mut body, params);
+            send_chat_once(url, config, &body, timeout).await?
+        }
+        None => send_chat_once(url, config, base_body, timeout).await?,
+    };
+
+    // 只在降级真的成功时才记住它。失败还记的话会把一条错结论钉在这个端点上，
+    // 后面每次请求都按错的那套发（而真正的原因可能只是密钥错）。
+    if retried.status.is_success() {
+        remember_thinking(config, fallback);
+    }
+
+    Ok(retried)
 }
 
 /// 调用 OpenAI 兼容接口进行文本校对
@@ -403,11 +493,13 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
     //      其实是我们把上限压得太低；
     //   2) 推理型模型会先花掉一部分 output token 想事情，额度太小时 content 是空的，
     //      测试就会显示「连接成功，回复：(空)」，等于白测。
-    // 64 足够覆盖这两种情况，代价可以忽略。
+    // 曾经是 64。改成 512 是因为**强制思考的模型**（智谱 GLM-5.3 那一档）连最低强度
+    // 也要先想一轮，64 个 token 基本全花在 reasoning 上、content 什么都不剩 ——
+    // 那种「连上了但回复是空的」比报错更难判断。max_tokens 只是上限，不按它计费。
     let base_body = serde_json::json!({
         "model": config.model,
         "temperature": 0,
-        "max_tokens": 64,
+        "max_tokens": 512,
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_prompt }
@@ -533,6 +625,15 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
 /// 规范化 base URL
 fn normalize_base_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
+    // 用户把文档里的**完整端点**整条粘进来是最常见的填法 —— 各家文档（智谱、DeepSeek、
+    // 硅基流动…）示例里给的都是 `.../chat/completions`，而这一栏要的是它前面那一截。
+    // 不剥掉的话下面会再拼一次，得到 `.../chat/completions/v1/chat/completions` 然后 404，
+    // 而 404 的响应体只说路径不存在，用户完全看不出是自己多填了一段。
+    // ASR 那条路早就这么处理了（asr_openai_chat_audio.rs 的 chat_completions_url）。
+    let trimmed = trimmed
+        .strip_suffix("/chat/completions")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
     let has_version_suffix = trimmed
         .rsplit('/')
         .next()
@@ -649,6 +750,136 @@ mod tests {
         assert_eq!(keys(&zhipu), vec!["thinking"]);
     }
 
+    /// 用户手填地址的几种真实形态都要落到同一个端点上。
+    ///
+    /// 智谱那几条是照 B 站反馈复现的：用户填 `.../api/paas/v4` 曾经被补成 `/v4/v1`
+    /// （已修），填 `.../api/paas` 会被补成 `/api/paas/v1`，而把文档里的完整端点
+    /// 整条粘进来会被再拼一次。三种都返回 404，而 404 只说路径不存在。
+    #[test]
+    fn normalizes_user_typed_base_urls() {
+        let cases = [
+            // 智谱：版本段是 /v4，必须原样保留
+            ("https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"),
+            ("https://open.bigmodel.cn/api/paas/v4/", "https://open.bigmodel.cn/api/paas/v4"),
+            // 文档里给的完整端点，整条粘进来
+            (
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                "https://open.bigmodel.cn/api/paas/v4",
+            ),
+            ("https://api.deepseek.com/v1/chat/completions", "https://api.deepseek.com/v1"),
+            // 只给主机名 → 补 /v1（OpenAI 的形状）
+            ("https://api.deepseek.com", "https://api.deepseek.com/v1"),
+            // 豆包：以 /api 结尾的补 /v3
+            (
+                "https://ark.cn-beijing.volces.com/api",
+                "https://ark.cn-beijing.volces.com/api/v3",
+            ),
+            // 已带 /v1 的原样保留（Groq、MiMo 的默认地址就是这个形状）
+            ("https://api.groq.com/openai/v1", "https://api.groq.com/openai/v1"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_base_url(input), expected, "input={}", input);
+        }
+    }
+
+    /// 智谱的 `thinking.type=disabled` 两条路都要认：内置卡靠 provider，
+    /// 「OpenAI 兼容 + 自己填智谱地址」的存量配置靠域名（那种配置不会自动迁移）。
+    #[test]
+    fn zhipu_disables_thinking_via_provider_and_via_host() {
+        let by_provider = thinking_overrides(&config(
+            "zhipu",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.7-flash",
+        ))
+        .expect("zhipu card should disable thinking");
+        assert_eq!(keys(&by_provider), vec!["thinking"]);
+        assert_eq!(by_provider["thinking"]["type"], serde_json::json!("disabled"));
+
+        // 存量配置：provider 还是 openai_compat，只能靠域名认出来
+        let by_host = thinking_overrides(&config(
+            "openai_compat",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.7-flash",
+        ))
+        .expect("legacy zhipu config should disable thinking");
+        assert_eq!(keys(&by_host), vec!["thinking"]);
+
+        // 内置卡即便被改成中转地址（域名对不上）也仍然按智谱的字段发
+        let relayed = thinking_overrides(&config("zhipu", "https://relay.example/v4", "glm-4.7"))
+            .expect("relayed zhipu card should still disable thinking");
+        assert_eq!(keys(&relayed), vec!["thinking"]);
+    }
+
+    /// 智谱 GLM-5.3 的真实错误体（2026-09-20 用户实测）。
+    ///
+    /// 它是这条链路上最有教育意义的一个样本：**整条消息里没有 "thinking" 这个词**，
+    /// 所以旧判据（响应体里有没有我们注入的键名）一次都不命中 —— 降级不执行、
+    /// 400 原样抛给用户、界面显示「连接失败」。这条测试就是钉住"按语义认"这件事。
+    const ZHIPU_5_3_FORCED: &str =
+        r#"{"error":{"code":"1210","message":"该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"}}"#;
+
+    #[test]
+    fn zhipu_forced_thinking_error_is_recognized_without_the_word_thinking() {
+        // 先确认前提：这个错误体确实不含 "thinking"，否则这条测试证明不了什么
+        assert!(
+            !ZHIPU_5_3_FORCED.to_ascii_lowercase().contains("thinking"),
+            "样本里出现了 thinking，这条测试的前提不成立了，请换一个真实样本"
+        );
+        // 旧判据对它无效 —— 这就是用户看到「连接失败」的直接原因
+        let old_signal = rejected_thinking_field(
+            ZHIPU_5_3_FORCED,
+            &serde_json::json!({ "thinking": { "type": "disabled" } }),
+        );
+        assert!(old_signal.is_none(), "旧判据本来就认不出它");
+        // 新判据必须认出来
+        assert!(forced_thinking_error(ZHIPU_5_3_FORCED));
+    }
+
+    #[test]
+    fn forced_thinking_error_does_not_fire_on_unrelated_failures() {
+        // 这些都不能触发降级重试，否则每次请求白发两遍
+        for body in [
+            r#"{"error":{"message":"Incorrect API key provided","code":"invalid_api_key"}}"#,
+            r#"{"error":{"message":"The model `glm-9` does not exist","code":"model_not_found"}}"#,
+            r#"{"error":{"message":"Rate limit reached","code":"rate_limit_exceeded"}}"#,
+            r#"{"error":{"message":"余额不足","code":"1113"}}"#,
+        ] {
+            assert!(!forced_thinking_error(body), "不该命中: {}", body);
+        }
+    }
+
+    /// 强制思考的模型要发「最低强度」，不是「什么都不发」。
+    ///
+    /// 直接不发参数会落到 GLM-5.3 的默认 `reasoning_effort=max`（深度推理），
+    /// 对语音输入是最差结果 —— 比不降级还慢。
+    #[test]
+    fn forced_thinking_models_get_low_effort_not_empty_params() {
+        assert!(model_forces_thinking("glm-5.3"));
+        assert!(model_forces_thinking("glm-5.3-flash"));
+        assert!(model_forces_thinking("GLM-5.3-Flash"));
+        assert!(!model_forces_thinking("glm-4.7-flash"));
+        assert!(!model_forces_thinking("glm-4.7"));
+
+        let overrides = thinking_overrides(&config(
+            "zhipu",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-5.3",
+        ))
+        .expect("forced-thinking model still needs parameters");
+        assert_eq!(keys(&overrides), vec!["reasoning_effort", "thinking"]);
+        assert_eq!(overrides["thinking"]["type"], serde_json::json!("enabled"));
+        assert_eq!(overrides["reasoning_effort"], serde_json::json!("low"));
+
+        // 同一家的非强制模型仍然走 disabled（那是最快的一档）
+        let flash = thinking_overrides(&config(
+            "zhipu",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.7-flash",
+        ))
+        .expect("glm-4.7-flash can disable thinking");
+        assert_eq!(flash["thinking"]["type"], serde_json::json!("disabled"));
+    }
+
     #[test]
     fn strict_openai_hosts_get_no_thinking_params() {
         // OpenAI / Azure 对未知顶层字段直接 400，且 reasoning_effort 的合法取值依模型而异，
@@ -737,14 +968,30 @@ mod tests {
 
     #[test]
     fn rejection_cache_is_scoped_to_host_and_model() {
-        // 用独特的 host 名，避免和同进程里其他测试共用那个全局集合时互相干扰
+        // 用独特的 host 名，避免和同进程里其他测试共用那个全局表时互相干扰
         let a = config("openai_compat", "https://cache-test.invalid/v1", "model-a");
         let b = config("openai_compat", "https://cache-test.invalid/v1", "model-b");
 
-        assert!(!endpoint_rejects_thinking(&a));
-        remember_thinking_rejection(&a);
-        assert!(endpoint_rejects_thinking(&a));
+        assert!(remembered_thinking(&a).is_none());
+        remember_thinking(&a, None);
+        assert_eq!(remembered_thinking(&a), Some(None));
         // 同一网关换个模型结论可能不同（unsupported_value 是按模型判的），不能共用
-        assert!(!endpoint_rejects_thinking(&b));
+        assert!(remembered_thinking(&b).is_none());
+    }
+
+    /// 缓存要存「降级成什么」，不只是「降级过」。
+    ///
+    /// 强制思考的模型降级目标是「最低强度」，别的端点是「什么都不发」。旧结构是
+    /// HashSet，只存得下后者 —— 于是 GLM-5.3 这类模型第二次请求会被当成"不发参数"，
+    /// 落回它的默认 reasoning_effort=max，比不降级还慢。
+    #[test]
+    fn cache_remembers_which_fallback_worked() {
+        let forced = config("zhipu", "https://cache-forced.invalid/v4", "glm-5.3");
+        remember_thinking(&forced, Some(forced_thinking_overrides()));
+
+        let remembered = remembered_thinking(&forced).expect("should be cached");
+        let params = remembered.expect("forced-thinking endpoints still need parameters");
+        assert_eq!(params["reasoning_effort"], serde_json::json!("low"));
+        assert_eq!(params["thinking"]["type"], serde_json::json!("enabled"));
     }
 }

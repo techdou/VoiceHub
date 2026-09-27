@@ -13,8 +13,9 @@ import { getSetting } from '../services/store'
 import { loadAsrProfiles } from '../features/settings/asrProfileStore'
 import {
   describeAsrMissing,
-  findAsrProvider,
   resolveActiveAsrProfile,
+  resolveAsrModelOption,
+  resolveAsrRuntimeProvider,
 } from '../features/settings/asrProviderCatalog'
 import { subscribeLocale, t } from '@/i18n'
 
@@ -67,6 +68,11 @@ function cloudProviderShort(provider: string): string {
     case 'qwen_omni_turbo': return t('modeStatus.qwenOmni')
     case 'mimo': return 'MiMo'
     case 'groq_whisper': return 'Groq'
+    case 'openai_transcribe': return 'OpenAI'
+    case 'openai_live_transcribe': return 'OpenAI Live'
+    case 'gemini_transcribe': return 'Gemini'
+    case 'gemini_live_transcribe': return 'Gemini Live'
+    case 'openrouter_transcribe': return 'OpenRouter'
     default: return provider
   }
 }
@@ -109,10 +115,13 @@ export async function refreshModeStatus(): Promise<void> {
       ready = false
       blockedReason = t('modeStatus.noAsrService')
     } else {
-      detail = cloudProviderShort(active.provider)
+      // 侧边栏显示的是**选中模型的分发 key**对应的简称，不是卡片 id ——
+      // 一张卡下的模型可能来自不同实现，只说平台名看不出在用哪个
+      detail = cloudProviderShort(resolveAsrRuntimeProvider(active))
       const missing = describeAsrMissing(active)
-      // 流式识别缺业务空间 ID 时也算没配好：它会直接连不上地域专属端点
-      const needsWorkspace = findAsrProvider(active.provider)?.needsWorkspaceId === true
+      // 流式识别缺业务空间 ID 时也算没配好：它会直接连不上地域专属端点。
+      // 这是模型级要求（千问那五个里只有 realtime 那个要）
+      const needsWorkspace = resolveAsrModelOption(active)?.needsWorkspaceId === true
         && active.workspaceId.trim() === ''
       ready = missing === '' && !needsWorkspace
       blockedReason = missing || (needsWorkspace ? t('modeStatus.noWorkspace') : '')

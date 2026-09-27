@@ -367,6 +367,27 @@ export interface TextPostProcessOptions {
   punctuationToSpace: boolean
 }
 
+/**
+ * 每一项在「开启 AI 整理」时是否仍然执行。
+ *
+ * 这是**唯一的事实来源**：`applyTextTransforms` 的门控和界面的置灰都读它。
+ * 以前生效条件只写在 applyTextTransforms 里，界面完全不知道，于是开着 AI 时
+ * 四个开关照样亮着可点、点了什么都不发生 —— 用户会认为功能坏了，然后去提一个
+ * 我们已经实现过的需求（这就是加这张表的起因）。两边读同一份才不会再骗人。
+ *
+ * 目前四项都是 false，与改动前的行为完全一致。若将来决定让「去除句末标点」
+ * 「标点替换为空格」穿透 AI（理由：它们是减法，不是和 AI 争抢的另一种排版，
+ * 用户说不要标点就是不要，跟标点是 ASR 还是 AI 加的无关 —— 和
+ * applyTextReplacements 不受门控是同一个道理），只需把这里改成 true，
+ * 界面的置灰范围会自动跟着变。
+ */
+export const APPLIES_WITH_AI: Record<keyof TextPostProcessOptions, boolean> = {
+  autoSegment: false,
+  normalizeNumbers: false,
+  stripTrailingPunctuation: false,
+  punctuationToSpace: false,
+}
+
 const STORAGE_KEY = 'textPostProcess'
 
 export const DEFAULT_POST_PROCESS: TextPostProcessOptions = {
@@ -391,7 +412,8 @@ export interface ApplyTransformsOptions {
    *
    * 「格式规范」（智能分段 / 数字规范化 / 去句末标点 / 标点转空格）是我们在没有 AI 时
    * 兜底做的排版。一旦 AI 整理介入，格式就该由 AI 的规则统一负责——两边都做会打架
-   * （比如 AI 已经排好版，我们又去掉了它的句末句号）。所以这四项只在 rawAsr 时生效。
+   * （比如 AI 已经排好版，我们又去掉了它的句末句号）。所以这几项默认只在 rawAsr 时生效，
+   * 逐项的例外由 APPLIES_WITH_AI 声明（界面置灰读同一张表）。
    *
    * 文本替换不受此开关影响，任何时候都执行：它是用户点名要替换的固定词
    * （改公司名、术语纠正等），和"谁来排版"无关，AI 也未必会照做。
@@ -404,7 +426,8 @@ export interface ApplyTransformsOptions {
 /**
  * 统一入口。顺序：中文标点宽度归一 → 智能分段 → 数字规范化 → 用户替换规则
  * → 去句末标点 → 标点转空格。
- * 其中除「用户替换规则」外都属于「格式规范」，仅在 rawAsr（无 AI 整理）时执行。
+ * 其中除「用户替换规则」外都属于「格式规范」，默认仅在 rawAsr（无 AI 整理）时执行；
+ * 逐项的例外见 APPLIES_WITH_AI。
  */
 export async function applyTextTransforms(
   text: string,
@@ -414,15 +437,19 @@ export async function applyTextTransforms(
   const opts = await getTextPostProcessOptions()
   // AI 整理过的文本，格式交给 AI；我们只保留文本替换。
   const ownFormat = options.rawAsr ?? true
+  // 生效判据收在这里，逐项查 APPLIES_WITH_AI —— 界面置灰读的是同一张表，
+  // 所以"界面说生效"和"实际执行"不可能再走偏。
+  const active = (key: keyof TextPostProcessOptions) =>
+    opts[key] && (ownFormat || APPLIES_WITH_AI[key])
   let result = text
   // 排在最前面：后面几步都在读标点做判断（分段找句末、去句末标点），
   // 让它们看到统一宽度的输入，比让每一步各自兼容两种宽度可靠。
   // 没有对应开关：它纠正的是一种明确的错误宽度，不是可选的排版偏好。
   if (ownFormat) result = normalizeChinesePunctuation(result)
-  if (ownFormat && opts.autoSegment) result = segmentAsrText(result)
-  if (ownFormat && opts.normalizeNumbers) result = convertChineseNumbers(result)
+  if (active('autoSegment')) result = segmentAsrText(result)
+  if (active('normalizeNumbers')) result = convertChineseNumbers(result)
   result = await applyTextReplacements(result)
-  if (ownFormat && opts.stripTrailingPunctuation) result = stripTrailingPunctuation(result)
-  if (ownFormat && opts.punctuationToSpace) result = replacePunctuationWithSpace(result)
+  if (active('stripTrailingPunctuation')) result = stripTrailingPunctuation(result)
+  if (active('punctuationToSpace')) result = replacePunctuationWithSpace(result)
   return result
 }

@@ -88,6 +88,7 @@ export default function PTTLab() {
       pid: probe.pid,
       process: probe.process,
       verdict: probe.verdict,
+      gate: probe.gate,
       focusClass: probe.focusClass,
       windowClass: probe.windowClass,
       controlType: probe.controlType,
@@ -324,6 +325,9 @@ export default function PTTLab() {
               <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-foreground">
                 <div>editable: <span className={lastProbe.editable ? 'text-success font-medium' : 'text-destructive font-medium'}>{String(lastProbe.editable)}</span></div>
                 <div>verdict: {lastProbe.verdict || '-'}</div>
+                {/* gate = 结论由哪一层判据给出。no_signal 表示四层全空，这时要看下面
+                    那几行是哪一项没给出信号，而不是去怀疑 SendInput。 */}
+                <div>gate: {lastProbe.gate || '-'}</div>
                 <div>process: {lastProbe.process || '-'} (pid: {lastProbe.pid ?? '-'})</div>
                 <div>hwnd: {lastProbe.hwnd || '-'} / focus: {lastProbe.focusHwnd || '-'}</div>
                 <div>focusClass: {lastProbe.focusClass || '-'}</div>

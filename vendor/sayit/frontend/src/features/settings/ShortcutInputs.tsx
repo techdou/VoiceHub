@@ -5,8 +5,8 @@ import { X } from 'lucide-react'
 import { t } from '@/i18n'
 import {
   displayAccelerator,
-  eventToAccelerator,
   getSingleKeyDisplay,
+  keyEventToShortcutCandidate,
   resolveSingleKeyShortcut,
 } from './utils'
 import {
@@ -260,6 +260,30 @@ export function PTTShortcutInput({
   )
 }
 
+/**
+ * 提交一个「免提 / 预设切换」类快捷键前要过的全部关卡。返回错误文案，null = 可保存。
+ *
+ * 抽出来是为了让**向导和设置页走同一条校验路径**。向导原先一条都没走，于是它能存进
+ * 设置页会当场拒掉的值（系统保留组合、已被别的程序占用的组合）。
+ *
+ * 只有组合键需要 testShortcut：单键走我们自己的 OS 键盘钩子，不占系统热键槽位，
+ * 拿去试注册反而会得到无意义的结论。
+ */
+export async function checkShortcutBeforeCommit(
+  value: string,
+  validate?: ShortcutValidate,
+): Promise<string | null> {
+  const systemError = getAcceleratorShortcutValidationError(value)
+  if (systemError) return systemError
+  const error = validate ? await validate(value) : null
+  if (error) return error
+  const isSingleKey = resolveSingleKeyShortcut(value) !== undefined
+  if (!isSingleKey && !(await bridge.testShortcut(value))) {
+    return t('shortcutInput.conflictOther')
+  }
+  return null
+}
+
 export function ComboShortcutInput({
   value,
   onChange,
@@ -267,6 +291,7 @@ export function ComboShortcutInput({
   description,
   comboOnly = false,
   allowMouseShortcut = false,
+  allowClear = true,
   validate,
 }: {
   value: string
@@ -277,6 +302,13 @@ export function ComboShortcutInput({
   comboOnly?: boolean
   /** 组合键为主的设置也可额外允许鼠标侧键/中键（AI 整理开关）。 */
   allowMouseShortcut?: boolean
+  /**
+   * 是否给出「清空」按钮。
+   *
+   * 向导里传 false：那一步的目的是让新用户拿到一个**能用的**键，
+   * 一个把免提功能清成"未设置"的按钮在这里只会制造问题。设置页保持可清空。
+   */
+  allowClear?: boolean
   validate?: ShortcutValidate
 }) {
   const [recording, setRecording] = useState(false)
@@ -296,19 +328,11 @@ export function ComboShortcutInput({
     event.preventDefault()
     event.stopPropagation()
 
-    // 非 comboOnly：优先接受单键（如免提用右 Alt）
-    if (!comboOnly) {
-      const singleKey = resolveSingleKeyShortcut(event.code)
-      if (singleKey) {
-        setTempValue(singleKey)
-        return
-      }
-    }
-
-    // 组合键：仅当"修饰键 + 主键"时 eventToAccelerator 才返回值；
-    // 单独按修饰键（Ctrl/Alt/Shift）返回 null，不会被误提交。
-    const accelerator = eventToAccelerator(event)
-    if (accelerator) setTempValue(accelerator)
+    // 单键（免提的右 Alt）与组合键（Ctrl+D）的判定收敛在 keyEventToShortcutCandidate。
+    // null = 这次按键还没凑成东西（单按 Ctrl、或 comboOnly 下的单键），
+    // 此时**保留上一个候选**：提交发生在 keyup，中途覆盖成空会把已录到的组合键抹掉。
+    const candidate = keyEventToShortcutCandidate(event, { comboOnly })
+    if (candidate) setTempValue(candidate)
   }, [cancelRecording, comboOnly])
 
   const handleKeyUp = useCallback((event: KeyboardEvent) => {
@@ -317,39 +341,19 @@ export function ComboShortcutInput({
     event.stopPropagation()
     if (!tempValue || committingRef.current) return
 
-    // 如果是单键：comboOnly 模式拒绝，非 comboOnly 校验后保存
-    const isSingle = resolveSingleKeyShortcut(tempValue) !== undefined
-    if (isSingle) {
-      if (comboOnly) return
-      committingRef.current = true
-      void (async () => {
-        const systemError = getAcceleratorShortcutValidationError(tempValue)
-        const error = systemError || (validate ? await validate(tempValue) : null)
-        if (error) {
-          showConflict(error)
-        } else {
-          showConflict('')
-          onChange(tempValue)
-        }
-        setRecording(false)
-        setTempValue('')
-      })()
-      return
-    }
+    // comboOnly 下录到单键：不提交也不结束录制，继续等一个真正的组合键
+    if (comboOnly && resolveSingleKeyShortcut(tempValue) !== undefined) return
 
-    // 组合键：先查应用内部冲突，再探测是否被其他程序占用。
-    // 加守卫避免多次 keyup 重复探测。
+    // 守卫避免多次 keyup 重复提交（组合键松手会产生多个 keyup，
+    // 第二次会因为"自己刚注册"而误报冲突）
     committingRef.current = true
     void (async () => {
-      const systemError = getAcceleratorShortcutValidationError(tempValue)
-      const error = systemError || (validate ? await validate(tempValue) : null)
+      const error = await checkShortcutBeforeCommit(tempValue, validate)
       if (error) {
         showConflict(error)
-      } else if (await bridge.testShortcut(tempValue)) {
+      } else {
         showConflict('')
         onChange(tempValue)
-      } else {
-        showConflict(t('shortcutInput.conflictOther'))
       }
       setRecording(false)
       setTempValue('')
@@ -375,8 +379,7 @@ export function ComboShortcutInput({
         // 见 PTT 处说明：延迟提交，避免重配钩子的空档期把侧键“抬起”漏给 webview。
         window.setTimeout(() => {
           void (async () => {
-            const systemError = getAcceleratorShortcutValidationError(setting)
-            const error = systemError || (validate ? await validate(setting) : null)
+            const error = await checkShortcutBeforeCommit(setting, validate)
             if (error) {
               showConflict(error)
               return
@@ -436,7 +439,7 @@ export function ComboShortcutInput({
             )}
           </button>
 
-          {!recording && (
+          {allowClear && !recording && (
             <button
               onClick={() => onChange('')}
               className="rounded p-1 hover:bg-accent"

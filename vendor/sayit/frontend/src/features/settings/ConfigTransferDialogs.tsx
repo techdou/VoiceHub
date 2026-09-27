@@ -28,6 +28,7 @@ import { CUSTOM_THEMES_KEY, normalizeCustomThemes, type CustomTheme } from '@/se
 import { getPromptPresets, getSetting, type PromptPreset } from '@/services/store'
 import { getTextReplacements, type TextReplacementRule } from '@/services/textReplacement'
 import { useT } from '@/i18n/useT'
+import { useBackdropDismiss } from '@/hooks/useBackdropDismiss'
 import { promptPresetDisplayName } from '@/i18n/displayNames'
 
 /** 头部图标底托，弹窗的视觉锚点。 */
@@ -70,10 +71,12 @@ function DialogShell({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
 
+  const backdropDismiss = useBackdropDismiss(onClose)
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-6 backdrop-blur-sm"
-      onClick={onClose}
+      {...backdropDismiss}
     >
       <div
         role="dialog"

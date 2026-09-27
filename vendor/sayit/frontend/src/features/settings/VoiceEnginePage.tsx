@@ -53,7 +53,7 @@ export default function VoiceEnginePage() {
 
         {/* id 供「工作模式」右上角的「待配置」徽标点击后滚动定位 */}
         <div id="engine-config" className="space-y-6">
-          {workMode === 'local' && <><CustomLocalModel /><LocalModeSection /></>}
+          {workMode === 'local' && (<><CustomLocalModel /><LocalModeSection /></>)}
           {workMode === 'server' && <ServerSection />}
           {workMode === 'cloud_api' && <CloudAPISection />}
         </div>

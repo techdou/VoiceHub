@@ -7,7 +7,7 @@ import { Info, Pencil, RotateCcw } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Modal } from '@/components/ui/modal'
 import { Tooltip } from '@/components/ui/tooltip'
-import { listMicrophones } from '@/services/audio'
+import { listMicrophones, normalizeSelectedMicId } from '@/services/audio'
 import { refreshRecorderSettings } from '@/services/recorder'
 import { getPresetShortcuts, getSetting, setSetting } from '@/services/store'
 import { getDefault } from '@/services/defaults'
@@ -124,7 +124,18 @@ export default function GeneralSettingsPage() {
       }))
     })()
     getLanguagePreference().then(setLanguagePreference).catch(() => { })
-    getSetting('selectedMic', '').then(setSelectedMic)
+    // 存量数据里有 `selectedMic = "default"`（老版本的下拉把 Chromium 的伪设备也列
+    // 出来，用户点了它）。伪设备已经不在设备列表里，不折成空串的话下拉找不到选中项、
+    // 显示成"没有选择麦克风"。折完写回一次，否则录音那侧读到的仍是旧值。
+    getSetting('selectedMic', '').then(async (raw) => {
+      if (cancelled) return
+      const normalized = normalizeSelectedMicId(raw)
+      setSelectedMic(normalized)
+      if (typeof raw === 'string' && raw !== normalized) {
+        await setSetting('selectedMic', normalized)
+        await refreshRecorderSettings()
+      }
+    }).catch(() => { })
     getSetting<string>('shortcutPTT').then((value) => setPttKey(value))
     getSetting('shortcutHandsFree', 'AltRight').then((value) => setHandsFreeKey(value as string))
     getSetting('shortcutToggleAi', '').then((value) => setAiToggleKey(value as string))

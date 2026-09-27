@@ -1,7 +1,7 @@
 import * as bridge from './bridge'
 import { getBackendBaseUrl } from './runtimeConfig'
 import { sanitizeObject } from '@/lib/sanitize'
-import type { DiagnosticOccurrence, DiagnosticsPreview } from '@/types/appApi'
+import type { DiagnosticIssueType, DiagnosticOccurrence, DiagnosticsPreview } from '@/types/appApi'
 import { t } from '@/i18n'
 
 export const MAX_DIAGNOSTIC_IMAGES = 5
@@ -9,7 +9,9 @@ export const MAX_DIAGNOSTIC_IMAGE_SIZE = 5 * 1024 * 1024
 export const MAX_DIAGNOSTIC_TOTAL_IMAGE_SIZE = 20 * 1024 * 1024
 
 export interface DiagnosticsSubmission {
+  /** 用户的补充说明。选了问题类型后它就是可选的 —— 逼用户写作文只会换来「不好用」。 */
   description: string
+  issueType: DiagnosticIssueType
   issueOccurrence: DiagnosticOccurrence
   images: File[]
 }
@@ -82,6 +84,7 @@ export async function submitDiagnostics(data: DiagnosticsSubmission): Promise<st
 
   const zipPath = await bridge.createDiagnosticsZip({
     description: data.description,
+    issueType: data.issueType,
     settings: settings || {},
     issueOccurrence: data.issueOccurrence,
     images,
@@ -116,6 +119,7 @@ export async function downloadDiagnostics(data: DiagnosticsSubmission): Promise<
 
   const zipPath = await bridge.createDiagnosticsZip({
     description: data.description,
+    issueType: data.issueType,
     settings: settings || {},
     issueOccurrence: data.issueOccurrence,
     images,

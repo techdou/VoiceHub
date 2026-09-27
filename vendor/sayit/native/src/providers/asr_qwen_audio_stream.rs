@@ -1,4 +1,4 @@
-// 千问 Qwen-Audio-3.0 流式语音识别 — qwen-audio-3.0-asr-flash-streaming
+// 千问 Qwen-Audio-ASR-Flash 流式语音识别 — 3.0 与 3.1 两代共用这一份
 //
 // ⚠️ 协议与 asr_qwen_realtime.rs **不是同一套**，别指望改个模型名就能复用：
 //   · asr_qwen_realtime → `/api-ws/v1/realtime`，OpenAI-Realtime 风格事件
@@ -18,6 +18,22 @@
 //     所以分句拼接**不加分隔符**；asr_qwen_realtime 那边补「，」是因为它的分句不带标点。
 //   · 音频不按实时节奏发也能用（10.84s 音频一次性推完，2.6s 出全文），
 //     所以一次性识别那条路不需要 sleep 假装实时。
+//
+// ## 3.1 为什么能直接复用这份实现（2026-09-23 实测）
+//
+// `dev-scripts/probe_qwen_31_stream_hotwords.py` 拿同一段音频、同一套 run-task
+// 打了 `qwen-audio-3.1-asr-flash-streaming`：转写结果与 3.0 逐字相同，中间结果
+// 同样是 3 条、首条同样在 1.64s，而且**接受我们发的 `parameters.vocabulary`**。
+// 那个字段是这里唯一的风险点 —— 被拒的话整条 run-task 会失败，于是配了热词的用户
+// 会**完全无法识别**，而不是"热词不生效"。
+//
+// ⚠️ 同一次实测里，一个**编造的字段名也被照样接受**。所以"接受 vocabulary"只证明
+// run-task 不会被拒，**不证明热词真的参与了偏置**。对外口径仍是「配了有帮助、
+// 不保证命中」（capabilities.rs 的 Vocabulary 档），别升级成「3.1 支持热词」。
+//
+// 官方文档另有一处两代不同：VAD 断句在 3.0 叫 `max_sentence_silence`、在 3.1 改成
+// `vad_model`。我们两个都不发（用服务端默认），所以这处差异碰不到 —— 真要加断句
+// 配置时必须按模型分开发，不能共用一个字段名。
 
 use super::diag;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
@@ -34,8 +50,19 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::http::header::{AUTHORIZATION, USER_AGENT};
 use tungstenite::http::HeaderValue;
 
-const MODEL: &str = "qwen-audio-3.0-asr-flash-streaming";
-const SCOPE: &str = "qwen/audio30";
+/// `extra.model` 缺失时用哪个。
+///
+/// 刻意留在 3.0 而不是跟着前端默认升到 3.1：这个值只在异常路径上生效
+/// （前端每次都会把选中的模型放进 extra.model），而异常路径该落到**已知行为不变**
+/// 的那一代，不该顺手换成一个用户没选过的模型。
+const DEFAULT_MODEL: &str = "qwen-audio-3.0-asr-flash-streaming";
+
+/// 日志前缀。
+///
+/// 从 `qwen/audio30` 改成 `audio3x` 是因为同一份代码现在也跑 3.1 —— 旧名会让日志
+/// 出现 `[qwen/audio30] model=qwen-audio-3.1-...` 这种自相矛盾的行，排查时先要
+/// 怀疑一遍自己看错了。每条 connected 日志都带 `model=`，那才是判断跑了哪代的依据。
+const SCOPE: &str = "qwen/audio3x";
 const WS_PATH: &str = "/api-ws/v1/inference";
 /// 没配业务空间时的通用域名。实测与专属域名同样可用。
 const GENERIC_HOST: &str = "dashscope.aliyuncs.com";
@@ -53,7 +80,17 @@ const HOTWORD_WEIGHT: u32 = 4;
 /// 即时热词条数上限。文档只对「超级热词」明确了 50 的上限，普通热词没给数字；
 /// 这里自己设一个上限并记日志，避免词库很大时 run-task 被整条拒掉 ——
 /// 那会让识别**完全不可用**，而不是"热词少生效几个"。
+///
+/// ⚠️ 这是**客户端自设**的，不是服务端限制。界面上要说"SayIt 最多发送 N 条"，
+/// 不能说成"千问协议只吃 N 条"（capabilities.rs 的 client_cap 就是为此区分的）。
 const HOTWORD_LIMIT: usize = 100;
+
+/// 给 `capabilities.rs` 的测试用，让那边的说明值和这里的请求参数钉在一起。
+/// 只在测试里存在：说明和请求参数刻意各留一份，理由见 capabilities.rs。
+#[cfg(test)]
+pub fn hotword_limit_for_docs() -> usize {
+    HOTWORD_LIMIT
+}
 
 type WsStream = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -69,6 +106,23 @@ fn ws_url(workspace: &str) -> String {
     } else {
         format!("wss://{}.cn-beijing.maas.aliyuncs.com{}", workspace, WS_PATH)
     }
+}
+
+/// 这次要发的模型名，来自前端选中的那一项（`extra.model`）。
+///
+/// 不做白名单校验，与 asr_qwen_omni::get_model 一致：模型名只出现在 run-task 的
+/// payload 里、不进 URL，写错的后果是服务端回一条指名道姓的 task-failed
+/// （`InvalidParameter: ...`），比我们自己维护第二份清单更准 —— 那份清单一定会
+/// 比百炼的模型表旧。
+fn get_model(config: &AsrProviderConfig) -> String {
+    config
+        .extra
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_MODEL)
+        .to_string()
 }
 
 /// 热词 → `parameters.vocabulary`（`{词: 权重}`）。
@@ -95,7 +149,12 @@ fn build_vocabulary(hotwords: &[String]) -> Option<(serde_json::Value, usize, us
     Some((serde_json::Value::Object(map), used, total))
 }
 
-fn run_task_payload(task_id: &str, sample_rate: u32, hotwords: &[String]) -> serde_json::Value {
+fn run_task_payload(
+    model: &str,
+    task_id: &str,
+    sample_rate: u32,
+    hotwords: &[String],
+) -> serde_json::Value {
     let mut parameters = serde_json::json!({
         "format": "pcm",
         "sample_rate": sample_rate,
@@ -114,7 +173,7 @@ fn run_task_payload(task_id: &str, sample_rate: u32, hotwords: &[String]) -> ser
             "task_group": "audio",
             "task": "asr",
             "function": "recognition",
-            "model": MODEL,
+            "model": model,
             "parameters": parameters,
             "input": {},
         }
@@ -288,19 +347,22 @@ async fn start_task(
         })?;
 
     let task_id = uuid::Uuid::new_v4().to_string();
+    let model = get_model(config);
+    // model= 是判断「这次到底跑了哪一代」的唯一依据。3.0 和 3.1 共用这份代码、
+    // 共用 SCOPE，日志里除了这个字段没有别的地方能区分它们。
     diag::log(
         SCOPE,
         "connected",
         &format!(
             "status={} model={} host={} rate={}",
             response.status(),
-            MODEL,
+            model,
             if workspace.is_empty() { GENERIC_HOST } else { "workspace" },
             sample_rate
         ),
     );
 
-    let payload = run_task_payload(&task_id, sample_rate, hotwords);
+    let payload = run_task_payload(&model, &task_id, sample_rate, hotwords);
     ws.send(tungstenite::Message::Text(
         serde_json::to_string(&payload).unwrap().into(),
     ))
@@ -560,7 +622,9 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
             ok: true,
             message: format!("Connection successful ({}ms)", elapsed_ms),
             elapsed_ms,
-            detail: format!("model: {}", MODEL),
+            // 报选中的那个模型，不是 DEFAULT_MODEL —— 两代共用这份实现，写死一个
+            // 名字会让「测试连接」对着 3.1 的配置显示 3.0。
+            detail: format!("model: {}", get_model(config)),
         },
         Err(message) => TestResult {
             ok: false,
@@ -838,14 +902,14 @@ mod tests {
 
     #[test]
     fn run_task_payload_matches_the_documented_shape() {
-        let payload = run_task_payload("tid", 16000, &[]);
+        let payload = run_task_payload(DEFAULT_MODEL, "tid", 16000, &[]);
         assert_eq!(payload["header"]["action"], "run-task");
         assert_eq!(payload["header"]["task_id"], "tid");
         assert_eq!(payload["header"]["streaming"], "duplex");
         assert_eq!(payload["payload"]["task_group"], "audio");
         assert_eq!(payload["payload"]["task"], "asr");
         assert_eq!(payload["payload"]["function"], "recognition");
-        assert_eq!(payload["payload"]["model"], MODEL);
+        assert_eq!(payload["payload"]["model"], DEFAULT_MODEL);
         assert_eq!(payload["payload"]["parameters"]["format"], "pcm");
         assert_eq!(payload["payload"]["parameters"]["sample_rate"], 16000);
         // input 是必填，没有上下文时也要是一个空对象
@@ -853,10 +917,52 @@ mod tests {
         assert!(payload["payload"]["parameters"].get("vocabulary").is_none());
     }
 
+    /// 选中的模型必须真的出现在 run-task 里。
+    ///
+    /// 这条钉的是 3.1 上线时最容易出的那个错：前端把模型名放进 `extra.model`，
+    /// Rust 这边却还在用常量 —— 界面显示 3.1、实际跑 3.0，两边都不报错。
+    #[test]
+    fn the_selected_model_is_what_gets_sent() {
+        let picked = "qwen-audio-3.1-asr-flash-streaming";
+        let payload = run_task_payload(picked, "tid", 16000, &[]);
+        assert_eq!(payload["payload"]["model"], picked);
+
+        let config = AsrProviderConfig {
+            provider: "qwen_audio_stream".to_string(),
+            api_key: "sk-test".to_string(),
+            app_id: String::new(),
+            extra: serde_json::json!({ "model": picked }),
+        };
+        assert_eq!(get_model(&config), picked);
+    }
+
+    /// extra 里没有模型名时回落到 3.0，而不是空串。
+    ///
+    /// 空串会被服务端当成缺参数、回一条含义模糊的 InvalidParameter，
+    /// 看起来像凭据或地域出了问题。
+    #[test]
+    fn a_missing_or_blank_model_falls_back_to_the_default() {
+        let bare = AsrProviderConfig {
+            provider: "qwen_audio_stream".to_string(),
+            api_key: "sk-test".to_string(),
+            app_id: String::new(),
+            extra: serde_json::json!({}),
+        };
+        assert_eq!(get_model(&bare), DEFAULT_MODEL);
+
+        let blank = AsrProviderConfig {
+            provider: "qwen_audio_stream".to_string(),
+            api_key: "sk-test".to_string(),
+            app_id: String::new(),
+            extra: serde_json::json!({ "model": "   " }),
+        };
+        assert_eq!(get_model(&blank), DEFAULT_MODEL);
+    }
+
     #[test]
     fn hotwords_become_weighted_instant_vocabulary() {
         let words = vec!["SayIt".to_string(), " Kiro ".to_string()];
-        let payload = run_task_payload("tid", 16000, &words);
+        let payload = run_task_payload(DEFAULT_MODEL, "tid", 16000, &words);
         let vocab = &payload["payload"]["parameters"]["vocabulary"];
         assert_eq!(vocab["SayIt"], HOTWORD_WEIGHT);
         assert_eq!(vocab["Kiro"], HOTWORD_WEIGHT);

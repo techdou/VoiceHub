@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
 import { Feedback } from '@/components/ui/feedback'
 import { Segmented } from '@/components/ui/segmented'
+import { Select } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { getSetting, setSetting } from '@/services/store'
 import { refreshModeStatus } from '@/stores/modeStatus'
@@ -93,15 +94,28 @@ interface GgufDevice {
   kind: string
   name: string
   memory_mb: number
+  /** 持久化用的稳定标识（PCI 总线 id，拿不到时是 "kind:name"）。设置里存这个。 */
+  id: string
+  /** ggml registry 索引。只用于排序展示，别拿它当持久化标识——驱动更新会让它变。 */
+  index: number
+  is_gpu: boolean
 }
 
 interface GgufDiagnostics {
   devices: GgufDevice[]
   current_backend: string | null
+  /** 实际绑定的设备描述。与用户选的那张可能不同（详见 Rust 侧 resolve_gpu_device），
+   *  所以"当前使用"一行显示的必须是这个，不是设置值。 */
+  current_device: string | null
   /** 正在加载中的模型 id。非 null 时 current_backend 一定是 null。 */
   loading_model: string | null
   native_version: string
   process_memory_mb: number
+}
+
+/** 显卡名里的商标噪音（(R) / (TM)）去掉，列表里已经够长了。 */
+function cleanDeviceName(name: string): string {
+  return name.replace(/\((R|TM)\)/gi, '').trim()
 }
 
 function formatSize(bytes: number): string {
@@ -435,7 +449,7 @@ export default function LocalModeSection() {
       const gpus = diag.devices.filter((d) => d.kind !== 'cpu')
       setGpuSummary(gpus.length > 0
         ? formatList(gpus
-          .map((d) => `${d.name.replace(/\((R|TM)\)/gi, '')}${d.memory_mb > 0 ? t('local.vram', { gb: (d.memory_mb / 1024).toFixed(0) }) : ''}`))
+          .map((d) => `${cleanDeviceName(d.name)}${d.memory_mb > 0 ? t('local.vram', { gb: (d.memory_mb / 1024).toFixed(0) }) : ''}`))
         : '')
     } catch {
       setGpuSummary(null)
@@ -467,7 +481,8 @@ export default function LocalModeSection() {
       void refreshModeStatus() // 同步左下角的引擎指示
       try {
         const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
-        await invoke<string>('preload_local_model', { modelId, accelerator })
+        const gpuDevice = await getSetting('localAsr.gpuDevice', '') as string
+        await invoke<string>('preload_local_model', { modelId, accelerator, gpuDevice })
       } catch { /* ignore */ }
       // provider 缓存着上次的就绪结果，不重连的话刚下载完第一次按快捷键仍会被判未就绪。
       // 同 handleSelectModel：排在预加载之后，避免它的 onConnect 再排一轮加载。
@@ -530,7 +545,8 @@ export default function LocalModeSection() {
     void refreshModeStatus() // 同步左下角的引擎指示
     try {
       const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
-      await invoke<string>('preload_local_model', { modelId, accelerator })
+      const gpuDevice = await getSetting('localAsr.gpuDevice', '') as string
+      await invoke<string>('preload_local_model', { modelId, accelerator, gpuDevice })
     } catch { /* 未下载 / 加载失败都由就绪判定与识别阶段报出，这里不打断选择 */ } finally {
       setPreloadingModelId('')
       // reconnectProvider 必须排在预加载**之后**：它的 onConnect 自己也会发一次
@@ -843,9 +859,12 @@ export function LocalModeAdvancedSection() {
   useT()
   const [asrLanguage, setAsrLanguage] = useState('auto')
   const [accelerator, setAccelerator] = useState('auto')
+  /** GgufDevice.id，'' = 自动。只在多显卡机器上有界面，见下面 showGpuPicker。 */
+  const [gpuDevice, setGpuDevice] = useState('')
   const [unloadIdleMinutes, setUnloadIdleMinutes] = useState(0)
   const [devices, setDevices] = useState<GgufDevice[]>([])
   const [currentBackend, setCurrentBackend] = useState<string | null>(null)
+  const [currentDevice, setCurrentDevice] = useState<string | null>(null)
   // 打开本页时可能正好有一次加载在进行（最常见：本地模式启动时的后台预热）。
   // 那时后端还没绑定，显示"正在加载"比什么都不显示准确。
   const [loadingModel, setLoadingModel] = useState<string | null>(null)
@@ -859,6 +878,7 @@ export function LocalModeAdvancedSection() {
       const diag = await invoke<GgufDiagnostics>('gguf_asr_diagnostics')
       setDevices(diag.devices)
       setCurrentBackend(diag.current_backend)
+      setCurrentDevice(diag.current_device)
       setLoadingModel(diag.loading_model)
       setDiagnosticsState('ready')
     } catch {
@@ -870,27 +890,50 @@ export function LocalModeAdvancedSection() {
     void (async () => {
       setAsrLanguage(await getSetting('localAsr.language', 'auto') as string)
       setAccelerator(await getSetting('localAsr.accelerator', 'auto') as string)
+      setGpuDevice(await getSetting('localAsr.gpuDevice', '') as string)
       setUnloadIdleMinutes(Number(await getSetting('localAsr.unloadIdleMinutes', 0)) || 0)
       await refreshDiagnostics()
     })()
   }, [])
 
-  const gpuDevices = devices.filter((d) => d.kind !== 'cpu')
+  const gpuDevices = devices.filter((d) => d.is_gpu)
   const hasGpu = gpuDevices.length > 0
   const gpuSummary = formatList(gpuDevices
-    .map((d) => `${d.name.replace(/\((R|TM)\)/gi, '')}${d.memory_mb > 0 ? t('local.vram', { gb: (d.memory_mb / 1024).toFixed(0) }) : ''}`))
+    .map((d) => `${cleanDeviceName(d.name)}${d.memory_mb > 0 ? t('local.vram', { gb: (d.memory_mb / 1024).toFixed(0) }) : ''}`))
 
-  /** 切换计算后端。引擎按 (模型, 后端) 缓存，换后端要重载模型——
+  /** 只有真的有多张显卡才给这个选择器。单卡机器上它永远只有一个有意义的值，
+   *  摆在设置里只是多一个要读懂的东西。CPU 后端下也藏起来——那时它不起作用。 */
+  const showGpuPicker = gpuDevices.length > 1 && accelerator !== 'cpu'
+
+  /** 切换计算后端。引擎按 (模型, 后端, 显卡) 缓存，换任意一项都要重载模型——
    *  就地重新预加载当前模型，让切换立刻生效而不是等下次口述。
    *  模型未下载时预加载会报错，忽略即可（下载后会按新设置加载）。 */
   async function handleSelectAccelerator(value: string) {
     if (rebinding) return
     setAccelerator(value)
     await setSetting('localAsr.accelerator', value)
+    await rebindEngine({ accelerator: value, gpuDevice })
+  }
+
+  /** 切换显卡。与换后端同一条路径：设置落盘 + 就地重载。 */
+  async function handleSelectGpuDevice(value: string) {
+    if (rebinding) return
+    setGpuDevice(value)
+    await setSetting('localAsr.gpuDevice', value)
+    await rebindEngine({ accelerator, gpuDevice: value })
+  }
+
+  /** 重新绑定引擎。两个切换共用，别把这段抄两份——漏掉 refreshDiagnostics 的那份
+   *  会让"当前使用"一行停在换卡之前的设备上，看着像设置没生效。 */
+  async function rebindEngine(opts: { accelerator: string; gpuDevice: string }) {
     setRebinding(true)
     try {
       const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
-      await invoke<string>('preload_local_model', { modelId, accelerator: value })
+      await invoke<string>('preload_local_model', {
+        modelId,
+        accelerator: opts.accelerator,
+        gpuDevice: opts.gpuDevice,
+      })
     } catch { /* ignore */ } finally {
       await refreshDiagnostics()
       setRebinding(false)
@@ -959,8 +1002,16 @@ export function LocalModeAdvancedSection() {
             <p className="mt-2 text-xs text-muted-foreground">
               {gpuSummary}
               {/* 加载中就说加载中：后端是在模型加载时才绑定的，这期间 currentBackend
-                  一定是空，原来这里会什么都不显示，看着像检测失败。 */}
-              {loadingModel ? t('local.backendLoadingModel') : currentBackend ? t('local.backendCurrent', { backend: currentBackend.toUpperCase() }) : ''}
+                  一定是空，原来这里会什么都不显示，看着像检测失败。
+                  多显卡机器上报设备名而不是后端名——那时用户真正想确认的是
+                  "用的是哪张卡"，而 currentDevice 是实际绑定结果（可能与所选不同）。 */}
+              {loadingModel
+                ? t('local.backendLoadingModel')
+                : showGpuPicker && currentDevice
+                  ? t('local.backendCurrentDevice', { device: cleanDeviceName(currentDevice) })
+                  : currentBackend
+                    ? t('local.backendCurrent', { backend: currentBackend.toUpperCase() })
+                    : ''}
             </p>
           )}
           <p className="mt-1.5 text-xs text-muted-foreground">
@@ -972,6 +1023,30 @@ export function LocalModeAdvancedSection() {
                   ? t('local.backendHintGpu')
                   : t('local.backendHintCpu')}
           </p>
+
+          {/* 多显卡才出现。单卡机器上这个下拉只有一个有意义的值，摆出来纯属噪音。 */}
+          {showGpuPicker && (
+            <div className="mt-4 border-t border-border pt-4">
+              <label id="gpu-device-heading" className="mb-2 block text-sm text-foreground">
+                {t('local.gpuDeviceTitle')}
+              </label>
+              <Select
+                labelledBy="gpu-device-heading"
+                value={gpuDevice}
+                disabled={rebinding}
+                onChange={(value) => void handleSelectGpuDevice(value)}
+                options={[
+                  { value: '', label: t('local.gpuDeviceAuto') },
+                  ...gpuDevices.map((d) => ({
+                    value: d.id,
+                    label: `${cleanDeviceName(d.name)}${d.memory_mb > 0 ? t('local.vram', { gb: (d.memory_mb / 1024).toFixed(0) }) : ''}`,
+                  })),
+                ]}
+                className="sm:max-w-md"
+              />
+              <p className="mt-2 text-xs text-muted-foreground">{t('local.gpuDeviceHint')}</p>
+            </div>
+          )}
         </CardContent>
       </Card>
 

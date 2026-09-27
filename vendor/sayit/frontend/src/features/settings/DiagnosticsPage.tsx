@@ -9,9 +9,10 @@ import { getWorkMode } from '@/services/transcription'
 import { FolderOpen, RefreshCw, CheckCircle2, XCircle, MinusCircle, CircleSlash, Info, HelpCircle, ChevronDown } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import { providerLabel } from './aiProviderCatalog'
-import { findAsrProvider } from './asrProviderCatalog'
+import { asrCardIdOfLegacyProvider, findAsrProvider } from './asrProviderCatalog'
 import DiagnosticsReportPanel from './DiagnosticsReportPanel'
 import { t } from '@/i18n'
+import { RichText } from '@/i18n/RichText'
 import { useLocale } from '@/i18n/useT'
 
 type HealthStatus = 'ok' | 'error' | 'unknown' | 'disabled'
@@ -28,11 +29,17 @@ interface GgufDevice {
   kind: string
   name: string
   memory_mb: number
+  id: string
+  index: number
+  is_gpu: boolean
 }
 
 interface GgufDiagnostics {
   devices: GgufDevice[]
   current_backend: string | null
+  /** 实际绑定的设备描述。多显卡机器上"选了哪张"和"真的用了哪张"可能不同，
+   *  诊断报告里必须是这个。 */
+  current_device: string | null
   /** 正在加载中的模型 id。非 null 时 current_backend 一定是 null。 */
   loading_model: string | null
   native_version: string
@@ -69,7 +76,9 @@ export default function DiagnosticsPage() {
   const [logFilter, setLogFilter] = useState<LogFilter>('errors')
   const [logContent, setLogContent] = useState('')
   const [showFileLog, setShowFileLog] = useState(true)
-  const [openFaq, setOpenFaq] = useState<number | null>(0)
+  // 默认全部折叠（null）。展开第一条会让整页在打开时就顶出一大段排查步骤，
+  // 而多数人进诊断页是来看上面的状态自检的 —— 问题清单该等人来点。
+  const [openFaq, setOpenFaq] = useState<number | null>(null)
 
   // AI 整理处于「未开启」状态时，给出温和提示（依赖 AI 的功能不会生效）
   const aiProofreadDisabled = health.some((item) => item.id === 'ai' && item.status === 'disabled')
@@ -77,11 +86,20 @@ export default function DiagnosticsPage() {
   const faqItems: { q: string; answer: React.ReactNode }[] = [{
     q: t('diagnostics.faq.insertQuestion'),
     answer: (
-      <ol className="list-decimal space-y-1.5 pl-5">
-        <li>{t('diagnostics.faq.insert1')}</li>
-        <li>{t('diagnostics.faq.insert2')}</li>
-        <li>{t('diagnostics.faq.insert3')}</li>
-      </ol>
+      <>
+        {/* 每条都是「**症状** ：动作」—— 加粗的是症状，用户扫一眼粗体就能对上自己
+            的情况，不必逐条读完。加粗位置交给译文决定（见 i18n/RichText）。 */}
+        <ol className="list-decimal space-y-1.5 pl-5">
+          <li><RichText text={t('diagnostics.faq.insert1')} /></li>
+          <li><RichText text={t('diagnostics.faq.insert2')} /></li>
+          <li><RichText text={t('diagnostics.faq.insert3')} /></li>
+          <li><RichText text={t('diagnostics.faq.insert4')} /></li>
+          <li><RichText text={t('diagnostics.faq.insert5')} /></li>
+        </ol>
+        {/* 收尾这句刻意放在列表外：前五条是用户能自己处理的，这句是"处理不了时
+            该怎么把现场交给我们"。合进列表会让它看起来像第六种排查手段。 */}
+        <p className="mt-2.5">{t('diagnostics.faq.insertFooter')}</p>
+      </>
     ),
   }]
 
@@ -121,8 +139,13 @@ export default function DiagnosticsPage() {
         items.push({ id: 'asr', label: t('diagnostics.health.asr'), status: 'error', detail: t('diagnostics.notConfiguredProvider') })
       } else {
         const asrApiKey = await getSetting('cloudAsr.apiKey', '') as string
-        const provider = findAsrProvider(asrProvider)
-        const displayName = provider ? `${provider.label} (${provider.model})` : asrProvider
+        const asrModel = await getSetting('cloudAsr.model', '') as string
+        // 运行时键存的是分发 key（不是卡片 id），所以查表要先换算一次。
+        // 模型名直接用运行时那份 —— 那才是这次真正会发出去的。
+        const provider = findAsrProvider(asrCardIdOfLegacyProvider(asrProvider))
+        const displayName = provider
+          ? `${provider.label} (${asrModel || asrProvider})`
+          : asrProvider
         if (!asrApiKey) {
           items.push({ id: 'asr', label: t('diagnostics.health.asr'), status: 'error', detail: t('diagnostics.missingKey', { provider: displayName }) })
         } else {
@@ -158,9 +181,12 @@ export default function DiagnosticsPage() {
           label: t('diagnostics.health.localEngine'),
           status: 'ok',
           detail: t('diagnostics.localEngineDetail', {
+            // 多显卡机器上光有 "vulkan" 答不了"用的哪张卡"，把实际绑定的设备一起写上
             backend: d.loading_model
               ? t('diagnostics.loadingModel', { model: d.loading_model })
-              : d.current_backend ?? t('diagnostics.modelUnloaded'),
+              : d.current_backend
+                ? d.current_device ? `${d.current_backend} · ${d.current_device}` : d.current_backend
+                : t('diagnostics.modelUnloaded'),
             memory: d.process_memory_mb,
             version: d.native_version,
           }),

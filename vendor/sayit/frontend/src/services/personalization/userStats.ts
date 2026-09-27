@@ -36,7 +36,9 @@ const DOMAIN_SCENE_RULES: DomainSceneRule[] = [
   {
     id: 'communication',
     get label() { return t('userScene.communication') },
-    matchers: ['wechat', 'wecom', 'qq', 'teams', 'slack', 'discord', 'telegram', 'dingtalk'],
+    // weixin：微信 4.1 起 exe 从 WeChat.exe 改名为 Weixin.exe，只留 wechat 会把
+    // 新版微信整个漏掉（personalization/defaults.ts 的内置规则同样列了两个名字）
+    matchers: ['wechat', 'weixin', 'wecom', 'qq', 'teams', 'slack', 'discord', 'telegram', 'dingtalk'],
     promptSnippet: '该用户长期处于即时沟通场景，遇到模糊表达时优先整理成简洁、可直接发送的消息。', // i18n-allow: 中文口述整理 Prompt
   },
   {

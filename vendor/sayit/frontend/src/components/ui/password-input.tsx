@@ -7,6 +7,7 @@
 import { useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { useT } from '@/i18n/useT'
+import { cn } from '@/lib/utils'
 
 interface PasswordInputProps {
   /** 必填：与外部 <label htmlFor> 配对，读屏才能念出这个框叫什么 */
@@ -42,7 +43,12 @@ export function PasswordInput({
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && onSubmit) onSubmit() }}
         placeholder={placeholder}
-        className={className}
+        // 右内边距由组件自己兜住，**不能交给调用方**：眼睛按钮是绝对定位的，占掉右侧
+        // 8~26px；调用方给的 inputClass 只有 px-3（右 12px），密钥文字会压在图标下面。
+        // 四个调用点传的是各自定义、字符串却一模一样的 inputClass，靠调用方补等于四处都要记得。
+        // pr-9 = 36px，给按钮 26px 再留 10px 间隙。twMerge 会丢掉调用方自带的 pr-*，
+        // 而 px-* 由 Tailwind 输出顺序（px 在 pr 之前）让 pr-9 胜出。
+        className={cn(className, 'pr-9')}
       />
       <button
         type="button"

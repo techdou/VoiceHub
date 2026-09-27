@@ -49,6 +49,8 @@ pub async fn local_transcribe(
     model_id: String,
     language: Option<String>,
     accelerator: Option<String>,
+    // gpu_device：用户指定的显卡（`GgufDevice::id`）。缺省 / 空 = 交给库自动挑。
+    gpu_device: Option<String>,
 ) -> Result<LocalAsrResult, String> {
     let samples = decode_pcm(&audio_b64).map_err(|e| {
         crate::providers::diag::fail("local/asr", "decode_pcm", e)
@@ -59,6 +61,7 @@ pub async fn local_transcribe(
     }
 
     let accel = accelerator.unwrap_or_else(|| "auto".to_string());
+    let gpu = gpu_device.unwrap_or_default();
     tokio::task::spawn_blocking(move || {
         use crate::providers::diag;
         let lang = language.as_deref().unwrap_or("auto");
@@ -97,7 +100,7 @@ pub async fn local_transcribe(
                 ));
             }
         };
-        let text = gguf_asr::transcribe(&model_id, lang, &accel, trimmed, SR)
+        let text = gguf_asr::transcribe(&model_id, lang, &accel, &gpu, trimmed, SR)
             .map_err(|e| diag::fail("local/asr", "transcribe", e))?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         if text.trim().is_empty() {
@@ -124,11 +127,14 @@ pub async fn local_transcribe(
 pub async fn preload_local_model(
     model_id: String,
     accelerator: Option<String>,
+    // gpu_device：用户指定的显卡（`GgufDevice::id`）。缺省 / 空 = 交给库自动挑。
+    gpu_device: Option<String>,
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let start = Instant::now();
         let accel = accelerator.as_deref().unwrap_or("auto");
-        gguf_asr::preload(&model_id, accel)?;
+        let gpu = gpu_device.as_deref().unwrap_or("");
+        gguf_asr::preload(&model_id, accel, gpu)?;
         Ok(format!("Model loaded ({}ms)", start.elapsed().as_millis()))
     })
     .await
@@ -318,6 +324,7 @@ mod tests {
                 model_id.to_string(),
                 Some("auto".to_string()),
                 Some("auto".to_string()),
+                None,
             ))
     }
 

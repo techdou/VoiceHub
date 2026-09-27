@@ -1,11 +1,9 @@
-﻿import { useEffect, useState } from 'react'
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
-import { listen } from '@tauri-apps/api/event'
+import { useEffect, useState } from 'react'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import TitleBar from './components/TitleBar'
 import WelcomeGuide from './components/WelcomeGuide'
 import Home from './pages/Home'
-import RemoteWorkspace from './RemoteWorkspace'
 import History from './pages/History'
 import Dictionary from './pages/Dictionary'
 import Settings from './pages/Settings'
@@ -13,6 +11,7 @@ import VoiceEnginePage from './features/settings/VoiceEnginePage'
 import AIServicePage from './features/settings/AIServicePage'
 import AIInstructionsPage from './features/settings/AIInstructionsPage'
 import About from './pages/About'
+import RemoteWorkspace from './RemoteWorkspace'
 import { initRecorder, cleanup } from './services/recorder'
 import { initTheme } from './stores/theme'
 import { initAiEnabled } from './stores/aiEnabled'
@@ -25,7 +24,6 @@ export default function App() {
   const [showWelcome, setShowWelcome] = useState(false)
   // 首次挂载时先不渲染主界面，等 onboarding 检查完成再决定，避免"闪一下主页再进向导"
   const [onboardingChecked, setOnboardingChecked] = useState(false)
-  const navigate = useNavigate()
 
   // 初始化 + 清理：必须只在挂载/卸载各执行一次。
   // ⚠️ 依赖数组务必保持为空 []！这里的 cleanup() 会断开 WebSocket，若把会变化的
@@ -51,9 +49,6 @@ export default function App() {
       cleanup()
     }
   }, [])
-
-  // open-about 监听已移除：上游由 main.rs 看门人的 --open-about 重启参数触发，
-  // VoiceHub 去入口化后该事件永远不会再发。
 
   const handleWelcomeComplete = () => {
     setShowWelcome(false)
@@ -84,6 +79,7 @@ export default function App() {
             <Route path="/ai-service" element={<AIServicePage />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/about" element={<About />} />
+            {/* VoiceHub：宿主遥控器工作区（/remote/* 由宿主 Vue 侧渲染，此路由兜底转发）。 */}
             <Route path="/remote/:page" element={<RemoteWorkspace />} />
           </Routes>
         </main>

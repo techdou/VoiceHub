@@ -23,6 +23,7 @@ export type FriendlyErrorCode =
   | 'provider_bad_key'
   | 'provider_forbidden'
   | 'provider_rate_limit'
+  | 'provider_insufficient_balance'
   | 'provider_no_model'
   | 'download_network'
   | 'download_busy'
@@ -62,6 +63,7 @@ const FRIENDLY_ERROR_CODES = new Set<FriendlyErrorCode>([
   'provider_bad_key',
   'provider_forbidden',
   'provider_rate_limit',
+  'provider_insufficient_balance',
   'provider_no_model',
   'download_network',
   'download_busy',
@@ -196,6 +198,20 @@ export function describeProviderError(error: unknown): FriendlyError {
     return {
       code: 'provider_bad_key',
       message: t('err.provider.badKey'),
+      detail: text,
+      action: 'check_key',
+    }
+  }
+  // 402 必须排在限流之前，且不能和它合并：两者给用户的动作是相反的 ——
+  // 限流等一会儿就好，余额不足等下去永远不会好，得去充值。
+  // action 用 check_key 而不是 retry：它会把用户带到那份配置上，
+  // 而充值入口就在同一个服务商后台（detail 里带着服务商给的具体金额和链接）。
+  if (stableCode === 'provider_insufficient_balance'
+    || status === 402
+    || /payment required|insufficient balance|in balance|insufficient_quota|余额不足/i.test(text)) { // i18n-allow: 匹配底层中文错误串
+    return {
+      code: 'provider_insufficient_balance',
+      message: t('err.provider.insufficientBalance'),
       detail: text,
       action: 'check_key',
     }

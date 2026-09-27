@@ -31,9 +31,38 @@ const MAX_AUDIO_BYTES_PER_SESSION = 256 * 1024
 const MAX_AUDIO_BYTES_TOTAL = 2 * 1024 * 1024
 const ENABLE_INFO_CONSOLE = false
 
+// 刻意**不**放行 'Paste decision'：它带十几个字段，而插字绝大多数是成功的，常态化
+// 落盘只会把日志冲淡，真正要看的那几行反而更难找。插字排查需要的信息改为挂在
+// 下面三条事件的 gate 字段上（成功 / 插了但失败 / 没敢插各一条），失败那条另外带
+// 完整的四层判据取值。判据是"按需详细"：平时一行，出事那次才记全。
 const RECORDER_KEY_EVENT = /(Recording started|Recording stopped|Entered processing|Final result received|External text insertion succeeded|External text insertion failed|Processing timed out|Showing fallback card)/i
 const WEBSOCKET_KEY_EVENT = /(Connection closed|Connection timed out|Failed to send start|Failed to send stop|Connecting|Connected|Reconnected|Ready received|disconnect)/i
+/**
+ * 采集链路的关键节点。放行它们是为了能回答一个此前查不到的问题：
+ * 「这次录音，麦克风到底有没有把数据交上来、交上来的是不是全 0」。
+ *
+ * 这条通道缺失过一次代价很大：用户报「休眠唤醒后一直提示未检测到声音、重启软件无效」，
+ * 而 audio 的 info 事件全被这里过滤掉，日志里既看不到 track 的 muted/readyState，
+ * 也看不到有没有收到过 PCM —— 只能靠读代码猜，猜不出坏在哪一层。
+ * 量很小（每次录音 4~6 条），换来的是一份日志就能定性。
+ */
+const AUDIO_KEY_EVENT = /(Microphone capture started|AudioContext|First PCM frame received|First RMS received|ScriptProcessorNode fallback activated|Capture stop summary)/i
 const INSERTION_EVENT = /(Paste decision|External text insertion|fallback|Target is SayIt|Target is not editable)/i
+
+/**
+ * AI 整理链路的固定事件名。**按事件名放行，不按英文文案正则**。
+ *
+ * 上面几条走正则是历史包袱：日志能不能落盘取决于有没有人改动英文文案，改一个词
+ * 就静默失去一条诊断线索。这两条是"没有它就查不出为什么没整理"的关键事件，
+ * 用不随文案变化的稳定名字，并且只放行这两个 —— 不放行整个 'ai' 来源，
+ * 也不借用已有的 'backend'（借了以后就分不清是后端还是 AI 的事）。
+ *
+ * 量：正常跳过每次录音 1 条；真的调了自配 AI 是 2 条。
+ */
+export const AI_LOG_SOURCE = 'ai'
+export const AI_EVENT_REQUEST = 'ai.request'
+export const AI_EVENT_OUTCOME = 'ai.outcome'
+const AI_KEY_EVENTS = new Set<string>([AI_EVENT_REQUEST, AI_EVENT_OUTCOME])
 
 let totalAudioBytes = 0
 
@@ -51,6 +80,8 @@ function shouldMirrorPayload(payload: unknown): boolean {
 
     return source === 'recorder' && RECORDER_KEY_EVENT.test(message)
       || source === 'websocket' && WEBSOCKET_KEY_EVENT.test(message)
+      || source === 'audio' && AUDIO_KEY_EVENT.test(message)
+      || source === AI_LOG_SOURCE && AI_KEY_EVENTS.has(message)
       || source === 'backend'
       // update 全放行：整条更新链路是用户**看不见**的（后台检查、后台下载、退出时安装），
       // 出问题时日志是唯一线索。量也极小：启动一次 + 每 6 小时一次。
@@ -69,6 +100,9 @@ function shouldMirrorPayload(payload: unknown): boolean {
 function shouldKeepRuntimeEvent(event: RuntimeEvent): boolean {
   if (event.level === 'error' || event.level === 'warn') return true
   if (event.source === 'backend') return true
+  // 必须和 shouldMirrorPayload 同步放行：两套判据分开写过一次，结果出现"内存里有、
+  // 日志里没有"，而排查用的是日志。
+  if (event.source === AI_LOG_SOURCE) return AI_KEY_EVENTS.has(event.message)
   // 见 shouldMirrorPayload 里的同名分支：更新链路用户看不见，诊断只能靠日志
   if (event.source === 'update') return true
   if (event.source === 'websocket') {
@@ -76,6 +110,9 @@ function shouldKeepRuntimeEvent(event: RuntimeEvent): boolean {
   }
   if (event.source === 'recorder') {
     return RECORDER_KEY_EVENT.test(event.message)
+  }
+  if (event.source === 'audio') {
+    return AUDIO_KEY_EVENT.test(event.message)
   }
   return false
 }

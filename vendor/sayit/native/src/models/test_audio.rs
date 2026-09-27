@@ -51,10 +51,11 @@ pub async fn run_asr_benchmark(
 
     tokio::task::spawn_blocking(move || {
         // 预热与计时分开：这里量的是纯解码耗时，不含模型加载
-        super::gguf_asr::preload(&model_id, "auto")?;
+        // 加速器与显卡都按"自动"跑分，与这个命令原有的行为一致。
+        super::gguf_asr::preload(&model_id, "auto", "")?;
 
         let start = std::time::Instant::now();
-        let text = super::gguf_asr::transcribe(&model_id, &lang, "auto", &samples, 16000)?;
+        let text = super::gguf_asr::transcribe(&model_id, &lang, "auto", "", &samples, 16000)?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let rtf = if audio_duration_sec > 0.0 {
             (elapsed_ms as f64 / 1000.0) / audio_duration_sec

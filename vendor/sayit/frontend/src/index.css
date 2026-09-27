@@ -2,23 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-* { letter-spacing: 0 !important; }
-.voicehub-main h1 { font-size: 23px; line-height: 1.4; font-weight: 650; }
-.voicehub-main h2 { font-size: 16px; }
-.voicehub-main [data-surface="section"] > div { padding-left: 0; padding-right: 0; }
-.voicehub-main [data-surface="section"] [data-surface="section"] { border: 0; }
-.voicehub-main button, .voicehub-main input, .voicehub-main select { max-width: 100%; }
-.voicehub-main input:focus-visible, .voicehub-main textarea:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
-@media (max-width: 700px) {
-  .voicehub-brand-english, .voicehub-ai-label { display: none; }
-  .voicehub-nav { width: 64px; }
-  .voicehub-nav p, .voicehub-nav a span { display: none; }
-  .voicehub-nav a { justify-content: center; padding: 10px 4px; }
-  .voicehub-nav > div:last-child > div { flex-wrap: wrap; }
-  .voicehub-main { padding: 18px 16px; }
-  .voicehub-titlebar { min-height: 48px; }
-}
-
 @layer base {
 
   /*
@@ -110,8 +93,7 @@
 
   body {
     @apply bg-background text-foreground text-base leading-relaxed;
-    /* 与 themes/voicehub.ts 的 fonts.body 保持一致序（Segoe UI Variable 优先）。 */
-    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     margin: 0;
@@ -123,7 +105,7 @@
      字距偏松）。<html lang> 由 i18n 的 setLocale 写入，所以这条规则跟着
      界面语言走，不跟系统语言 —— 中文用户切到英文界面也应该看到 Segoe UI。 */
   html[lang="en"] body {
-    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, "Microsoft YaHei", sans-serif;
   }
 }
 
@@ -381,3 +363,21 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── VoiceHub：工作区排版适配 + 字体栈统一（themes/voicehub.ts 同序）── */
+.voicehub-main h1 { font-size: 23px; line-height: 1.4; font-weight: 650; }
+.voicehub-main h2 { font-size: 16px; }
+.voicehub-main [data-surface="section"] > div { padding-left: 0; padding-right: 0; }
+.voicehub-main [data-surface="section"] [data-surface="section"] { border: 0; }
+.voicehub-main button, .voicehub-main input, .voicehub-main select { max-width: 100%; }
+.voicehub-main input:focus-visible, .voicehub-main textarea:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+@media (max-width: 700px) {
+  .voicehub-brand-english, .voicehub-ai-label { display: none; }
+  .voicehub-nav { width: 64px; }
+  .voicehub-nav p, .voicehub-nav a span { display: none; }
+  .voicehub-nav a { justify-content: center; padding: 10px 4px; }
+  .voicehub-nav > div:last-child > div { flex-wrap: wrap; }
+  .voicehub-main { padding: 18px 16px; }
+  .voicehub-titlebar { min-height: 48px; }
+}
+    /* 与 themes/voicehub.ts 的 fonts.body 保持一致序（Segoe UI Variable 优先）。 */

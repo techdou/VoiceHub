@@ -8,6 +8,15 @@ pub fn set_escape_action_mode(mode: String, token: u64) -> Result<(), String> {
     crate::keyboard::set_escape_action_mode(&mode, token)
 }
 
+/// 开启/续期/解除悬浮窗卡片上的临时组合键（目前只有 `copy` = Ctrl+C）。
+///
+/// 传空数组即解除。**必须与卡片生命周期绑定**：这些键在别的程序里本来就有用途，
+/// 绝不能永久注册（详见 keyboard::set_card_hotkeys 的注释）。
+#[tauri::command]
+pub fn set_card_hotkeys(actions: Vec<String>, token: u64) -> Result<(), String> {
+    crate::keyboard::set_card_hotkeys(&actions, token)
+}
+
 #[tauri::command]
 pub fn shortcuts_changed(
     app: AppHandle,

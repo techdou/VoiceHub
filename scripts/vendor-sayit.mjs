@@ -65,15 +65,63 @@ const MECHANICAL_PATCHES = [
     apply() {
       const main = fs.readFileSync(path.join(source, 'client/src-tauri/src/main.rs'), 'utf8');
       const commands = main.split('.invoke_handler(tauri::generate_handler![')[1].split('])')[0];
+      // VoiceHub 自有命令必须在生成的表之外补注册（上游 main.rs 永远不会列它们）。
+      const owned = '            // Custom GGUF model (VoiceHub-owned: register/read custom model paths).\n'
+        + '            models::custom::custom_model_path,\n'
+        + '            models::custom::register_custom_model,\n';
+      const anchor = '            models::registry::list_available_models,';
+      const table = commands.includes(anchor)
+        ? commands.replace(anchor, owned + anchor)
+        : commands + '\n' + owned;
       fs.writeFileSync(vendorFile('native/src/handler.rs'),
-        `use crate::{commands, models, providers};\npub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {\n tauri::generate_handler![${commands}]\n}\n`);
-      fs.rmSync(vendorFile('native/src/main.rs'));
+        `use crate::{commands, models, providers};\npub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {\n tauri::generate_handler![${table}]\n}\n`);
+      fs.rmSync(vendorFile('native/src/main.rs'), { force: true });
     },
     verify() {
       if (exists('native/src/main.rs')) return 'native/src/main.rs should have been removed';
       if (!exists('native/src/handler.rs')) return 'native/src/handler.rs is missing';
       if (!readVendor('native/src/handler.rs').startsWith('use crate::{commands, models, providers};')) {
         return 'handler.rs does not look like the generated command table';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'update-chain-removed',
+    describe: 'Updates are managed by VoiceHub: delete the update-notification module and the features/update UI; strip the command registrations (native system.rs update commands stay, matching the 0.2.0 sync).',
+    apply() {
+      fs.rmSync(vendorFile('native/src/commands/update_notification.rs'), { force: true });
+      fs.rmSync(vendorFile('frontend/src/features/update'), { recursive: true, force: true });
+      fs.rmSync(vendorFile('frontend/src/update-notification'), { recursive: true, force: true });
+      const stripLines = (file, markers) => {
+        const target = vendorFile(file);
+        if (!fs.existsSync(target)) return;
+        const kept = fs.readFileSync(target, 'utf8')
+          .split('\n')
+          .filter((line) => !markers.some((marker) => line.includes(marker)));
+        fs.writeFileSync(target, kept.join('\n'));
+      };
+      stripLines('native/src/commands/mod.rs', ['pub mod update_notification;']);
+      stripLines('native/src/handler.rs', ['commands::update_notification::']);
+    },
+    verify() {
+      if (exists('frontend/src/features/update')) return 'features/update directory should not exist';
+      if (exists('frontend/src/update-notification')) return 'update-notification window entry should not exist';
+      if (exists('native/src/commands/update_notification.rs')) return 'update_notification command module should not exist';
+      if (readVendor('native/src/handler.rs').includes('update_notification')) {
+        return 'handler.rs still registers update_notification commands';
+      }
+      if (readVendor('native/src/commands/mod.rs').includes('pub mod update_notification')) {
+        return 'commands/mod.rs still declares the update_notification module';
+      }
+      if (readVendor('frontend/src/App.tsx').includes('features/update')) {
+        return 'App.tsx still imports the features/update module';
+      }
+      if (readVendor('frontend/src/features/settings/ServerSection.tsx').includes('checkForUpdateNow')) {
+        return 'ServerSection still triggers update checks';
+      }
+      if (readVendor('frontend/src/components/Sidebar.tsx').includes('hasPendingUpdate')) {
+        return 'Sidebar still shows the pending-update highlight';
       }
       return null;
     },
@@ -143,12 +191,15 @@ const MANUAL_PATCHES = [
       const audio = read('frontend/src/services/audio.ts');
       if (!audio.includes('REMOTE_MIC_ID')) return 'audio.ts lost the remote-mic interception';
       const profileStore = read('frontend/src/features/settings/asrProfileStore.ts');
-      if (!profileStore.includes("setSetting('cloudAsr.apiUrl'")) return 'asrProfileStore lost apiUrl/model runtime sync';
+      // 0.2.2 起 openai_compat 由上游原生实现（baseUrl/protocol 体系）；自有部分是
+      // 旧私有键 cloudAsr.apiUrl → 0.2.2 档案的一次性迁移兜底。
+      if (!profileStore.includes("getSetting('cloudAsr.apiUrl'")) return 'asrProfileStore lost the legacy openai_compat migration';
       const catalog = read('frontend/src/features/settings/asrProviderCatalog.ts');
       if (!catalog.includes("id: 'openai_compat'")) return 'asr catalog lost the openai_compat card';
       const cloud = read('frontend/src/services/transcription/CloudAPIProvider.ts');
-      if (!cloud.includes('api_url')) return 'CloudAPIProvider lost the custom ASR extra fields';
-      if (!read('frontend/src/pages/History.tsx').includes('api_url')) return 'History re-run lost the custom ASR extra fields';
+      // 0.2.2 起自定义端点字段名是 baseUrl（上游原生），0.2.0 私有名 api_url 已并入。
+      if (!cloud.includes("getSetting('cloudAsr.baseUrl'")) return 'CloudAPIProvider lost the custom-ASR endpoint wiring';
+      if (!read('frontend/src/pages/History.tsx').includes("getSetting('cloudAsr.baseUrl'")) return 'History re-run lost the custom-ASR endpoint';
       if (!read('frontend/src/features/settings/VoiceEnginePage.tsx').includes('CustomLocalModel')) return 'engine page lost the custom model entry';
       if (!read('frontend/src/themes/index.ts').includes('voicehub')) return 'themes index lost the voicehub registration';
       const tailwind = read('frontend/tailwind.config.cjs');
@@ -199,21 +250,6 @@ const MANUAL_PATCHES = [
       if (!transport.includes('remote_voice_poll')) return 'RemoteTransport.ts lost the poll loop';
       // 2026-09-07 review fix: stop() racing startRemoteRecording must not double-stop.
       if (!transport.includes('!this.stopped')) return 'RemoteTransport.ts lost the stop-race guard';
-      return null;
-    },
-  },
-  {
-    id: 'update-chain-removed',
-    files: ['frontend/src/features/settings/ServerSection.tsx', 'frontend/src/components/Sidebar.tsx'],
-    describe: 'Application updates are managed by VoiceHub: update UI entries and the features/update module are removed (native rejects download/install commands).',
-    verify() {
-      if (exists('frontend/src/features/update')) return 'features/update directory should not exist';
-      if (readVendor('frontend/src/features/settings/ServerSection.tsx').includes('checkForUpdateNow')) {
-        return 'ServerSection still triggers update checks';
-      }
-      if (readVendor('frontend/src/components/Sidebar.tsx').includes('hasPendingUpdate')) {
-        return 'Sidebar still shows the pending-update highlight';
-      }
       return null;
     },
   },

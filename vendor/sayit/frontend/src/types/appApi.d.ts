@@ -8,6 +8,23 @@ export type DiagnosticOccurrence =
   | 'older'
   | 'not_sure'
 
+/**
+ * 反馈时选的问题类型。取值会原样写进诊断包的 manifest.json，作用是让收到 ticket
+ * 的人不必读完整份日志就知道该看哪一段（insert_failed 看 gate= 那几行，no_text 看
+ * 音频与 provider 的空结果日志）。所以这些码是**对外契约**，改名会让历史 ticket
+ * 对不上；新增类型往后加即可。
+ */
+export type DiagnosticIssueType =
+  | 'insert_failed'
+  | 'no_text'
+  | 'wrong_text'
+  | 'shortcut_dead'
+  | 'overlay'
+  | 'ai_result'
+  | 'crash'
+  | 'update_failed'
+  | 'other'
+
 export interface DiagnosticsPreview {
   generatedAt: string
   retentionDays: number
@@ -157,6 +174,7 @@ export interface AppAPI {
   }) => Promise<DiagnosticsPreview>
   createDiagnosticsZip: (data: {
     description: string
+    issueType: DiagnosticIssueType
     settings: Record<string, unknown>
     issueOccurrence: DiagnosticOccurrence
     images: Array<{ name: string; data: number[]; size: number; type: string }>

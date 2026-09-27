@@ -84,8 +84,20 @@ pub async fn transcribe(
     audio_pcm_b64: &str,
     sample_rate: u32,
     config: &AsrProviderConfig,
-    _hotwords: &[String],
+    hotwords: &[String],
 ) -> Result<AsrResult, String> {
+    // 这份实现没把热词接进去。协议是有位置的（OpenAI chat/completions 兼容，
+    // asr_openai_chat_audio.rs 就是把词表追加到 instruction 的），所以
+    // capabilities.rs 把它记作 NotWiredUp 而不是 ProtocolHasNoSlot。
+    // 留痕理由同 asr_groq.rs：不留这行，"热词没生效"在日志里查不出来。
+    if !hotwords.is_empty() {
+        diag::log(
+            SCOPE,
+            "hotwords_ignored",
+            &format!("count={} reason=not_wired_up", hotwords.len()),
+        );
+    }
+
     let pcm = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         audio_pcm_b64,

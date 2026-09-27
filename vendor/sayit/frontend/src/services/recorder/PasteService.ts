@@ -14,6 +14,9 @@ export interface ProbeResult {
   hasCaret?: boolean
   control?: number
   verdict?: string
+  /** 结论是四层判据里哪一层给出的（caret / native_class / uia_* / chromium_optimistic
+   *  / process_allowlist / no_signal）。取值定义在 inject/mod.rs 的 EditableGate。 */
+  gate?: string
   probeId?: number
   startedAt?: number
   completedAt?: number

@@ -4,7 +4,7 @@ let capture: { onData: (data: ArrayBuffer) => void; onFrame?: (pcm: Int16Array) 
 
 export function openRemoteCapture(onData: (data: ArrayBuffer) => void, onFrame?: (pcm: Int16Array) => void) {
   capture = { onData, onFrame }
-  return { deviceId: REMOTE_MIC_ID, groupId: 'voicehub', label: 'VoiceHub Remote' }
+  return { deviceId: REMOTE_MIC_ID, groupId: 'voicehub', label: 'VoiceHub Remote', devices: [] }
 }
 export function feedRemoteCapture(samples: number[]) {
   if (!capture || samples.length === 0) return

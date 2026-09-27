@@ -104,6 +104,23 @@ fn classify_failure(stage: &str, message: &str) -> &'static str {
     {
         return "provider_bad_key";
     }
+    // 402 排在限流之前，而且要早于任何按关键词猜的分支。
+    //
+    // 「余额不足」和「被限流」是两件不同的事，给用户的动作也相反：限流等一会儿就好，
+    // 余额不足等到明年也还是不行，得去充值。402 是这件事唯一明确的信号 ——
+    // OpenRouter 的 402 响应体里带 "balance" 字样，实测（2026-09-16）会是
+    // `This request requires at least $0.50 in balance for audio`。
+    // 以前没有这一档，它落到最后的 connect_failed，界面显示成「连接失败」——
+    // 而真实原因是账户里没钱，用户完全看不出来该去干什么。
+    if contains_http_status(message, &[402])
+        || lower.contains("payment required")
+        || lower.contains("insufficient balance")
+        || lower.contains("in balance")
+        || lower.contains("insufficient_quota")
+        || message.contains("余额不足")
+    {
+        return "provider_insufficient_balance";
+    }
     if contains_http_status(message, &[429])
         || lower.contains("rate limit")
         || lower.contains("quota")

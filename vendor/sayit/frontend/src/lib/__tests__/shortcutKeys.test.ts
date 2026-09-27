@@ -6,6 +6,7 @@ import {
   getPTTShortcutWarning,
   getPTTShortcutValidationError,
   isValidPTTShortcut,
+  keyEventToShortcutCandidate,
   parsePTTShortcut,
   PTT_CODE_TO_VK,
   pttShortcutConflictsWithAccelerator,
@@ -119,5 +120,64 @@ describe('PTT 物理组合键', () => {
     expect(
       pttShortcutConflictsWithAccelerator('ControlLeft+MetaLeft', 'CommandOrControl+K'),
     ).toBe(false)
+  })
+})
+describe('按键事件 → 候选快捷键', () => {
+  /** 只造出 keyEventToShortcutCandidate 会读的那几个字段 */
+  function keyEvent(init: {
+    code: string
+    key: string
+    ctrl?: boolean
+    alt?: boolean
+    shift?: boolean
+    meta?: boolean
+  }): KeyboardEvent {
+    return {
+      code: init.code,
+      key: init.key,
+      ctrlKey: init.ctrl ?? false,
+      altKey: init.alt ?? false,
+      shiftKey: init.shift ?? false,
+      metaKey: init.meta ?? false,
+    } as KeyboardEvent
+  }
+
+  // 用户反馈的原始症状：向导里按 Ctrl+D 会被静默存成「左 Ctrl」。
+  // 成因是 Ctrl 的 keydown 先到、ControlLeft 恰好在单键白名单里，于是提交了它、
+  // D 根本没轮到。修法是把「先组合、后单键」的顺序钉在这里。
+  it('Ctrl+D 录成组合键，中途单按 Ctrl 只是尚未成型', () => {
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'ControlLeft', key: 'Control', ctrl: true })))
+      .toBe('ControlLeft')
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'KeyD', key: 'd', ctrl: true })))
+      .toBe('CommandOrControl+D')
+  })
+
+  it('修饰键单键仍然可用（免提默认就是右 Alt）', () => {
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'AltRight', key: 'Alt', alt: true })))
+      .toBe('AltRight')
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'ControlRight', key: 'Control', ctrl: true })))
+      .toBe('ControlRight')
+  })
+
+  // Space / Insert / F1–F24 同时出现在单键白名单里，判定顺序反了就会把
+  // Ctrl+Space、Ctrl+F1 也吃成单键 —— 用户以为设了组合键，实际绑的是空格。
+  it('同时属于单键白名单的键，带修饰时优先当组合键', () => {
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'Space', key: ' ' }))).toBe('Space')
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'Space', key: ' ', ctrl: true })))
+      .toBe('CommandOrControl+Space')
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'F1', key: 'F1' }))).toBe('F1')
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'F1', key: 'F1', ctrl: true })))
+      .toBe('CommandOrControl+F1')
+  })
+
+  it('裸字母不成型；comboOnly 下单键一律不成型', () => {
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'KeyD', key: 'd' }))).toBeNull()
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'AltRight', key: 'Alt', alt: true }), { comboOnly: true }))
+      .toBeNull()
+    expect(keyEventToShortcutCandidate(keyEvent({ code: 'F1', key: 'F1' }), { comboOnly: true }))
+      .toBeNull()
+    expect(
+      keyEventToShortcutCandidate(keyEvent({ code: 'KeyD', key: 'd', ctrl: true, shift: true }), { comboOnly: true }),
+    ).toBe('CommandOrControl+Shift+D')
   })
 })

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Settings, User, Stethoscope, Palette, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useBackdropDismiss } from '@/hooks/useBackdropDismiss'
 import GeneralSettingsPage from './GeneralSettingsPage'
 import AppearancePage from './AppearancePage'
 import PersonalizationPage from './PersonalizationPage'
@@ -33,10 +34,13 @@ export default function SettingsDialog() {
     navigate('/')
   }
 
+  // 这个弹窗的误关代价最大 —— 它不是"关掉草稿"，是直接 navigate('/') 跳回首页。
+  const backdropDismiss = useBackdropDismiss(handleClose)
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={handleClose}
+      {...backdropDismiss}
     >
       <div
         className="relative flex h-[85vh] w-[90vw] max-w-6xl overflow-hidden rounded-xl bg-background shadow-2xl"

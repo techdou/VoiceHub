@@ -24,19 +24,29 @@ import { Tooltip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { refreshModeStatus } from '@/stores/modeStatus'
 import { setEngineDraftDirty } from '@/stores/engineDraft'
-import { resolveQwenOmniModel } from '@/lib/asrModels'
+import { buildAsrExtra } from '@/lib/asrModels'
 import { describeProviderError } from '@/lib/errorMessages'
 import { doubaoKeyLabel } from '@/lib/cloudAsrCreds'
 import {
   ASR_PLATFORMS,
   ASR_PROVIDERS,
   asrAvailabilityLabel,
+  asrModelsOf,
   describeAsrMissing,
   effectiveAsrCredentials,
   emptyAsrProfile,
   findAsrProvider,
   gradeAsrLatency,
-  keyFingerprint,
+  groupAsrModelsByVendor,
+  ASR_COMPAT_PROTOCOLS,
+  asrCardTitle,
+  asrEndpointHost,
+  asrEndpointUrl,
+  parseAsrCompatProtocol,
+  resolveAsrApiModel,
+  resolveAsrModel,
+  resolveAsrModelOption,
+  resolveAsrRuntimeProvider,
   type AsrCheck,
   type AsrProfile,
 } from './asrProviderCatalog'
@@ -129,20 +139,27 @@ async function runAsrTest(
   }
   try {
     const creds = effectiveAsrCredentials(profile)
-    const omniModel = resolveQwenOmniModel(profile.provider)
+    // 测的是这张卡自己的配置（可能还没启用），所以 provider 与模型都从档案解析、
+    // 不读运行时键。**provider 必须取选中模型的那个**（卡片 id 是平台，不是分发 key）。
+    const runtimeProvider = resolveAsrRuntimeProvider(profile)
+    const extra = buildAsrExtra(runtimeProvider, {
+      model: resolveAsrApiModel(profile),
+      // 指令只给 omni 那类模型 —— 千问卡上的 omniPrompt 即使选了非 omni 模型
+      // 也可能有值，无条件带上会把它发给一个根本不读它的实现。
+      instructions: resolveAsrModelOption(profile)?.omni ? profile.omniPrompt : '',
+      baseUrl: asrEndpointUrl(profile),
+      protocol: profile.protocol,
+    })
     const start = performance.now()
     const r = await invoke<{ text: string; elapsed_ms: number }>('cloud_transcribe', {
       request: {
         audio_b64: audio.pcmB64,
         sample_rate: 16000,
         asr_config: {
-          provider: entry.omni ? 'qwen_omni' : profile.provider,
+          provider: runtimeProvider,
           api_key: creds.apiKey,
           app_id: creds.appId,
-          ...(profile.provider === 'openai_compat' && { extra: { api_url: profile.apiUrl, model: profile.model } }),
-          ...(entry.omni && {
-            extra: { model: omniModel, instructions: profile.omniPrompt || undefined },
-          }),
+          ...(extra && { extra }),
         },
       },
     })
@@ -174,15 +191,7 @@ async function runAsrTest(
   }
 }
 
-/** 卡片标题：同一家有多份时补上密钥尾巴，否则两张卡长得一模一样 */
-function profileTitle(profile: AsrProfile, siblings: number): string {
-  if (profile.provider === 'openai_compat') return profile.model || 'Custom ASR'
-  const entry = findAsrProvider(profile.provider)
-  const base = entry?.label ?? profile.provider
-  if (siblings <= 1) return base
-  const fp = keyFingerprint(profile)
-  return fp ? `${base} ${fp}` : base
-}
+// 卡片标题的规则（含「为什么这里绝不能出现密钥」）在 asrCardTitle 里。
 
 export default function CloudAPISection() {
   useT()
@@ -429,14 +438,18 @@ export default function CloudAPISection() {
     if (!draft) return
     const nextPlatform = findAsrProvider(providerId)?.platform
     const prevPlatform = findAsrProvider(draft.provider)?.platform
+    // 换卡就回到新卡的默认模型。**显式写入而不是留空** —— 空串会被 parseAsrProfiles
+    // 当成存量数据走迁移（见那边的判据说明）。
+    const nextModel = asrModelsOf(findAsrProvider(providerId)!)[0].id
     if (nextPlatform === prevPlatform) {
-      patchDraft({ provider: providerId })
+      patchDraft({ provider: providerId, model: nextModel })
       return
     }
     // 平台变了，旧密钥对新家没有意义 —— 留着只会被当成"已配置"而实际发不出去
     const prev = lastProfileOfPlatform(providerId, draft.id)
     patchDraft({
       provider: providerId,
+      model: nextModel,
       apiKey: prev?.apiKey ?? '',
       otherKey: prev?.otherKey ?? '',
       appId: prev?.appId ?? '',
@@ -511,8 +524,9 @@ export default function CloudAPISection() {
     if (missing) {
       return { label: t('asr.status.needsSetup'), tone: 'warn', spoken: missing, hint: missing, needsSetup: true }
     }
-    const entry = findAsrProvider(profile.provider)
-    if (entry?.needsWorkspaceId && !profile.workspaceId.trim()) {
+    // 业务空间 ID 是**模型级**要求（千问那五个里只有 realtime 那个要），
+    // 按卡片判会让选了别的模型的用户也被要求填
+    if (resolveAsrModelOption(profile)?.needsWorkspaceId && !profile.workspaceId.trim()) {
       return {
         label: t('asr.status.missingWorkspace'),
         tone: 'warn',
@@ -568,9 +582,20 @@ export default function CloudAPISection() {
     const isActive = profile.id === activeId
     const status = describeCard(profile)
     const siblings = profiles.filter((p) => p.provider === profile.provider).length
-    const title = profileTitle(profile, siblings)
-    const modelLabel = profile.provider === 'openai_compat' ? profile.model || entry.model : entry.model
+    const title = asrCardTitle(profile, siblings)
     const availability = asrAvailabilityLabel(entry)
+    // 卡上那行小字必须是**这张卡真正会用的**模型，不是目录里的默认值 ——
+    // 否则选了 whisper-large-v3 的卡看上去还写着 turbo。
+    //
+    // 显示**真实模型 ID**，不再显示短名。短名是「一张卡 = 一个模型」时代留下的，
+    // 那时它们是卡片标题（「千问 ASR 一次性」靠「一次性」跟流式那张卡对比）。
+    // 挪进卡内当模型名之后，前缀重复、对比对象也没了，用户看到的是一个
+    // 既不像模型也说不清是什么的词。真实 ID 反而一眼认得出，也能拿去对文档和账单。
+    const option = resolveAsrModelOption(profile)
+    const model = option ? option.id : resolveAsrModel(profile)
+    // 自定义端点的卡再补一个主机名：那种卡之间真正的差别是「连的是哪台」
+    const host = asrEndpointHost(profile)
+    const modelLine = host ? `${model} · ${host}` : model
     return (
       <div
         key={profile.id}
@@ -585,7 +610,7 @@ export default function CloudAPISection() {
           type="button"
           role="radio"
           aria-checked={isActive}
-          aria-label={t('common.cardStatusAria', { title, subtitle: modelLabel, status: status.spoken })}
+          aria-label={t('common.cardStatusAria', { title, subtitle: model, status: status.spoken })}
           onClick={() => void handleActivate(profile.id)}
           className="absolute inset-0 rounded-lg"
         />
@@ -603,8 +628,9 @@ export default function CloudAPISection() {
           </Tooltip>
         </div>
         <div className="mt-1 flex items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={modelLabel}>
-            {modelLabel}
+          {/* title 给完整模型 ID：卡上显示的是短名，鼠标悬停能看到真名 */}
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={modelLine}>
+            {modelLine}
           </span>
           {/* 待配置的卡片按钮常驻：它正在等用户去填东西，把唯一的入口藏进 hover
               等于让人对着一张没有可点之处的卡发呆。配好之后回到 hover 显隐 */}
@@ -664,7 +690,11 @@ export default function CloudAPISection() {
     const platformInfo = ASR_PLATFORMS[draftPlatform]
     const draftEntry = findAsrProvider(draft.provider)
     const draftAvailability = draftEntry ? asrAvailabilityLabel(draftEntry) : ''
-    const keyLabel = draftIsDoubao ? doubaoKeyLabel(draft.console) : draft.provider === 'openai_compat' ? (getLocale() === 'en' ? 'API Key (optional)' : 'API Key（可选）') : 'API Key'
+    const draftModels = draftEntry ? asrModelsOf(draftEntry) : []
+    const draftModelGroups = groupAsrModelsByVendor(draftModels)
+    // 业务空间 ID、System Prompt 这些都是**模型级**条件，要按选中的那个模型算
+    const draftModelOption = resolveAsrModelOption(draft)
+    const keyLabel = draftIsDoubao ? doubaoKeyLabel(draft.console) : 'API Key'
     return (
       <Modal
         title={draftIsNew ? t('asr.editorNew') : t('asr.editorEdit')}
@@ -682,15 +712,156 @@ export default function CloudAPISection() {
               onChange={(e) => handleDraftProvider(e.target.value)}
               className={selectClass}
             >
-              {ASR_PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>{p.label} · {p.model}</option>
-              ))}
+              {/* 平铺，**不按「内置 / 自己填地址」分组**。曾经分成两个 optgroup，
+                  用户否掉了：在他看来这些都是「一个能用的语音识别服务」，分组等于把
+                  我们的实现差异摆到选择界面上。要填什么由下面那几栏各自说明
+                  （地址栏和协议栏本来就只在需要时出现）。 */}
+              {ASR_PROVIDERS.map((p) => {
+                const models = asrModelsOf(p)
+                // 多模型的只列平台名（模型由下面那个下拉选）；**单模型的直接把模型名
+                // 带出来** —— 那种情况下下面的模型下拉根本不渲染，不带的话用户在这一步
+                // 完全看不到自己要用的是哪个模型。协议卡除外：它那一个模型只是默认值，
+                // 真正用哪个由用户自己填。
+                const showModel = models.length === 1 && !p.customEndpoint
+                return (
+                  <option key={p.id} value={p.id}>
+                    {showModel ? `${p.label} · ${models[0].id}` : p.label}
+                  </option>
+                )
+              })}
             </select>
             <p className="mt-1 text-xs text-muted-foreground">
               {draftEntry?.blurb}
               {draftAvailability !== '' && <> <span className="font-medium">{draftAvailability}</span></>}
             </p>
           </div>
+
+          {/* 卡片名称。可空，留空就显示平台名。
+              这一栏是为了取代「自动在标题后面补密钥末 4 位」那个做法 —— 同平台两张卡
+              到底差在哪，用户比我们清楚，而我们那个区分方式让人以为密钥泄露了。 */}
+          <div>
+            <label htmlFor="asr-name" className="mb-1 block text-sm text-muted-foreground">
+              {t('asr.cardName')}
+            </label>
+            <input
+              id="asr-name"
+              value={draft.name}
+              onChange={(e) => patchDraft({ name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveDraft() }}
+              placeholder={draftEntry?.label ?? ''}
+              className={inputClass}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">{t('asr.cardNameHint')}</p>
+          </div>
+
+          {/* 接口地址。**按选中的模型决定要不要显示**，不是按卡片 ——
+              同一张卡里可以既有 HTTP 模型（能改地址）又有 WebSocket 模型（改不了），
+              千问那张卡就是。协议卡是必填，内置卡是可选覆盖（中转站 / 反代）。 */}
+          {draftModelOption?.supportsCustomUrl && (
+            <div>
+              <label htmlFor="asr-api-url" className="mb-1 block text-sm text-muted-foreground">
+                {draftModelOption.requiresCustomUrl ? t('asr.apiUrl') : t('asr.apiUrlOptional')}
+              </label>
+              <input
+                id="asr-api-url"
+                type="url"
+                inputMode="url"
+                value={draft.apiUrl}
+                onChange={(e) => patchDraft({ apiUrl: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveDraft() }}
+                placeholder={draftEntry?.urlPlaceholder ?? ''}
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {draftModelOption.requiresCustomUrl ? t('asr.apiUrlHint') : t('asr.apiUrlOptionalHint')}
+              </p>
+            </div>
+          )}
+
+          {/* 协议：只有协议卡需要，而且默认「自动」。
+              摆在这里而不是藏进高级设置，是因为自动探测判不准时用户得找得到它；
+              但默认值让绝大多数人不必碰它。 */}
+          {draftEntry?.customEndpoint && (
+            <div>
+              <label htmlFor="asr-protocol" className="mb-1 block text-sm text-muted-foreground">
+                {t('asr.protocol')}
+              </label>
+              <select
+                id="asr-protocol"
+                value={draft.protocol}
+                onChange={(e) => patchDraft({ protocol: parseAsrCompatProtocol(e.target.value) })}
+                className={selectClass}
+              >
+                {ASR_COMPAT_PROTOCOLS.map((value) => (
+                  <option key={value} value={value}>{t(`asr.protocol.${value}`)}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground">{t('asr.protocolHint')}</p>
+            </div>
+          )}
+
+          {/* 协议卡的模型是**自由文本**：对面挂什么模型我们无从知道，
+              给个下拉等于替用户瞎猜。占位符给的是常见默认值。 */}
+          {draftEntry?.customEndpoint && (
+            <div>
+              <label htmlFor="asr-model-text" className="mb-1 block text-sm text-muted-foreground">
+                {t('asr.model')}
+              </label>
+              <input
+                id="asr-model-text"
+                value={draft.model}
+                onChange={(e) => patchDraft({ model: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveDraft() }}
+                placeholder={draftModels[0]?.id ?? ''}
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{t('asr.modelFreeTextHint')}</p>
+            </div>
+          )}
+
+          {/* 模型下拉。**只有一个模型时不渲染** —— 摆一个点开只有一项的下拉，
+              等于让用户以为这里有得选。多数服务换模型 = 换服务条目（协议都不一样），
+              真正有多个模型的只有走同一个端点的那几家。
+              OpenRouter 有 20 多个、来自十来家厂商，所以按厂商分组（optgroup）；
+              别家的模型名不带厂商前缀，groupAsrModelsByVendor 会返回 null 走平铺。 */}
+          {draftModels.length > 1 && (
+            <div>
+              <label htmlFor="asr-model" className="mb-1 block text-sm text-muted-foreground">{t('asr.model')}</label>
+              <select
+                id="asr-model"
+                value={resolveAsrModel(draft)}
+                onChange={(e) => patchDraft({ model: e.target.value })}
+                className={selectClass}
+              >
+                {draftModelGroups
+                  ? draftModelGroups.map(([vendor, models]) => (
+                    <optgroup key={vendor} label={vendor}>
+                      {models.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.id === draftModels[0].id
+                            ? t('asr.modelDefaultOption', { model: option.id })
+                            : option.id}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))
+                  : draftModels.map((option, index) => (
+                    <option key={option.id} value={option.id}>
+                      {index === 0
+                        ? t('asr.modelDefaultOption', { model: option.id })
+                        : option.id}
+                    </option>
+                  ))}
+              </select>
+              {/* 选中模型自己的一句定位优先 —— 真正要帮用户做的决定是「在这一家里面
+                  选哪个」，而那五个千问模型的差别比千问和豆包的差别还大。
+                  模型没写 blurb 时退回讲整张卡的那句话。 */}
+              <p className="mt-1 text-xs text-muted-foreground">
+                {draftModelOption?.blurb
+                  ?? (draftModelGroups ? t('asr.modelHintRouted') : t('asr.modelHint'))}
+              </p>
+            </div>
+          )}
 
           {draftIsDoubao && (
             <div>
@@ -710,15 +881,6 @@ export default function CloudAPISection() {
               </p>
             </div>
           )}
-
-          {draft.provider === 'openai_compat' && <>
-            <label className="block text-sm">接口地址 / Endpoint
-              <input aria-label="ASR endpoint" value={draft.apiUrl ?? ''} onChange={e => patchDraft({ apiUrl: e.target.value })} placeholder="http://127.0.0.1:8000/v1" className={inputClass} />
-            </label>
-            <label className="block text-sm">模型名称 / Model
-              <input aria-label="ASR model" value={draft.model ?? ''} onChange={e => patchDraft({ model: e.target.value })} placeholder="whisper-1" className={inputClass} />
-            </label>
-          </>}
 
           {draftIsDoubao && draft.console === 'legacy' && (
             <div>
@@ -763,10 +925,10 @@ export default function CloudAPISection() {
               </p>
             )}
             <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
-              {platformInfo.consoleUrl && <button type="button" onClick={() => void shellOpen(platformInfo.consoleUrl)} className={linkClass}>
+              <button type="button" onClick={() => void shellOpen(platformInfo.consoleUrl)} className={linkClass}>
                 {t('asr.openConsole', { platform: platformInfo.label })}
                 <ExternalLink className="h-3 w-3" aria-hidden />
-              </button>}
+              </button>
               {/* 配置文档只对豆包显示。别的平台都是「去控制台复制一把 API Key」，
                   上面那个控制台链接已经足够；只有豆包要在新旧两代控制台之间做选择
                   （新版只给 API Key，旧版还要 Access Token + App ID），光看界面讲不清，
@@ -781,7 +943,7 @@ export default function CloudAPISection() {
             </div>
           </div>
 
-          {draftEntry?.needsWorkspaceId && (
+          {draftModelOption?.needsWorkspaceId && (
             <div>
               <label htmlFor="qwen-workspace-id" className="mb-1 block text-sm text-muted-foreground">
                 {t('asr.workspaceId')}
@@ -802,7 +964,7 @@ export default function CloudAPISection() {
 
           {/* Omni 是「识别 + 整理」一体的模型，System Prompt 决定它整理成什么样，
               属于这份服务自己的行为，所以放在这份配置里 */}
-          {draftEntry?.omni && (
+          {draftModelOption?.omni && (
             <div>
               <label htmlFor="omni-system-prompt" className="mb-1.5 block text-sm text-muted-foreground">
                 System Prompt
@@ -911,7 +1073,7 @@ export default function CloudAPISection() {
         <Modal title={t('asr.deleteTitle')} onClose={() => setPendingDeleteId('')} showCloseButton panelClassName="w-[420px]">
           <div className="mt-3 space-y-4">
             <p className="text-sm text-muted-foreground">
-              {t('asr.deleteBody', { name: profileTitle(pendingDelete, profiles.filter((p) => p.provider === pendingDelete.provider).length) })}
+              {t('asr.deleteBody', { name: asrCardTitle(pendingDelete, profiles.filter((p) => p.provider === pendingDelete.provider).length) })}
             </p>
             <div className="flex items-center justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setPendingDeleteId('')}>{t('common.cancel')}</Button>

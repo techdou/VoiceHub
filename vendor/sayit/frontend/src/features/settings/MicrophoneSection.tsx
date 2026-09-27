@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
-import { cleanMicLabel } from './utils'
+import { buildMicOptions } from './utils'
 import type { TranslationKey } from '@/i18n'
 import { useT } from '@/i18n/useT'
 
@@ -36,16 +36,12 @@ export default function MicrophoneSection({
   onTestMic: () => void
 }) {
   const t = useT()
-  const micOptions = useMemo(() => {
-    return [
-      { value: '', label: t('mic.systemDefault') },
-      ...mics.map((mic) => ({
-        value: mic.deviceId,
-        // 设备名来自系统，不翻译；只有"读不到名字"时的兜底标签跟界面语言。
-        label: cleanMicLabel(mic.label) || t('mic.unnamed', { id: mic.deviceId.slice(0, 8) }),
-      })),
-    ]
-  }, [mics, t])
+  const micOptions = useMemo(() => buildMicOptions(mics, selectedMic, {
+    systemDefault: t('mic.systemDefault'),
+    systemDefaultWith: (deviceName) => t('mic.systemDefaultWith', { device: deviceName }),
+    unnamed: (idPrefix) => t('mic.unnamed', { id: idPrefix }),
+    unavailable: t('mic.unavailable'),
+  }), [mics, selectedMic, t])
 
   const vol = VOLUME_CONFIG[volumeLevel]
 

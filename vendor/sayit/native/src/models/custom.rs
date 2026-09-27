@@ -34,10 +34,18 @@ pub async fn register_custom_model(storage: State<'_, Storage>, model_path: Stri
     let selected = validate_path(&model_path)?;
     let old = path();
     let value = selected.to_string_lossy().into_owned();
+    // 显卡选择是引擎缓存 key 的一部分：注册时必须按用户设置加载，否则首次口述
+    // 会因 key 不符把刚预热的引擎整个丢掉重载；自动设备加载失败时也会错拒
+    // 本可在指定设备上运行的模型。
+    let gpu_device = storage
+        .get("localAsr.gpuDevice", None)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let result = tokio::task::spawn_blocking(move || {
         super::gguf_asr::unload();
         restore(Some(selected));
-        super::gguf_asr::preload(ID, accelerator.as_deref().unwrap_or("auto"))
+        super::gguf_asr::preload(ID, accelerator.as_deref().unwrap_or("auto"), &gpu_device)
     }).await.map_err(|e| e.to_string()).and_then(|r| r);
     if let Err(error) = result { restore(old); super::gguf_asr::unload(); return Err(error); }
     // Commit selection only after the native engine has accepted the model.

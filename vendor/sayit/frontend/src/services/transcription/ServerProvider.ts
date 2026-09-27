@@ -5,6 +5,12 @@ import { addRuntimeEvent } from '../debugLog'
 import * as ws from '../websocket'
 import { polishWithClientAi } from './clientAiPolish'
 import {
+  resolveAiPolicy,
+  resolveAndLogAiOutcome,
+  type AiOutcomeContext,
+  type AiPolicy,
+} from './aiPolicy'
+import {
   getRuntimeServerAiSource,
   loadServerAiSource,
   type ServerAiSource,
@@ -28,6 +34,9 @@ export class ServerProvider implements TranscriptionProvider {
   private customAiReady = false
   private customFinalPending = false
   private serverDonePending = false
+  /** 松键时随 stop 传入的本次策略；与线上那个 disable_ai 布尔同出一源。 */
+  private activePolicy: AiPolicy | undefined
+  private activeConnectionId: string | undefined
 
   async connect(callbacks: TranscriptionCallbacks): Promise<void> {
     this.callbacks = callbacks
@@ -64,6 +73,9 @@ export class ServerProvider implements TranscriptionProvider {
         callbacks.onError?.(MID_SESSION_DISCONNECT_ERROR)
       },
       onReady: (data) => {
+        // 留着服务端连接标识：ai.outcome 带上它，才能把客户端日志和服务器日志
+        // （每行有 cid=/sid=）直接对起来，不必再靠时间戳手工对齐。
+        this.activeConnectionId = data.connectionId
         callbacks.onReady?.({
           connectionId: data.connectionId,
           asr: data.asr,
@@ -92,9 +104,20 @@ export class ServerProvider implements TranscriptionProvider {
           return
         }
 
-        const aiDisabled = this.activeStartOpts?.disableAi ?? false
+        // 服务器内置 AI 路线。此前这里按 `llmMs > 0` 反推成功失败 —— 服务端异常时
+        // 返回原文 + 0ms，于是"调用失败"被误记成"不可用"，两者在界面和日志里长得一样。
+        // 现在用服务端回传的证据判断（error / provider），耗时只作辅助。
+        const policy = this.resolvePolicy(result.durationSec)
+        const outcome = resolveAndLogAiOutcome(this.outcomeContext(), policy, {
+          asrTextEmpty: !result.asrText.trim(),
+          serverError: result.serverAi?.error,
+          serverProvider: result.serverAi?.provider,
+          llmMs: result.llmMs,
+        })
         callbacks.onFinal?.({
           asrText: result.asrText,
+          // 仍原样转发服务端的 llm_text：跳过/失败时服务端本来就回原文，而选区编辑的
+          // 安全回退由录音器按 contextApplied 处理。这里改写它会动到那条路径。
           llmText: result.llmText,
           asrMs: result.asrMs,
           llmMs: result.llmMs,
@@ -102,9 +125,9 @@ export class ServerProvider implements TranscriptionProvider {
           asrEngine: result.asrEngine,
           asrModel: result.asrModel,
           contextApplied: result.contextApplied,
-          aiSource: aiDisabled ? 'none' : 'server',
-          aiStatus: aiDisabled ? 'skipped' : result.llmMs > 0 ? 'applied' : 'unavailable',
-          aiProvider: aiDisabled ? undefined : 'server',
+          aiSource: outcome.source,
+          aiStatus: outcome.status,
+          aiProvider: outcome.provider,
         })
       },
       onDone: () => {
@@ -162,10 +185,36 @@ export class ServerProvider implements TranscriptionProvider {
   }
 
   stop(opts?: StopOptions): boolean {
-    if (opts?.disableAi && this.activeStartOpts) {
-      this.activeStartOpts = { ...this.activeStartOpts, disableAi: true }
-    }
+    // 留住完整策略，别再把它压成 activeStartOpts.disableAi —— 那样一来"路由是自配"
+    // 和"低于门槛"就都变成同一个布尔，结束时再也分不出这次为什么没整理。
+    if (opts?.aiPolicy) this.activePolicy = opts.aiPolicy
     return ws.sendStop(this.aiSource === 'custom' ? { ...opts, disableAi: true } : opts)
+  }
+
+  /**
+   * 取本次策略。正常路径由 stop 传入；缺失时（理论上不该发生）用 start 冻结的配置
+   * 快照就地重算一份，仍然走同一个判据函数，绝不退回旧的布尔推断。
+   */
+  private resolvePolicy(durationSec: number): AiPolicy {
+    if (this.activePolicy) return this.activePolicy
+    const snapshot = this.activeStartOpts?.aiConfig
+    const fallback = resolveAiPolicy({
+      workMode: 'server',
+      aiEnabled: snapshot?.aiEnabled ?? !(this.activeStartOpts?.disableAi ?? false),
+      aiMinDurationSec: snapshot?.aiMinDurationSec ?? this.activeStartOpts?.aiMinDurationSec ?? 0,
+      serverAiSource: snapshot?.serverAiSource ?? this.aiSource,
+      audioDurationSec: durationSec,
+    })
+    this.activePolicy = fallback
+    return fallback
+  }
+
+  private outcomeContext(): AiOutcomeContext {
+    return {
+      operationId: this.activeStartOpts?.operationId || `run-${this.activeRunId}`,
+      trigger: this.activeStartOpts?.source === 'history_reprocess' ? 'history_reprocess' : 'live',
+      serverRef: this.activeConnectionId,
+    }
   }
 
   disconnect(): void {
@@ -179,10 +228,13 @@ export class ServerProvider implements TranscriptionProvider {
 
   private async handleCustomFinal(runId: number, result: FinalResult): Promise<void> {
     const startOptions = this.activeStartOpts
+    // 自配路线：服务端的 final 只代表识别完成，整次整理还没结束，最终状态必须取
+    // 客户端润色的结果，不能被服务端的 llm_ms=0 覆盖。
     const polished = await polishWithClientAi({
       asrText: result.asrText,
-      durationSec: result.durationSec,
       startOptions,
+      policy: this.resolvePolicy(result.durationSec),
+      outcomeContext: this.outcomeContext(),
       logSource: 'server',
       isCurrent: () => this.activeRunId === runId,
     })
@@ -213,6 +265,7 @@ export class ServerProvider implements TranscriptionProvider {
     }
     this.activeRunId = 0
     this.activeStartOpts = undefined
+    this.activePolicy = undefined
     this.customFinalPending = false
     this.serverDonePending = false
   }

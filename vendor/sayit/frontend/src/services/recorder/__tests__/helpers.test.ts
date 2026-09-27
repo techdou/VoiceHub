@@ -6,10 +6,47 @@ import {
   computeProcessingTimeoutMs,
   classifyMicLevel,
   judgeOsMicMute,
+  hasSilenceEvidence,
+  isUnconfirmedPaste,
+  SLOW_SEND_INPUT_PASTE_MS,
   MIC_NO_SIGNAL_PEAK_THRESHOLD,
   MIC_LOW_RMS_THRESHOLD,
   OS_MIC_MUTE_CONFIRM_SAMPLES,
 } from '../helpers'
+
+describe('hasSilenceEvidence', () => {
+  const SILENCE_RMS_THRESHOLD = 0.01
+
+  function stats(peakAmplitude: number, silentFrames: number, totalFrames: number) {
+    return { peakAmplitude, silentFrames, totalFrames, silenceRmsThreshold: SILENCE_RMS_THRESHOLD }
+  }
+
+  /**
+   * 回归钉：判据取「且」不取「或」。
+   *
+   * 取或的版本会把这条判成"确实没声音"，于是界面告诉用户去检查麦克风，而真正的
+   * 失败原因（额度耗尽、服务端提前断开、热词回显被判空）被藏了起来。
+   */
+  it('说了一句话再长时间沉默，不算没声音', () => {
+    expect(hasSilenceEvidence(stats(0.4, 996, 1000))).toBe(false)
+  })
+
+  it('整段几乎全是静音帧、峰值也几乎为零，才算有实证', () => {
+    expect(hasSilenceEvidence(stats(0.004, 999, 1000))).toBe(true)
+  })
+
+  it('峰值够低但静音帧不够多时不下结论', () => {
+    expect(hasSilenceEvidence(stats(0.004, 900, 1000))).toBe(false)
+  })
+
+  it('一帧都没统计到时不下结论——没有数据不等于没有声音', () => {
+    expect(hasSilenceEvidence(stats(0, 0, 0))).toBe(false)
+  })
+
+  it('峰值正好等于阈值也不算静音（阈值是严格小于）', () => {
+    expect(hasSilenceEvidence(stats(SILENCE_RMS_THRESHOLD, 1000, 1000))).toBe(false)
+  })
+})
 
 describe('judgeOsMicMute', () => {
   // 回归：Plantronics Blackwire 5220 停在 GetMute=true 但音频照常流动，
@@ -133,5 +170,23 @@ describe('computeProcessingTimeoutMs', () => {
   it('cloud_api 上限 90s', () => {
     const ms = computeProcessingTimeoutMs(600, 'cloud_api')
     expect(ms).toBeLessThanOrEqual(90000)
+  })
+})
+
+describe('isUnconfirmedPaste', () => {
+  it('send_input 卡住（真实那次 2088ms）要弹兜底卡片', () => {
+    expect(isUnconfirmedPaste('send_input', 2088)).toBe(true)
+    expect(isUnconfirmedPaste('send_input', SLOW_SEND_INPUT_PASTE_MS)).toBe(true)
+  })
+
+  it('正常的 send_input 仍按成功（日志里最慢 631ms）', () => {
+    expect(isUnconfirmedPaste('send_input', 631)).toBe(false)
+    expect(isUnconfirmedPaste('send_input', SLOW_SEND_INPUT_PASTE_MS - 1)).toBe(false)
+  })
+
+  it('会核实结果或同步等目标的方式，慢也不弹', () => {
+    expect(isUnconfirmedPaste('wm_paste', 5000)).toBe(false)
+    expect(isUnconfirmedPaste('console_paste', 5000)).toBe(false)
+    expect(isUnconfirmedPaste(undefined, 5000)).toBe(false)
   })
 })

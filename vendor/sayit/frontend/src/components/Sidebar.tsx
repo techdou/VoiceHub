@@ -5,7 +5,8 @@ import { cn } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/tooltip'
 import { useConnectionStatus } from '@/hooks/useConnectionStatus'
 import { getModeStatus, refreshModeStatus, subscribeModeStatus } from '@/stores/modeStatus'
-import { getLocale, type TranslationKey } from '@/i18n'
+import { getLocale } from '@/i18n'
+import type { TranslationKey } from '@/i18n'
 import { useT } from '@/i18n/useT'
 
 // 导航项存 key 而不是文案：切语言时这些常量不会重新求值（模块级只算一次），
@@ -53,7 +54,7 @@ function NavItem({
       }
     >
       <Icon className="h-4 w-4" />
-      <span className="min-w-0 truncate">{label}</span>
+      {label}
     </NavLink>
   )
 }
@@ -92,8 +93,15 @@ function IconOnlyNavItem({
 /**
  * 侧栏底部那排图标。
  *
- * VoiceHub 衔接说明：上游的待更新高亮已随更新链整体摘除（native 侧拒绝
- * download/install 命令，应用级更新由 VoiceHub 托管）。
+ * 有更新待安装时**不新增图标** —— 让「关于」这一枚自己变绿闪烁，悬停提示换成
+ * 「新版本已下载好」。关于页就是更新所在的地方，点它正好到达能看到版本说明和
+ * 「立即安装」的位置；多一枚图标既挤又需要用户先学会它是什么意思。
+ *
+ * 后台下载期间**故意毫无变化**：那会儿没有任何需要用户知道的事，静默才是本意。
+ *
+ * ⚠ 这里用绿色不违反下面 ModeIndicator 那条"不给任何好颜色"的规矩：那条针对的是
+ * 我们没验证过的事（配置填完了 ≠ 真能用）。而"包已下载完、哈希校验过、随时可装"
+ * 是确定的事实。别顺手把它改回中性色。
  */
 function FooterIcons() {
   const t = useT()
@@ -173,17 +181,20 @@ function ModeIndicator() {
 export default function Sidebar() {
   const t = useT()
   return (
-    <nav className="voicehub-nav flex w-48 shrink-0 flex-col overflow-y-auto border-r border-sidebar-border bg-sidebar py-4">
-      <div className="flex-1 space-y-0.5 px-3">
-        <p className="px-3 pb-2 text-[11px] font-semibold text-muted-foreground">{getLocale() === 'en' ? 'WORKSPACE' : '工作区'}</p>
+    <nav className="flex w-48 flex-col border-r border-sidebar-border bg-sidebar py-4">
+      <div className="flex-1 space-y-1 px-3">
         {dailyNavItems.map(({ to, icon, labelKey }) => (
           <NavItem key={to} to={to} icon={icon} label={t(labelKey)} />
         ))}
 
-        <p className="px-3 pb-2 pt-5 text-[11px] font-semibold text-muted-foreground">{getLocale() === 'en' ? 'VOICE' : '语音配置'}</p>
+        <div className="px-1 py-3">
+          <div className="h-px bg-[linear-gradient(to_right,transparent_0%,hsl(var(--sidebar-border))_5%,hsl(var(--sidebar-border))_95%,transparent_100%)]" />
+        </div>
         {configNavItems.map(({ to, icon, labelKey }) => (
           <NavItem key={to} to={to} icon={icon} label={t(labelKey)} />
         ))}
+
+        {/* VoiceHub：遥控器工作区（宿主 /remote/* 页面，不在 vendor 路由内）。 */}
         <p className="px-3 pb-2 pt-5 text-[11px] font-semibold text-muted-foreground">{getLocale() === 'en' ? 'REMOTE' : '遥控器'}</p>
         <NavItem to="/remote/connection" icon={Bluetooth} label={getLocale() === 'en' ? 'Connection' : '设备连接'} />
         <NavItem to="/remote/buttons" icon={Gamepad2} label={getLocale() === 'en' ? 'Button mapping' : '按键映射'} />

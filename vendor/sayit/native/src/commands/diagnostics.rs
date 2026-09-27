@@ -290,6 +290,11 @@ pub fn get_diagnostics_preview(data: Value) -> Result<Value, String> {
 #[derive(Deserialize)]
 struct DiagnosticsZipRequest {
     description: String,
+    /// 用户选的问题类型码（insert_failed / no_text / …，定义在 types/appApi.d.ts）。
+    /// 写进 manifest 是为了让收到 ticket 的人不必读完整份日志就知道该看哪一段。
+    /// 老版本客户端不发这个字段，所以要能缺省。
+    #[serde(rename = "issueType", default)]
+    issue_type: String,
     settings: Value,
     #[serde(rename = "issueOccurrence")]
     issue_occurrence: String,
@@ -327,6 +332,7 @@ pub fn create_diagnostics_zip(data: Value) -> Result<String, String> {
     // 1. manifest.json
     let manifest = serde_json::json!({
         "generatedAt": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "issueType": if req.issue_type.is_empty() { "unspecified" } else { req.issue_type.as_str() },
         "description": req.description,
         "issueOccurrence": req.issue_occurrence,
         "appVersion": env!("CARGO_PKG_VERSION"),

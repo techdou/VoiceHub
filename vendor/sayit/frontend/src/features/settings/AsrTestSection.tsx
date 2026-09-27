@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Feedback } from '@/components/ui/feedback'
 import { getSetting } from '@/services/store'
 import { getEngineDraftDirty, subscribeEngineDraft } from '@/stores/engineDraft'
-import { isQwenOmniProvider, resolveAsrDisplayModel, resolveQwenOmniModel } from '@/lib/asrModels'
+import { buildAsrExtra, isQwenOmniProvider, resolveAsrDisplayModel } from '@/lib/asrModels'
 import { describeProviderError, describeServerError } from '@/lib/errorMessages'
 import type { WorkMode } from '@/services/transcription'
 import { useT } from '@/i18n/useT'
@@ -95,19 +95,23 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
         const asrProvider = await getSetting('cloudAsr.provider', 'doubao_v2') as string
         const asrApiKey = await getSetting('cloudAsr.apiKey', '') as string
         const asrAppId = await getSetting('cloudAsr.appId', '') as string
+        const asrModel = await getSetting('cloudAsr.model', '') as string
 
         // 模型解析一律走 @/lib/asrModels。这里原来自己抄了一份映射表，还留着几个
         // 已经不在 ASR_PROVIDERS 里的旧 key——测试可能用与实际配置不同的模型。
         const isOmni = isQwenOmniProvider(asrProvider)
-        const qwenOmniModel = resolveQwenOmniModel(asrProvider)
-        let omniExtra: Record<string, unknown> | undefined
-        if (asrProvider === 'openai_compat') {
-          omniExtra = { api_url: await getSetting('cloudAsr.apiUrl', ''), model: await getSetting('cloudAsr.model', '') }
-        }
-        if (isOmni) {
-          const savedPrompt = await getSetting('cloudAsr.omniSystemPrompt', '') as string
-          omniExtra = { model: qwenOmniModel, instructions: savedPrompt || undefined }
-        }
+        const savedPrompt = isOmni
+          ? await getSetting('cloudAsr.omniSystemPrompt', '') as string
+          : ''
+        // baseUrl 只有「地址自己填」那两张卡是非空的，其余一律空串（见 asrEndpointUrl）
+        const baseUrl = await getSetting('cloudAsr.baseUrl', '') as string
+        const protocol = await getSetting('cloudAsr.protocol', 'auto') as string
+        const extra = buildAsrExtra(asrProvider, {
+          model: asrModel,
+          instructions: savedPrompt,
+          baseUrl,
+          protocol,
+        })
 
         const start = performance.now()
         const r = await invoke<{ text: string; elapsed_ms: number }>('cloud_transcribe', {
@@ -118,7 +122,7 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
               provider: isOmni ? 'qwen_omni' : asrProvider,
               api_key: asrApiKey,
               app_id: asrAppId,
-              ...(omniExtra && { extra: omniExtra }),
+              ...(extra && { extra }),
             },
           },
         })
@@ -127,7 +131,8 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
           text: r.text,
           asrMs: totalMs,
           mode: 'cloud_api',
-          model: isOmni ? (qwenOmniModel || asrProvider) : resolveAsrDisplayModel(asrProvider),
+          // 报的必须是**真正发出去的**那个模型，否则这个面板就成了误导源
+          model: extra?.model || resolveAsrDisplayModel(asrProvider),
           audioDurationSec,
         })
       } else {
@@ -217,12 +222,6 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
           />
         )}
 
-        {!result && !error && !testing && (
-          <p className="mt-4 rounded-md border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">
-            {t('asrTest.placeholder')}
-          </p>
-        )}
-
         {error && (
           <Feedback
             className="mt-4"
@@ -231,6 +230,12 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
             detail={error.detail}
             actions={[{ label: t('common.retry'), onClick: () => void handleTest(), disabled: testing }]}
           />
+        )}
+
+        {!result && !error && !testing && (
+          <p className="mt-4 rounded-md border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">
+            {t('asrTest.placeholder')}
+          </p>
         )}
 
         {result && (

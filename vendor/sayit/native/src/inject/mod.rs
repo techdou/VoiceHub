@@ -110,7 +110,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 #[cfg(windows)]
 use windows::Win32::System::DataExchange::{
     OpenClipboard, CloseClipboard, EmptyClipboard, SetClipboardData, GetClipboardData,
-    GetOpenClipboardWindow,
+    GetOpenClipboardWindow, GetClipboardSequenceNumber,
 };
 #[cfg(windows)]
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
@@ -243,12 +243,18 @@ impl EditableGate {
     }
 }
 
+/// `editability_gate` 的 bool 视图，只给测试用。
+///
+/// 加 `#[cfg(test)]` 是因为生产代码一处都不调它（真正的调用方要的是 gate 本身，
+/// 好把"是哪一层放行的"写进日志），于是 release 构建每次都报一条 dead_code 警告。
+/// 不删掉它是因为测试确实要断言"最终结论是可编辑"这一面 —— 见下面注释说的漂移风险。
+#[cfg(test)]
 pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
     editability_gate(ctx).is_editable()
 }
 
-/// 判据只有这一份实现，`is_likely_editable_pub` 是它的 bool 视图。别再复制一份出来
-/// 只为了拿结论 —— 两份判据迟早漂移，而漂移的症状是「改了一处，另一条路径照旧」。
+/// 判据只有这一份实现。别再复制一份出来只为了拿一个 bool 结论 —— 两份判据迟早漂移，
+/// 而漂移的症状是「改了一处，另一条路径照旧」。需要 bool 就 `.is_editable()`。
 pub fn editability_gate(ctx: &context::AppContext) -> EditableGate {
     let fc = ctx.focus_class.to_lowercase();
     let wc = ctx.window_class.to_lowercase();
@@ -517,7 +523,11 @@ unsafe fn do_inject(target: HWND, focus: HWND, text: &str, restore_clipboard: bo
     // Step 2: Try WM_PASTE — this is a message sent directly to the target
     // window handle, so it works even if the target is not the foreground
     // window. Most native Win32 controls (Edit, RichEdit) handle it.
-    let paste_target = if focus.0 != std::ptr::null_mut() { focus } else { target };
+    let probed_paste_target = if focus.0 != std::ptr::null_mut() { focus } else { target };
+    // 焦点是录音开始时抓的。若那个控件此刻已经不可见（比如 Everything 原地重命名用的
+    // 临时 Edit），WM_PASTE 照样返回成功、文本却进了看不见的地方，长度核实也会误判为
+    // 成功 —— 所以先换到目标线程此刻真正的焦点上，前提是它仍在同一个顶层窗口里。
+    let paste_target = rebind_invisible_focus(target, probed_paste_target);
     let focus_class = crate::context::read_class_name(paste_target).to_lowercase();
 
     // WM_PASTE works reliably for native Win32 edit controls
@@ -526,36 +536,8 @@ unsafe fn do_inject(target: HWND, focus: HWND, text: &str, restore_clipboard: bo
         || focus_class.contains("scintilla");
 
     if try_wm_paste {
-        crate::commands::system::write_log_line(
-            &format!("[RUST] [inject] WM_PASTE attempt hwnd={} class={} textLen={}",
-                paste_target.0 as isize, focus_class, text.len())
-        );
-
-        let mut result_val: usize = 0;
-        let send_ok = SendMessageTimeoutW(
-            paste_target,
-            WM_PASTE,
-            windows::Win32::Foundation::WPARAM(0),
-            windows::Win32::Foundation::LPARAM(0),
-            SMTO_ABORTIFHUNG,
-            2000, // 2 second timeout
-            Some(&mut result_val),
-        );
-
-        if send_ok.0 != 0 {
-            crate::commands::system::write_log_line(
-                &format!("[RUST] [inject] WM_PASTE ok hwnd={} class={}", paste_target.0 as isize, focus_class)
-            );
-            return InjectResult {
-                ok: true,
-                strategy: Some("wm_paste".to_string()),
-                reason: None,
-                detail: Some(format!(
-                    "hwnd={} class={} textLen={}",
-                    paste_target.0 as isize, focus_class, text.len()
-                )),
-                uncertain: false,
-            };
+        if let Some(result) = wm_paste_verified(target, paste_target, &focus_class, text, paste_id) {
+            return result;
         }
         crate::commands::system::write_log_line("[RUST] [inject] WM_PASTE failed, fallback to SendInput");
     }
@@ -563,8 +545,8 @@ unsafe fn do_inject(target: HWND, focus: HWND, text: &str, restore_clipboard: bo
     // Step 3: Fallback — force foreground + SendInput Ctrl+V
     let fg_ok = force_foreground(target);
     crate::commands::system::write_log_line(
-        &format!("[RUST] [inject] SendInput fallback target={} fg_ok={} class={} textLen={}",
-            target.0 as isize, fg_ok, focus_class, text.len())
+        &format!("[RUST] [inject] SendInput fallback target={} fg_ok={} class={} textLen={} {}",
+            target.0 as isize, fg_ok, focus_class, text.len(), describe_elevation(target))
     );
 
     // Release stuck modifiers
@@ -674,6 +656,472 @@ unsafe fn do_inject(target: HWND, focus: HWND, text: &str, restore_clipboard: bo
         ),
         detail: Some(format!("{} inputGuards={}", detail, guards)),
         uncertain: false,
+    }
+}
+
+// ─── Verified WM_PASTE ───
+
+#[cfg(windows)]
+const WM_GETTEXTLENGTH: u32 = 0x000E;
+#[cfg(windows)]
+const EM_GETSEL: u32 = 0x00B0;
+#[cfg(windows)]
+const EM_REPLACESEL: u32 = 0x00C2;
+#[cfg(windows)]
+const GWL_STYLE: i32 = -16;
+#[cfg(windows)]
+const ES_MULTILINE: i32 = 0x0004;
+#[cfg(windows)]
+const ES_READONLY: i32 = 0x0800;
+
+/// 核实用查询的超时。只取一个数字，正常目标 1ms 内就回；超时说明目标卡住，当作「核实不了」。
+#[cfg(windows)]
+const VERIFY_QUERY_TIMEOUT_MS: u32 = 150;
+/// 每次 WM_PASTE 之后等长度变化的上限。WM_PASTE 是同步消息，标准 Edit 返回时文本已经
+/// 进去了；多等这一会儿是防「目标自己异步处理粘贴」—— 没等够就重试，文本会插两遍。
+#[cfg(windows)]
+const VERIFY_WAIT_MS: u64 = 150;
+/// 第 2、3 次 WM_PASTE 之前的等待，给正占着剪贴板的程序（剪贴板管理器等）让出时间。
+#[cfg(windows)]
+const WM_PASTE_RETRY_DELAYS_MS: [u64; 2] = [40, 120];
+
+#[cfg(windows)]
+mod ffi {
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::HWND;
+
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn IsWindowVisible(hwnd: HWND) -> i32;
+        pub fn IsWindowEnabled(hwnd: HWND) -> i32;
+        pub fn GetWindowLongW(hwnd: HWND, index: i32) -> i32;
+        pub fn GetDlgCtrlID(hwnd: HWND) -> i32;
+        pub fn GetParent(hwnd: HWND) -> HWND;
+        pub fn IsChild(parent: HWND, child: HWND) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        pub fn CloseHandle(handle: *mut c_void) -> i32;
+        pub fn GetCurrentProcess() -> *mut c_void;
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        pub fn OpenProcessToken(process: *mut c_void, access: u32, token: *mut *mut c_void) -> i32;
+        pub fn GetTokenInformation(
+            token: *mut c_void,
+            class: u32,
+            info: *mut c_void,
+            len: u32,
+            ret_len: *mut u32,
+        ) -> i32;
+    }
+}
+
+/// 发 WM_PASTE 并核实文本确实进了输入框。
+///
+/// 为什么要核实：WM_PASTE 返回成功只说明消息被收下了。Edit 控件处理它时自己去
+/// OpenClipboard，那一刻剪贴板若被别的程序占着就**静默什么都不做**。2026-09 有用户在
+/// Everything 里连续几次日志都是 `WM_PASTE ok`，窗口标题（= 搜索框内容）却一个字没变；
+/// 不核实的话这类失败日志里看不出来，用户也看不到兜底卡片。
+///
+/// 核实只用 WM_GETTEXTLENGTH：它只回一个数字、不复制内容，Edit / Scintilla 内部存着这个数，
+/// 10MB 的文档也是直接返回（WM_GETTEXT 才会复制全文，别换成它）。判据只能是「长度变没变」，
+/// 不能是「涨了插入的字数」—— 单行框会截断换行、有选区时是替换、还有 EM_LIMITTEXT 上限。
+///
+/// 返回 None 表示 WM_PASTE 消息本身没送达，调用方照旧走 SendInput。
+#[cfg(windows)]
+unsafe fn wm_paste_verified(
+    target: HWND,
+    paste_target: HWND,
+    focus_class: &str,
+    text: &str,
+    paste_id: u64,
+) -> Option<InjectResult> {
+    let utf16_len = text.encode_utf16().count();
+    let len_before = query_text_len(paste_target);
+    let sel_before = query_selection(paste_target);
+
+    crate::commands::system::write_log_line(&format!(
+        "[RUST] [inject] WM_PASTE attempt pasteId={} hwnd={} class={} textLen={} utf16Len={} lenBefore={} sel={} {} {} clipSeq={} {}",
+        paste_id,
+        paste_target.0 as isize,
+        focus_class,
+        text.len(),
+        utf16_len,
+        fmt_opt(len_before),
+        fmt_sel(sel_before),
+        describe_paste_target(target, paste_target),
+        describe_elevation(target),
+        GetClipboardSequenceNumber(),
+        describe_clipboard_holder()
+    ));
+
+    let base_detail = format!(
+        "hwnd={} class={} textLen={}",
+        paste_target.0 as isize, focus_class, text.len()
+    );
+    let succeeded = |strategy: &str, verify: &str, attempts: usize| {
+        crate::commands::system::write_log_line(&format!(
+            "[RUST] [inject] WM_PASTE ok hwnd={} class={} pasteId={} strategy={} verify={} attempts={}",
+            paste_target.0 as isize, focus_class, paste_id, strategy, verify, attempts
+        ));
+        InjectResult {
+            ok: true,
+            strategy: Some(strategy.to_string()),
+            reason: None,
+            detail: Some(format!("{} verify={} attempts={}", base_detail, verify, attempts)),
+            uncertain: false,
+        }
+    };
+
+    // 读不到长度（目标不回这条查询）或者没有可插的字：没法核实，退回老行为 ——
+    // 发一次、信任返回值。这里绝不重试，否则一旦其实粘上了就是两遍。
+    let before = match len_before {
+        Some(n) if utf16_len > 0 => n,
+        _ => {
+            if !send_wm_paste(paste_target, paste_id, 1) {
+                return None;
+            }
+            return Some(succeeded("wm_paste", "unavailable", 1));
+        }
+    };
+
+    let mut attempts = 0usize;
+    for attempt in 0..=WM_PASTE_RETRY_DELAYS_MS.len() {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(WM_PASTE_RETRY_DELAYS_MS[attempt - 1]));
+            // 上一次没粘上的这段时间里，剪贴板可能被别的程序改写；重试前确认粘的还是我们的文本
+            if native_get_clipboard_text().as_deref() != Some(text) {
+                let rewritten = set_clipboard_with_retry(text, 3, 20);
+                crate::commands::system::write_log_line(&format!(
+                    "[RUST] [inject] clipboard changed before retry pasteId={} attempt={} rewritten={} clipSeq={} {}",
+                    paste_id,
+                    attempt + 1,
+                    rewritten,
+                    GetClipboardSequenceNumber(),
+                    describe_clipboard_holder()
+                ));
+                if !rewritten {
+                    break;
+                }
+            }
+        }
+
+        attempts += 1;
+        let seq_before = GetClipboardSequenceNumber();
+        if !send_wm_paste(paste_target, paste_id, attempts) {
+            if attempt == 0 {
+                return None;
+            }
+            break;
+        }
+        let (after, waited_ms) = wait_for_text_len_change(paste_target, before);
+        crate::commands::system::write_log_line(&format!(
+            "[RUST] [inject] WM_PASTE verify pasteId={} attempt={} lenBefore={} lenAfter={} waitedMs={} clipSeqBefore={} clipSeqAfter={}",
+            paste_id,
+            attempts,
+            before,
+            fmt_opt(after),
+            waited_ms,
+            seq_before,
+            GetClipboardSequenceNumber()
+        ));
+
+        match after {
+            // 发出去之后反而读不到了：不知道进没进，不能重试
+            None => return Some(succeeded("wm_paste", "unreadable", attempts)),
+            Some(n) if n != before => return Some(succeeded("wm_paste", "changed", attempts)),
+            Some(_) => {
+                // 选中的字数恰好等于插入字数时，替换成功长度也不变 —— 分不清就不重试
+                if selection_len_matches(sel_before, before, utf16_len) {
+                    return Some(succeeded("wm_paste", "ambiguous_same_length", attempts));
+                }
+            }
+        }
+    }
+
+    // WM_PASTE 反复无效，多半是剪贴板这条路本身被卡住了。纯 Edit 控件还能用 EM_REPLACESEL
+    // 把文字直接写进选区，完全不经过剪贴板。只限类名正好是 "edit"：系统会替它跨进程
+    // 转送字符串参数（与 WM_SETTEXT 同理）；RichEdit / Scintilla / 各种改名的子类不保证。
+    if focus_class == "edit" {
+        let multiline = ffi::GetWindowLongW(paste_target, GWL_STYLE) & ES_MULTILINE != 0;
+        let normalized = normalize_for_edit(text, multiline);
+        let wide: Vec<u16> = normalized.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut result_val: usize = 0;
+        let send_ok = SendMessageTimeoutW(
+            paste_target,
+            EM_REPLACESEL,
+            windows::Win32::Foundation::WPARAM(1), // 可撤销
+            windows::Win32::Foundation::LPARAM(wide.as_ptr() as isize),
+            SMTO_ABORTIFHUNG,
+            2000,
+            Some(&mut result_val),
+        );
+        let after = if send_ok.0 != 0 { query_text_len(paste_target) } else { None };
+        crate::commands::system::write_log_line(&format!(
+            "[RUST] [inject] EM_REPLACESEL fallback pasteId={} sent={} multiline={} lenBefore={} lenAfter={}",
+            paste_id,
+            send_ok.0 != 0,
+            multiline,
+            before,
+            fmt_opt(after)
+        ));
+        if matches!(after, Some(n) if n != before) {
+            return Some(succeeded("em_replacesel", "changed", attempts));
+        }
+    }
+
+    // 确认没插进去：如实报失败，让前端弹兜底卡片。以前这里会报成功，用户什么都看不到。
+    let detail = format!(
+        "{} verify=no_effect attempts={} lenBefore={} sel={} {}",
+        base_detail,
+        attempts,
+        before,
+        fmt_sel(sel_before),
+        describe_paste_target(target, paste_target)
+    );
+    crate::commands::system::write_log_line(&format!(
+        "[RUST] [inject] WM_PASTE no effect pasteId={} {} clipSeq={} {}",
+        paste_id,
+        detail,
+        GetClipboardSequenceNumber(),
+        describe_clipboard_holder()
+    ));
+    Some(InjectResult {
+        ok: false,
+        strategy: Some("wm_paste".to_string()),
+        reason: Some("paste_no_effect".to_string()),
+        detail: Some(detail),
+        uncertain: false,
+    })
+}
+
+#[cfg(windows)]
+unsafe fn send_wm_paste(hwnd: HWND, paste_id: u64, attempt: usize) -> bool {
+    let mut result_val: usize = 0;
+    let send_ok = SendMessageTimeoutW(
+        hwnd,
+        WM_PASTE,
+        windows::Win32::Foundation::WPARAM(0),
+        windows::Win32::Foundation::LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        2000,
+        Some(&mut result_val),
+    );
+    if send_ok.0 == 0 {
+        let err = windows::Win32::Foundation::GetLastError().0;
+        crate::commands::system::write_log_line(&format!(
+            "[RUST] [inject] WM_PASTE send failed pasteId={} attempt={} err={}",
+            paste_id, attempt, err
+        ));
+        return false;
+    }
+    true
+}
+
+/// 文本长度（UTF-16 单位）。只取长度不取内容；拿不到返回 None，调用方当作「核实不了」。
+#[cfg(windows)]
+unsafe fn query_text_len(hwnd: HWND) -> Option<usize> {
+    let mut out: usize = 0;
+    let ok = SendMessageTimeoutW(
+        hwnd,
+        WM_GETTEXTLENGTH,
+        windows::Win32::Foundation::WPARAM(0),
+        windows::Win32::Foundation::LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        VERIFY_QUERY_TIMEOUT_MS,
+        Some(&mut out),
+    );
+    if ok.0 == 0 { None } else { Some(out) }
+}
+
+/// 选区 (start, end)。用的是返回值那种形式：两端各只有 16 位，超过 65535 字会被截断；
+/// 指针参数那种形式跨进程不一定被转送，不敢用。所以它只进日志、只在短文本里参与判断。
+#[cfg(windows)]
+unsafe fn query_selection(hwnd: HWND) -> Option<(usize, usize)> {
+    let mut out: usize = 0;
+    let ok = SendMessageTimeoutW(
+        hwnd,
+        EM_GETSEL,
+        windows::Win32::Foundation::WPARAM(0),
+        windows::Win32::Foundation::LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        VERIFY_QUERY_TIMEOUT_MS,
+        Some(&mut out),
+    );
+    if ok.0 == 0 { None } else { Some((out & 0xFFFF, (out >> 16) & 0xFFFF)) }
+}
+
+#[cfg(windows)]
+unsafe fn wait_for_text_len_change(hwnd: HWND, before: usize) -> (Option<usize>, u64) {
+    let started = Instant::now();
+    loop {
+        let now = query_text_len(hwnd);
+        let waited_ms = started.elapsed().as_millis() as u64;
+        match now {
+            Some(n) if n == before && waited_ms < VERIFY_WAIT_MS => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            _ => return (now, waited_ms),
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+/// 替换选区时长度不变的那种情况。选区位置只有 16 位，文本超过 0xFFFF 时位置不可信，一律不认。
+fn selection_len_matches(sel: Option<(usize, usize)>, text_len: usize, inserted_len: usize) -> bool {
+    match sel {
+        Some((start, end)) if text_len < 0xFFFF && end > start => end - start == inserted_len,
+        _ => false,
+    }
+}
+
+#[cfg(any(windows, test))]
+/// EM_REPLACESEL 不像粘贴那样替你处理换行：多行框要 CRLF，单行框遇到换行会显示成乱码，换成空格。
+fn normalize_for_edit(text: &str, multiline: bool) -> String {
+    let unified = text.replace("\r\n", "\n");
+    if multiline {
+        unified.replace('\n', "\r\n")
+    } else {
+        unified.replace('\n', " ")
+    }
+}
+
+/// 录音开始时抓到的焦点若已不可见，换成目标线程此刻的焦点（限同一个顶层窗口内）。
+#[cfg(windows)]
+unsafe fn rebind_invisible_focus(target: HWND, probed: HWND) -> HWND {
+    if probed == target || ffi::IsWindowVisible(probed) != 0 {
+        return probed;
+    }
+    let current = current_focus_of(target);
+    let usable = current.filter(|cur| {
+        *cur != probed
+            && ffi::IsWindowVisible(*cur) != 0
+            && (*cur == target || ffi::IsChild(target, *cur) != 0)
+    });
+    crate::commands::system::write_log_line(&format!(
+        "[RUST] [inject] probed focus invisible hwnd={} class={} currentFocus={} rebound={}",
+        probed.0 as isize,
+        crate::context::read_class_name(probed),
+        current.map_or(0, |h| h.0 as isize),
+        usable.is_some()
+    ));
+    usable.unwrap_or(probed)
+}
+
+#[cfg(windows)]
+unsafe fn current_focus_of(target: HWND) -> Option<HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
+    let tid = GetWindowThreadProcessId(target, None);
+    if tid == 0 {
+        return None;
+    }
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if GetGUIThreadInfo(tid, &mut info).is_err() || info.hwndFocus.0.is_null() {
+        return None;
+    }
+    Some(info.hwndFocus)
+}
+
+/// 粘贴目标控件此刻的状态。用来区分「粘进了看不见的控件」「焦点在录音期间换了」
+/// 「控件只读 / 被禁用」这几种同样表现为"日志成功、框里没字"的情况。
+#[cfg(windows)]
+unsafe fn describe_paste_target(target: HWND, paste_target: HWND) -> String {
+    let style = ffi::GetWindowLongW(paste_target, GWL_STYLE);
+    let parent = ffi::GetParent(paste_target);
+    let fg_now = GetForegroundWindow();
+    let focus_now = current_focus_of(target);
+    format!(
+        "visible={} enabled={} readOnly={} multiline={} ctrlId={} parent={}/{} inTarget={} fgIsTarget={} focusNow={} focusUnchanged={}",
+        ffi::IsWindowVisible(paste_target) != 0,
+        ffi::IsWindowEnabled(paste_target) != 0,
+        style & ES_READONLY != 0,
+        style & ES_MULTILINE != 0,
+        ffi::GetDlgCtrlID(paste_target),
+        parent.0 as isize,
+        if parent.0.is_null() { String::new() } else { crate::context::read_class_name(parent) },
+        paste_target == target || ffi::IsChild(target, paste_target) != 0,
+        fg_now == target,
+        focus_now.map_or(0, |h| h.0 as isize),
+        focus_now == Some(paste_target)
+    )
+}
+
+/// SayIt 与目标进程是否以管理员运行。目标权限更高时往往连它的令牌都打不开，记成 "?"
+/// —— 此时 "selfElevated=false targetElevated=?" 本身就强烈暗示目标是管理员进程。
+#[cfg(windows)]
+fn describe_elevation(target: HWND) -> String {
+    use std::sync::OnceLock;
+    static SELF_ELEVATED: OnceLock<Option<bool>> = OnceLock::new();
+    let self_elevated = *SELF_ELEVATED.get_or_init(|| unsafe { token_elevated(ffi::GetCurrentProcess()) });
+
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(target, Some(&mut pid)) };
+    let target_elevated = if pid == 0 {
+        None
+    } else {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        unsafe {
+            let process = ffi::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                None
+            } else {
+                let elevated = token_elevated(process);
+                ffi::CloseHandle(process);
+                elevated
+            }
+        }
+    };
+    format!(
+        "selfElevated={} targetElevated={}",
+        fmt_bool_opt(self_elevated),
+        fmt_bool_opt(target_elevated)
+    )
+}
+
+#[cfg(windows)]
+unsafe fn token_elevated(process: *mut std::ffi::c_void) -> Option<bool> {
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_ELEVATION_CLASS: u32 = 20;
+    let mut token: *mut std::ffi::c_void = std::ptr::null_mut();
+    if ffi::OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+        return None;
+    }
+    let mut elevation: u32 = 0;
+    let mut ret_len: u32 = 0;
+    let ok = ffi::GetTokenInformation(
+        token,
+        TOKEN_ELEVATION_CLASS,
+        &mut elevation as *mut u32 as *mut std::ffi::c_void,
+        std::mem::size_of::<u32>() as u32,
+        &mut ret_len,
+    );
+    ffi::CloseHandle(token);
+    if ok == 0 { None } else { Some(elevation != 0) }
+}
+
+#[cfg(any(windows, test))]
+fn fmt_opt(value: Option<usize>) -> String {
+    value.map_or_else(|| "?".to_string(), |v| v.to_string())
+}
+
+#[cfg(any(windows, test))]
+fn fmt_sel(sel: Option<(usize, usize)>) -> String {
+    sel.map_or_else(|| "?".to_string(), |(start, end)| format!("{}-{}", start, end))
+}
+
+#[cfg(any(windows, test))]
+fn fmt_bool_opt(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "?",
     }
 }
 
@@ -1018,8 +1466,35 @@ unsafe fn native_get_clipboard_text() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{describe_editability, editability_gate, is_likely_editable_pub, EditableGate};
+    use super::{
+        describe_editability, editability_gate, is_likely_editable_pub, normalize_for_edit,
+        selection_len_matches, EditableGate,
+    };
     use crate::context::AppContext;
+
+    /// 这条判据决定「长度没变」时要不要重试。认错成「替换成功」只是少救一次；
+    /// 认错成「没粘上」会重试，文本就插两遍 —— 所以边界都往「分不清、不重试」那边收。
+    #[test]
+    fn same_length_replacement_is_treated_as_ambiguous() {
+        // 选中 3 个字、插入 3 个字：替换成功长度也不变
+        assert!(selection_len_matches(Some((2, 5)), 100, 3));
+        // 没有选区时长度不变就是真没粘上
+        assert!(!selection_len_matches(Some((5, 5)), 100, 3));
+        assert!(!selection_len_matches(Some((2, 4)), 100, 3));
+        assert!(!selection_len_matches(None, 100, 3));
+    }
+
+    #[test]
+    fn selection_positions_are_distrusted_beyond_16_bits() {
+        // EM_GETSEL 返回值两端各只有 16 位，长文本里位置被截断，不能据此下结论
+        assert!(!selection_len_matches(Some((2, 5)), 0x1_0000, 3));
+    }
+
+    #[test]
+    fn edit_newlines_are_normalized_per_style() {
+        assert_eq!(normalize_for_edit("a\nb\r\nc", true), "a\r\nb\r\nc");
+        assert_eq!(normalize_for_edit("a\nb\r\nc", false), "a b c");
+    }
 
     /// 微信 4.1.13.65 的真实取值，来自 dev-scripts/probe-foreground-target.ps1：
     /// Qt 自绘窗口，caret / 原生类名 / UIA 三层判据全部为空，只有进程名能放行它。

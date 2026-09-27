@@ -1,9 +1,17 @@
 import * as bridge from '@/services/bridge'
 import { cn } from '@/lib/utils'
-import { resolveAsrDisplayModel, isQwenOmniProvider, resolveQwenOmniModel } from '@/lib/asrModels'
+import { buildAsrExtra, resolveAsrDisplayModel, isQwenOmniProvider } from '@/lib/asrModels'
 import { uint8ArrayToBase64 } from '@/lib/encoding'
 import { getWorkMode } from '@/services/transcription'
 import { polishWithClientAi } from '@/services/transcription/clientAiPolish'
+import {
+  extractServerAiEvidence,
+  policyFromSnapshot,
+  resolveAndLogAiOutcome,
+  serverShouldPolish,
+  type AiConfigSnapshot,
+  type AiOutcomeContext,
+} from '@/services/transcription/aiPolicy'
 import { SERVER_AI_SOURCE_KEY } from '@/services/transcription/serverAiSource'
 import type { AiExecutionSource, AiExecutionStatus, WorkMode } from '@/services/transcription'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -51,29 +59,59 @@ interface ReprocessResult {
   asrModel?: string
   aiSource?: AiExecutionSource
   aiStatus?: AiExecutionStatus
+  aiReason?: string
   aiProvider?: string
   aiModel?: string
+  serverAi?: { error?: string; provider?: string }
+}
+
+/**
+ * 一次重跑的 AI 上下文。
+ *
+ * snapshot 是**这次重跑**的配置（不是被重跑那条记录当初的配置）；operationId 每次新建，
+ * 不复用旧记录的标识，否则两次处理在日志里分不开。
+ */
+interface ReprocessAiContext {
+  snapshot: AiConfigSnapshot
+  context: AiOutcomeContext
+}
+
+async function buildReprocessAiContext(recordId: string): Promise<ReprocessAiContext> {
+  const [rawSource, rawMin, rawEnabled] = await Promise.all([
+    getSetting(SERVER_AI_SOURCE_KEY, 'managed') as Promise<string>,
+    getSetting('aiMinDurationSec', 0),
+    getSetting('aiEnabled', false),
+  ])
+  return {
+    snapshot: {
+      workMode: getWorkMode(),
+      aiEnabled: Boolean(rawEnabled),
+      aiMinDurationSec: Math.max(0, Number(rawMin) || 0),
+      serverAiSource: rawSource === 'custom' ? 'custom' : 'managed',
+    },
+    context: {
+      operationId: `reprocess-${recordId}-${Date.now().toString(36)}`,
+      trigger: 'history_reprocess',
+    },
+  }
 }
 
 /** 服务器模式重新识别：通过独立 WebSocket 连接，避免干扰全局连接 */
 async function reprocessViaServer(
   chunk: ArrayBuffer,
   hotwords: string[],
-  aiEnabled: boolean,
+  ai: ReprocessAiContext,
   systemPrompt: string | undefined,
   clientMeta: Awaited<ReturnType<typeof bridge.getClientRuntimeInfo>> | null,
 ): Promise<ReprocessResult> {
   const { getWSUrl } = await import('@/services/runtimeConfig')
   const wsUrl = getWSUrl()
-  const [aiSource, rawAiMinDurationSec] = await Promise.all([
-    getSetting(SERVER_AI_SOURCE_KEY, 'managed') as Promise<string>,
-    getSetting('aiMinDurationSec', 0),
-  ])
   const audioDurationSec = (chunk.byteLength / 2) / 16000
-  const aiMinDurationSec = Math.max(0, Number(rawAiMinDurationSec) || 0)
-  const skipAiForDuration = aiEnabled && aiMinDurationSec > 0 && audioDurationSec < aiMinDurationSec
-  const useCustomAi = aiEnabled && aiSource === 'custom'
-  const useManagedAi = aiEnabled && !useCustomAi && !skipAiForDuration
+  // 判据与实时录音共用同一个函数。这里原来自己又算了一遍门槛/来源/是否用内置 AI，
+  // 是本轮要消灭的第二份实现。
+  const policy = policyFromSnapshot(ai.snapshot, 'server', audioDurationSec)
+  const useManagedAi = serverShouldPolish(policy)
+  const useCustomAi = policy.allowCall && policy.route === 'custom'
 
   const serverResult = await new Promise<ReprocessResult>((resolve, reject) => {
     const timeout = window.setTimeout(() => {
@@ -137,6 +175,9 @@ async function reprocessViaServer(
             durationSec: Number(msg.duration_sec || 0),
             asrEngine: msg.asr_engine || undefined,
             asrModel: msg.asr_model || undefined,
+            // 与实时路径同一个提取函数：重跑此前完全不看执行证据，于是服务端
+            // 调用失败在重跑后的记录里和"没调用"分不开。
+            serverAi: extractServerAiEvidence(msg.llm_debug),
           })
         } else if (msg.type === 'done' && !resolved) {
           // 没有 final 就 done 了（后端判定为静音/无结果）
@@ -170,37 +211,36 @@ async function reprocessViaServer(
     }
   })
 
-  if (!serverResult.asrText.trim()) {
-    return {
-      ...serverResult,
-      aiSource: 'none',
-      aiStatus: 'skipped',
-      aiProvider: undefined,
-      aiModel: undefined,
-    }
-  }
-
   if (!useCustomAi) {
+    // 内置 AI 路线（含空识别、总开关关闭、低于门槛）：结论一律由共用判据给出，
+    // 不再拿 llmMs > 0 反推成功失败。
+    const outcome = resolveAndLogAiOutcome(ai.context, policy, {
+      asrTextEmpty: !serverResult.asrText.trim(),
+      serverError: serverResult.serverAi?.error,
+      serverProvider: serverResult.serverAi?.provider,
+      llmMs: serverResult.llmMs,
+    })
     return {
       ...serverResult,
-      aiSource: useManagedAi ? 'server' : 'none',
-      aiStatus: useManagedAi
-        ? serverResult.llmMs > 0 ? 'applied' : 'unavailable'
-        : 'skipped',
-      aiProvider: useManagedAi ? 'server' : undefined,
+      aiSource: outcome.source,
+      aiStatus: outcome.status,
+      aiReason: outcome.reason,
+      aiProvider: outcome.provider,
+      aiModel: outcome.model,
     }
   }
 
   const polished = await polishWithClientAi({
     asrText: serverResult.asrText,
-    durationSec: audioDurationSec,
     startOptions: {
       runId: 1,
+      operationId: ai.context.operationId,
+      aiConfig: ai.snapshot,
       systemPrompt,
-      disableAi: !aiEnabled,
-      aiMinDurationSec,
       source: 'history_reprocess',
     },
+    policy,
+    outcomeContext: ai.context,
     logSource: 'history',
   })
   return polished ? { ...serverResult, ...polished } : serverResult
@@ -210,7 +250,7 @@ async function reprocessViaServer(
 async function reprocessViaCloudApi(
   chunk: ArrayBuffer,
   hotwords: string[],
-  aiEnabled: boolean,
+  ai: ReprocessAiContext,
   systemPrompt: string | undefined,
 ): Promise<ReprocessResult> {
   const durationSec = (chunk.byteLength / 2) / 16000
@@ -220,7 +260,7 @@ async function reprocessViaCloudApi(
   const isQwenOmni = isQwenOmniProvider(asrProvider)
   const asrApiKey = await getSetting('cloudAsr.apiKey', '') as string
   const asrAppId = await getSetting('cloudAsr.appId', '') as string
-  const qwenOmniModel = resolveQwenOmniModel(asrProvider)
+  const asrModel = await getSetting('cloudAsr.model', '') as string
 
   let omniInstructions: string | undefined
   if (isQwenOmni) {
@@ -228,15 +268,19 @@ async function reprocessViaCloudApi(
     omniInstructions = savedPrompt || undefined
   }
 
+  const baseUrl = await getSetting('cloudAsr.baseUrl', '') as string
+  const protocol = await getSetting('cloudAsr.protocol', 'auto') as string
+  const extra = buildAsrExtra(asrProvider, {
+    model: asrModel,
+    instructions: omniInstructions,
+    baseUrl,
+    protocol,
+  })
   const asrConfig: Record<string, unknown> = {
     provider: isQwenOmni ? 'qwen_omni' : asrProvider,
     api_key: asrApiKey,
     app_id: asrAppId,
-    ...(isQwenOmni && { extra: { model: qwenOmniModel, instructions: omniInstructions } }),
-    ...(asrProvider === 'openai_compat' && { extra: {
-      api_url: await getSetting('cloudAsr.apiUrl', ''),
-      model: await getSetting('cloudAsr.model', ''),
-    } }),
+    ...(extra && { extra }),
   }
 
   const asrStart = performance.now()
@@ -247,36 +291,38 @@ async function reprocessViaCloudApi(
   const asrText = restoreHotwordSpacing(asrResult.text, hotwords)
   const asrMs = asrResult.elapsed_ms || Math.round(performance.now() - asrStart)
 
-  // Qwen Omni 已内置 AI，无需再校对
-  let llmText = asrText
-  let llmMs = 0
-  if (asrText.trim() && aiEnabled && !isQwenOmni) {
-    const aiProvider = await getSetting('cloudAi.provider', 'openai_compat') as string
-    const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
-    const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
-    const aiModel = await getSetting('cloudAi.model', '') as string
-    if (aiApiUrl && aiApiKey && aiModel) {
-      try {
-        const aiResult = await invoke<{ text: string; elapsed_ms: number }>('cloud_polish', {
-          request: {
-            text: asrText,
-            ai_config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
-            system_prompt: systemPrompt || null,
-          },
-        })
-        llmText = aiResult.text || asrText
-        llmMs = aiResult.elapsed_ms
-      } catch { /* AI 失败时保留 ASR 原文 */ }
-    }
-  }
+  // 改走共用润色。原来这里直接 invoke('cloud_polish')，与实时路径有三处分歧：
+  //   1. 完全不检查短语音门槛（实时会跳过的语音，重跑却会调 AI）；
+  //   2. 配置判据写成 `url && key && model`，漏了 ollama 免密豁免 —— ollama 用户
+  //      重跑时被静默判成"配置不完整"；
+  //   3. catch 空吞，既无日志也无执行状态，失败与未调用在记录里分不开。
+  const policy = policyFromSnapshot(ai.snapshot, 'cloud_api', durationSec, isQwenOmni)
+  const polish = await polishWithClientAi({
+    asrText,
+    startOptions: {
+      runId: 1,
+      operationId: ai.context.operationId,
+      aiConfig: ai.snapshot,
+      systemPrompt,
+      source: 'history_reprocess',
+    },
+    policy,
+    outcomeContext: ai.context,
+    logSource: 'history',
+  })
 
   return {
     asrText,
-    llmText,
+    llmText: polish?.llmText ?? asrText,
     asrMs,
-    llmMs,
+    llmMs: polish?.llmMs ?? 0,
     durationSec,
-    ...(isQwenOmni && { asrEngine: 'qwen_omni', asrModel: qwenOmniModel }),
+    aiSource: polish?.aiSource,
+    aiStatus: polish?.aiStatus,
+    aiReason: polish?.aiReason,
+    aiProvider: polish?.aiProvider,
+    aiModel: polish?.aiModel,
+    ...(isQwenOmni && { asrEngine: 'qwen_omni', asrModel: extra?.model }),
   }
 }
 
@@ -284,7 +330,7 @@ async function reprocessViaCloudApi(
 async function reprocessViaLocal(
   chunk: ArrayBuffer,
   hotwords: string[],
-  aiEnabled: boolean,
+  ai: ReprocessAiContext,
   systemPrompt: string | undefined,
 ): Promise<ReprocessResult> {
   const durationSec = (chunk.byteLength / 2) / 16000
@@ -293,39 +339,45 @@ async function reprocessViaLocal(
   const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
   const language = await getSetting('localAsr.language', 'auto') as string
   const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
+  const gpuDevice = await getSetting('localAsr.gpuDevice', '') as string
 
   // hotwords 在 GGUF 引擎上不支持（transcribe.cpp 只有 whisper 族接 initial prompt），
   // 参数留着是为了不改调用方签名，后端会忽略。
   void hotwords
   const asrResult = await invoke<{ text: string; elapsed_ms: number }>('local_transcribe', {
-    audioB64, modelId, language, accelerator,
+    audioB64, modelId, language, accelerator, gpuDevice,
   })
   const asrText = asrResult.text
   const asrMs = asrResult.elapsed_ms
 
-  let llmText = asrText
-  let llmMs = 0
-  if (asrText.trim() && aiEnabled) {
-    const aiProvider = await getSetting('cloudAi.provider', 'openai_compat') as string
-    const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
-    const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
-    const aiModel = await getSetting('cloudAi.model', '') as string
-    if (aiApiUrl && (aiApiKey || aiProvider === 'ollama')) {
-      try {
-        const aiResult = await invoke<{ text: string; elapsed_ms: number }>('cloud_polish', {
-          request: {
-            text: asrText,
-            ai_config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
-            system_prompt: systemPrompt || null,
-          },
-        })
-        llmText = aiResult.text || asrText
-        llmMs = aiResult.elapsed_ms
-      } catch { /* AI 失败时保留 ASR 原文 */ }
-    }
-  }
+  // 同云 API 重跑：改走共用润色，补上短语音门槛与执行状态（原来也是空 catch 吞掉失败）。
+  const policy = policyFromSnapshot(ai.snapshot, 'local', durationSec)
+  const polish = await polishWithClientAi({
+    asrText,
+    startOptions: {
+      runId: 1,
+      operationId: ai.context.operationId,
+      aiConfig: ai.snapshot,
+      systemPrompt,
+      source: 'history_reprocess',
+    },
+    policy,
+    outcomeContext: ai.context,
+    logSource: 'history',
+  })
 
-  return { asrText, llmText, asrMs, llmMs, durationSec }
+  return {
+    asrText,
+    llmText: polish?.llmText ?? asrText,
+    asrMs,
+    llmMs: polish?.llmMs ?? 0,
+    durationSec,
+    aiSource: polish?.aiSource,
+    aiStatus: polish?.aiStatus,
+    aiReason: polish?.aiReason,
+    aiProvider: polish?.aiProvider,
+    aiModel: polish?.aiModel,
+  }
 }
 
 /** 重新识别后写回历史记录所需的供应商元数据 */
@@ -339,34 +391,33 @@ async function buildReprocessMetadata(
   aiSource?: AiExecutionSource
   aiStatus?: AiExecutionStatus
 }> {
+  // AI 那几个字段一律取本次执行结果，不再读当前设置。
+  //
+  // 此前只有 server 分支返回 aiSource/aiStatus，cloud_api 与 local 返回 undefined，
+  // 而写回是显式传值 —— 于是重跑一次就把记录里原有的执行状态抹成空；同时 aiProvider
+  // 照当前设置填，哪怕这次 AI 压根没跑，记录里也会写着某个服务商。
+  const aiFields = {
+    aiSource: result.aiSource,
+    aiStatus: result.aiStatus,
+    // 只有真的执行到（或尝试过）才写服务商，避免"没跑却记着供应商"。
+    aiProvider: result.aiStatus === 'skipped' ? undefined : result.aiProvider,
+    aiModel: result.aiStatus === 'skipped' ? undefined : result.aiModel,
+  }
+
   if (workMode === 'cloud_api') {
     const asrProviderKey = await getSetting('cloudAsr.provider', '') as string
-    const aiProvider = await getSetting('cloudAi.provider', '') as string
-    const aiModel = await getSetting('cloudAi.model', '') as string
-    return {
-      asrProvider: resolveAsrDisplayModel(asrProviderKey),
-      aiProvider: aiProvider || undefined,
-      aiModel: aiModel || undefined,
-    }
+    // 选定的模型要一起带上：只按 provider 推的话，用户明明选了 whisper-large-v3，
+    // 历史记录里却会写成该服务的默认模型
+    const asrSelectedModel = await getSetting('cloudAsr.model', '') as string
+    return { asrProvider: resolveAsrDisplayModel(asrProviderKey, asrSelectedModel), ...aiFields }
   }
   if (workMode === 'local') {
     const modelId = await getSetting('localAsr.modelId', '') as string
-    const aiEnabled = Boolean(await getSetting('aiEnabled', false))
-    const aiProvider = aiEnabled ? await getSetting('cloudAi.provider', '') as string : undefined
-    const aiModel = aiEnabled ? await getSetting('cloudAi.model', '') as string : undefined
-    return { asrProvider: modelId || 'local', aiProvider: aiProvider || undefined, aiModel: aiModel || undefined }
+    return { asrProvider: modelId || 'local', ...aiFields }
   }
-  // server
   return {
     asrProvider: (result.asrModel || result.asrEngine || 'server').replace(/^.*\//, ''),
-    aiProvider: result.aiSource === 'custom'
-      ? result.aiProvider
-      : result.aiSource === 'none'
-        ? undefined
-        : 'server',
-    aiModel: result.aiModel,
-    aiSource: result.aiSource,
-    aiStatus: result.aiStatus,
+    ...aiFields,
   }
 }
 
@@ -520,13 +571,16 @@ export default function History() {
       if (part) systemPrompt = `${systemPrompt}\n\n${part}`
     }
 
+    // 一次重跑只建一份 AI 上下文，三条路径共用：策略同一个函数算，结果同一条 ai.outcome。
+    const ai = await buildReprocessAiContext(record.id)
+
     let result: ReprocessResult
     if (workMode === 'cloud_api') {
-      result = await reprocessViaCloudApi(chunk, hotwords, Boolean(aiEnabled), systemPrompt)
+      result = await reprocessViaCloudApi(chunk, hotwords, ai, systemPrompt)
     } else if (workMode === 'local') {
-      result = await reprocessViaLocal(chunk, hotwords, Boolean(aiEnabled), systemPrompt)
+      result = await reprocessViaLocal(chunk, hotwords, ai, systemPrompt)
     } else {
-      result = await reprocessViaServer(chunk, hotwords, Boolean(aiEnabled), systemPrompt, clientMeta)
+      result = await reprocessViaServer(chunk, hotwords, ai, systemPrompt, clientMeta)
     }
 
     // 新链路优先采用显式执行状态；旧的云/本地历史重跑尚未返回状态时才兼容文本比较。
