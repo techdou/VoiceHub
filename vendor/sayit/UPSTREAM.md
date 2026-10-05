@@ -1,9 +1,8 @@
 # Embedded SayIt
 
 Source: https://github.com/crosswk/SayIt
-Revision: eab25fd (upstream 0.2.0 + forward-ported fixes from 0.2.1's 8687e9b:
-WeChat-4.1-rename editability via inject editability_gate, bare-press rule for
-single-key hotkeys in the keyboard hook)
+Revision: 6e7c5e5 (upstream 0.2.2, full re-import; supersedes the earlier
+eab25fd 0.2.0 base with forward-ported 0.2.1 fixes)
 Copyright: Liu Qianglong and SayIt contributors, 2026.
 License: GNU Affero General Public License version 3; see LICENSE.
 
