@@ -66,6 +66,8 @@ id_ed25519*
 .antigravity/
 .kimi/
 .agent*/
+.v2c/
+.video_agent/
 *.code-workspace
 *.suo
 *.user
