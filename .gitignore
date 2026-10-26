@@ -156,3 +156,49 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
+
+# ── 2026-10-27 统一范式补全（与 techdou 仓 .gitignore 标准对齐）──
+
+# ── 私密信息与密钥：绝不入库 ──
+secrets*
+credentials*
+*.token
+_htpasswd
+
+
+# ── 开发软件配置目录：本地工具状态不上传 ──
+.claude.json
+.trae/
+.roo/
+continue/
+
+
+# ── 内部文档与开发状态：不入版本控制，避免泄漏 ──
+# README.md / CHANGELOG.md / SKILL.md / references/ / evals/ 是仓库正式内容，保持跟踪
+drafts/
+private/
+internal/
+dev/
+dev-notes/
+.archive/
+.research/
+*.draft.md
+*.local.md
+*.wip.md
+DEVLOG.md
+TODO.md
+STATUS.md
+
+
+# ── Python 运行产物 ──
+*.py[cod]
+
+
+# ── Node 前端产物 ──
+.next/
+.nuxt/
+
+
+# ── 系统与临时文件 ──
+desktop.ini
+*~
